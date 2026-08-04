@@ -378,7 +378,56 @@ console.log('\n[6] defensive stance spreads sideways');
         'guarding=' + (o.handSpreadX || 0).toFixed(3) + ' rest=' + o.restSpreadX);
 }
 
-console.log('\n[7] player creator preview');
+console.log('\n[7] the dribbled ball sits in the drawn hand');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U;
+    var pl = new BB.Player({ height: 79 });
+    pl.hasBall = true;
+    pl._updatePose(1 / 60);
+
+    // Standing height of the FIGURE, in world feet. The court, rim and ball are
+    // true scale but the body is deliberately compressed, so a hand position
+    // derived from heightIn instead of from the skeleton floats above the head.
+    var B = BB.Player.BONE;
+    var crown = (-pl.pose.headY + B.headR) * pl.bodyScale;
+
+    var maxZ = 0, minZ = 1e9, worstGap = 0, topGap = 0;
+    for (var i = 0; i <= 40; i++) {
+      pl.dribblePhase = i / 40;
+      pl._updatePose(1 / 60);
+      var ball = pl.handPosition(null);
+      var hand = pl.handAt(null);
+      maxZ = Math.max(maxZ, ball.z);
+      minZ = Math.min(minZ, ball.z);
+      // Horizontal distance from the hand: the ball drops straight down under
+      // the palm through the bounce, so this should stay small all cycle.
+      worstGap = Math.max(worstGap, U.dist(ball.x, ball.y, hand.x, hand.y));
+      if (Math.abs(pl.dribblePhase) < 0.02) topGap = Math.abs(ball.z - hand.z);
+    }
+    return {
+      crown: crown, maxZ: maxZ, minZ: minZ,
+      worstGap: worstGap, topGap: topGap,
+      travel: maxZ - minZ
+    };
+  `, 'probe');
+  if (r.err) check('dribble probe ran', false, r.err);
+  const o = r.out || {};
+  check('ball never rises above the player', o.maxZ < o.crown,
+        'peak=' + (o.maxZ || 0).toFixed(2) + 'ft, crown=' + (o.crown || 0).toFixed(2) + 'ft');
+  check('ball peaks around the waist, not the chest', o.maxZ < o.crown * 0.62,
+        'peak=' + (o.maxZ || 0).toFixed(2) + 'ft of ' + (o.crown || 0).toFixed(2) + 'ft');
+  check('ball reaches the floor at the bounce', o.minZ < 0.5,
+        'low=' + (o.minZ || 0).toFixed(2) + 'ft');
+  check('ball actually travels over a bounce', o.travel > 1.0,
+        'travel=' + (o.travel || 0).toFixed(2) + 'ft');
+  check('ball tracks the hand horizontally', o.worstGap < 0.35,
+        'worst=' + (o.worstGap || 0).toFixed(3) + 'ft');
+  check('ball meets the palm at the top of the bounce', o.topGap < 0.35,
+        'gap=' + (o.topGap || 0).toFixed(3) + 'ft');
+}
+
+console.log('\n[8] player creator preview');
 {
   const r = runInPage(`
     var BB = window.BB;

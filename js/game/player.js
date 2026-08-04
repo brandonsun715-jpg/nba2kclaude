@@ -313,6 +313,10 @@
         kneeL: { jx: 0, jy: 0, ex: 0, ey: 0 }, kneeR: { jx: 0, jy: 0, ex: 0, ey: 0 },
         elbowL: { jx: 0, jy: 0, ex: 0, ey: 0 }, elbowR: { jx: 0, jy: 0, ex: 0, ey: 0 }
       };
+      // Solve once up front so the skeleton is valid before the first update:
+      // giveBall() asks where the hand is, and an all-zero pose puts it on the
+      // floor at the player's feet.
+      this._updatePose(0);
     }
 
     /* ------------------------------------------------------------- queries */
@@ -324,21 +328,65 @@
              this.action === ACTION.LAYUP || this.action === ACTION.DUNK;
     }
 
-    /** World point the ball should render at while this player controls it. */
-    handPosition(out) {
+    /** How many world feet one skeleton unit is worth for this player. */
+    get bodyScale() {
+      return U.remap(this.heightIn, 68, 90, HEIGHT_LO, HEIGHT_HI) / REF_HEIGHT;
+    }
+
+    /** Fills the shared FRAME with this player's body axes, scale and squash. */
+    _frame() {
+      const f = FRAME;
+      f.x = this.x; f.y = this.y; f.z = this.z;
+      f.s = this.bodyScale;
+      f.squash = 1 - this.squash * 0.22;
+      f.stretch = 1 + this.squash * 0.16;
+      f.fx = Math.cos(this.facing); f.fy = Math.sin(this.facing);
+      f.rx = Math.sin(this.facing); f.ry = -Math.cos(this.facing);
+      return f;
+    }
+
+    /**
+     * Where the drawn ball hand actually is, in world feet — read off the same
+     * solved pose and the same transform the body is built from.
+     *
+     * This has to come from the skeleton rather than from heightIn, because the
+     * two live in different scales: the court, rim and ball are true size while
+     * the figure is deliberately compressed (see HEIGHT_LO/HI). A hand position
+     * computed from a player's real 6'7" lands about two feet above the head of
+     * the 5-foot figure that gets drawn.
+     */
+    handAt(out) {
       out = out || { x: 0, y: 0, z: 0 };
-      const reach = 1.15 + this.armRaise * 0.55;
-      out.x = this.x + Math.cos(this.facing) * reach * 0.55;
-      out.y = this.y + Math.sin(this.facing) * reach * 0.55;
-      out.z = this.armRaise > 0.05
-        ? U.lerp(this.handZ - 0.6, this.handZ + 1.6, this.armRaise)
-        : this._dribbleZ();
+      const p = this.pose, f = this._frame();
+      const lean = p.torsoLean * 0.45 + this.lean * 0.16;
+      posePoint(TMP_P0, f, p.elbowR.ex, p.elbowR.ey, BONE.shoulderW,
+                BONE.shoulderW * SPLAY.wrist, lean, p.armRoll, -p.shoulderY * f.stretch);
+      out.x = TMP_P0[0]; out.y = TMP_P0[1]; out.z = TMP_P0[2];
       return out;
     }
 
-    _dribbleZ() {
+    /** World point the ball should render at while this player controls it. */
+    handPosition(out) {
+      out = out || { x: 0, y: 0, z: 0 };
+      if (this.armRaise > 0.05) {
+        // Release point. Calibrated against the true-scale ten-foot rim rather
+        // than the drawn figure, because the shot arc is computed from it —
+        // this is the one hand position gameplay reads, so it stays put.
+        const reach = 1.15 + this.armRaise * 0.55;
+        out.x = this.x + Math.cos(this.facing) * reach * 0.55;
+        out.y = this.y + Math.sin(this.facing) * reach * 0.55;
+        out.z = U.lerp(this.handZ - 0.6, this.handZ + 1.6, this.armRaise);
+        return out;
+      }
+      this.handAt(out);
+      out.z = this._dribbleZ(out.z);
+      return out;
+    }
+
+    /** Ball height across one bounce: floor at the bottom, palm at the top. */
+    _dribbleZ(handZ) {
       const low = C.BALL_RADIUS + 0.02;
-      const high = this.handZ - 0.35;
+      const high = Math.max(low, handZ - C.BALL_RADIUS * 0.5);
       const c = (Math.cos(this.dribblePhase * Math.PI * 2) + 1) * 0.5; // 1 = in hand
       return U.lerp(low, high, c);
     }
@@ -1057,13 +1105,9 @@
     draw() {
       const S3 = BB.S3;
       const p = this.pose;
-      const s = U.remap(this.heightIn, 68, 90, HEIGHT_LO, HEIGHT_HI) / REF_HEIGHT;
-      const squash = 1 - this.squash * 0.22;
-      const stretch = 1 + this.squash * 0.16;
-
-      /* Body axes in court space. */
-      const fx = Math.cos(this.facing), fy = Math.sin(this.facing);
-      const rx = Math.sin(this.facing), ry = -Math.cos(this.facing);
+      const f = this._frame();
+      const s = f.s, squash = f.squash, stretch = f.stretch;
+      const fx = f.fx, fy = f.fy, rx = f.rx, ry = f.ry;
 
       const skin = this._col('skin', this.skin);
       const skinDark = this._col('skinDark', U.shade(this.skin, -0.22));
@@ -1077,37 +1121,8 @@
        * crossover can still wind the shoulders against planted hips. */
       const leanF = this.lean * 0.16;
 
-      const self = this;
-      /**
-       * Local pose point -> world point.
-       * @param {number} lx local x from the solver
-       * @param {number} ly local y (negative is up)
-       * @param {number} baseX the x the limb's IK origin used, so `lx - baseX`
-       *        is pure motion and can be sent down the forward axis
-       * @param {number} width lateral offset in local units (right axis)
-       * @param {number} lean shear applied to this layer
-       * @param {number} [roll] radians to tip this point about the FORWARD axis
-       *        running through `rollUp`, which swings a limb out sideways
-       *        without touching its fore/aft motion. Signed: positive rolls
-       *        toward the player's right. This is a rotation, so bone lengths
-       *        survive it exactly — the solver's flat plane has no way to
-       *        express a limb leaving it, and anything sent through `lx`
-       *        instead would come out as forward motion.
-       * @param {number} [rollUp] height the roll pivots about, in up-units
-       */
       function pt(out, lx, ly, baseX, width, lean, roll, rollUp) {
-        let up = -ly * stretch;
-        let side = width;
-        if (roll) {
-          const dUp = up - rollUp;
-          up = rollUp + dUp * Math.cos(roll);
-          side = width - dUp * Math.sin(roll);
-        }
-        const fwd = (lx - baseX) + up * lean;
-        out[0] = self.x + (fwd * fx + side * rx) * s * squash;
-        out[1] = self.y + (fwd * fy + side * ry) * s * squash;
-        out[2] = self.z + up * s;
-        return out;
+        return posePoint(out, f, lx, ly, baseX, width, lean, roll, rollUp);
       }
 
       const A = TMP_P0, B = TMP_P1, D = TMP_P2, E = TMP_P3, F = TMP_P4;
@@ -1245,7 +1260,7 @@
      */
     drawPreview(ctx) {
       const p = this.pose;
-      const s = U.remap(this.heightIn, 68, 90, HEIGHT_LO, HEIGHT_HI) / REF_HEIGHT;
+      const s = this.bodyScale;
 
       ctx.save();
       ctx.scale(s, s);
@@ -1714,6 +1729,49 @@
    * whole figure is submitted synchronously inside one draw() call. */
   const TMP_P0 = [0, 0, 0], TMP_P1 = [0, 0, 0], TMP_P2 = [0, 0, 0];
   const TMP_P3 = [0, 0, 0], TMP_P4 = [0, 0, 0];
+
+  /* The body's axes, scale and squash for one player for one frame. Shared,
+   * because a figure is always placed synchronously inside one call. */
+  const FRAME = {
+    x: 0, y: 0, z: 0, s: 1, squash: 1, stretch: 1, fx: 1, fy: 0, rx: 0, ry: -1
+  };
+
+  /**
+   * Pose space -> world feet. The pose solver works in a single flat plane with
+   * the foot at 0 and up as negative; this is the one place that decides how
+   * that plane maps onto a body standing on a court, so the ball can ask where
+   * a hand ended up without duplicating the transform and drifting from it.
+   *
+   * @param {number[]} out
+   * @param {object} f a FRAME filled by Player#_frame
+   * @param {number} lx local x from the solver
+   * @param {number} ly local y (negative is up)
+   * @param {number} baseX the x the limb's IK origin used, so `lx - baseX` is
+   *        pure motion and can be sent down the forward axis
+   * @param {number} width lateral offset in local units (right axis)
+   * @param {number} lean shear applied to this layer
+   * @param {number} [roll] radians to tip this point about the FORWARD axis
+   *        running through `rollUp`, which swings a limb out sideways without
+   *        touching its fore/aft motion. Signed: positive rolls toward the
+   *        player's right. Being a rotation it preserves bone lengths exactly —
+   *        the solver's flat plane cannot express a limb leaving it, and
+   *        anything sent through `lx` instead comes out as forward motion.
+   * @param {number} [rollUp] height the roll pivots about, in up-units
+   */
+  function posePoint(out, f, lx, ly, baseX, width, lean, roll, rollUp) {
+    let up = -ly * f.stretch;
+    let side = width;
+    if (roll) {
+      const dUp = up - rollUp;
+      up = rollUp + dUp * Math.cos(roll);
+      side = width - dUp * Math.sin(roll);
+    }
+    const fwd = (lx - baseX) + up * lean;
+    out[0] = f.x + (fwd * f.fx + side * f.rx) * f.s * f.squash;
+    out[1] = f.y + (fwd * f.fy + side * f.ry) * f.s * f.squash;
+    out[2] = f.z + up * f.s;
+    return out;
+  }
 
   /** Point `t` of the way from world point a to world point b. */
   function mixPt(out, a, b, t) {

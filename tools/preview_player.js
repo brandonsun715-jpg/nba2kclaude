@@ -33,6 +33,7 @@ const POSES = {
   run: 'pl.vx = 0; pl.vy = -13; pl.facing = -Math.PI / 2; pl.stridePhase = 1.1; pl.sprinting = true;',
   guard: 'pl.isGuarding = true; pl._guardBlend = 1;',
   dribble: 'pl.hasBall = true; pl.dribblePhase = 0.5;',
+  carry: 'pl.hasBall = true; pl.dribblePhase = 0;',
   shoot: 'pl.action = "meter"; pl.actionT = 0.2; pl.meter.value = 0.85; pl.armRaise = 1;'
 };
 
