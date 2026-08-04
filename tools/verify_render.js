@@ -331,7 +331,54 @@ console.log('\n[5] 5v5 scene');
   check('gl clean in 5v5', o.glError === 0, 'code=' + o.glError);
 }
 
-console.log('\n[6] player creator preview');
+console.log('\n[6] defensive stance spreads sideways');
+{
+  const r = runInPage(`
+    var BB = window.BB;
+    var pl = new BB.Player({ height: 79 });
+    // The pose solver works in one flat plane, and draw() sends anything past
+    // an IK origin's own x down the FORWARD axis. Spreading a defender's arms
+    // through the hand targets therefore puts one arm in front and one behind;
+    // the spread has to arrive as a roll angle out of that plane instead.
+    for (var i = 0; i < 60; i++) pl._updatePose(1 / 60);
+    var rest = pl.pose.armRoll;
+
+    pl.isGuarding = true;
+    for (var j = 0; j < 60; j++) pl._updatePose(1 / 60);
+    var guarding = pl.pose.armRoll;
+    var handSpreadX = Math.abs(pl.pose.handR.x - pl.pose.handL.x);
+
+    pl.isGuarding = false;
+    for (var k = 0; k < 60; k++) pl._updatePose(1 / 60);
+    var released = pl.pose.armRoll;
+
+    // A guarding player who then gathers for a shot must drop the stance.
+    pl.isGuarding = true;
+    pl.action = BB.Player.ACTION.GATHER;
+    for (var m = 0; m < 60; m++) pl._updatePose(1 / 60);
+    var shooting = pl.pose.armRoll;
+
+    return {
+      rest: rest, guarding: guarding, released: released, shooting: shooting,
+      handSpreadX: handSpreadX,
+      restSpreadX: Math.abs(0.30 * 2)
+    };
+  `, 'probe');
+  if (r.err) check('stance probe ran', false, r.err);
+  const o = r.out || {};
+  check('arms hang flat when not guarding', o.rest === 0, 'armRoll=' + o.rest);
+  check('guarding rolls both arms out of the pose plane', o.guarding > 0.4,
+        'armRoll=' + (o.guarding || 0).toFixed(3));
+  check('stance releases when guarding stops', o.released < 0.01,
+        'armRoll=' + (o.released || 0).toFixed(4));
+  check('shooting overrides the stance', o.shooting < 0.01,
+        'armRoll=' + (o.shooting || 0).toFixed(4));
+  check('spread does not leak into fore/aft hand targets',
+        Math.abs(o.handSpreadX - o.restSpreadX) < 0.02,
+        'guarding=' + (o.handSpreadX || 0).toFixed(3) + ' rest=' + o.restSpreadX);
+}
+
+console.log('\n[7] player creator preview');
 {
   const r = runInPage(`
     var BB = window.BB;

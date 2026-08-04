@@ -307,7 +307,7 @@
        * nothing here allocates per frame. */
       this._animClock = U.rng.f(0, 6.28); // phase-offset so idle players don't sync
       this.pose = {
-        hipY: 0, shoulderY: 0, headY: 0, torsoLean: 0, hipLean: 0,
+        hipY: 0, shoulderY: 0, headY: 0, torsoLean: 0, hipLean: 0, armRoll: 0,
         footL: { x: 0, y: 0 }, footR: { x: 0, y: 0 },
         handL: { x: 0, y: 0 }, handR: { x: 0, y: 0 },
         kneeL: { jx: 0, jy: 0, ex: 0, ey: 0 }, kneeR: { jx: 0, jy: 0, ex: 0, ey: 0 },
@@ -1086,12 +1086,26 @@
        *        is pure motion and can be sent down the forward axis
        * @param {number} width lateral offset in local units (right axis)
        * @param {number} lean shear applied to this layer
+       * @param {number} [roll] radians to tip this point about the FORWARD axis
+       *        running through `rollUp`, which swings a limb out sideways
+       *        without touching its fore/aft motion. Signed: positive rolls
+       *        toward the player's right. This is a rotation, so bone lengths
+       *        survive it exactly — the solver's flat plane has no way to
+       *        express a limb leaving it, and anything sent through `lx`
+       *        instead would come out as forward motion.
+       * @param {number} [rollUp] height the roll pivots about, in up-units
        */
-      function pt(out, lx, ly, baseX, width, lean) {
-        const up = -ly * stretch;
+      function pt(out, lx, ly, baseX, width, lean, roll, rollUp) {
+        let up = -ly * stretch;
+        let side = width;
+        if (roll) {
+          const dUp = up - rollUp;
+          up = rollUp + dUp * Math.cos(roll);
+          side = width - dUp * Math.sin(roll);
+        }
         const fwd = (lx - baseX) + up * lean;
-        out[0] = self.x + (fwd * fx + width * rx) * s * squash;
-        out[1] = self.y + (fwd * fy + width * ry) * s * squash;
+        out[0] = self.x + (fwd * fx + side * rx) * s * squash;
+        out[1] = self.y + (fwd * fy + side * ry) * s * squash;
         out[2] = self.z + up * s;
         return out;
       }
@@ -1173,9 +1187,12 @@
       for (const arm of ARMS) {
         const el = arm.side < 0 ? p.elbowL : p.elbowR;
         const w = arm.side * BONE.shoulderW;
+        // Both arms roll away from the body by the same angle, mirrored.
+        const roll = arm.side * p.armRoll;
+        const pivot = -p.shoulderY * stretch;
         pt(A, 0, p.shoulderY, 0, w, torsoLean);
-        pt(B, el.jx, el.jy, w, w * SPLAY.elbow, torsoLean);
-        pt(D, el.ex, el.ey, w, w * SPLAY.wrist, torsoLean);
+        pt(B, el.jx, el.jy, w, w * SPLAY.elbow, torsoLean, roll, pivot);
+        pt(D, el.ex, el.ey, w, w * SPLAY.wrist, torsoLean, roll, pivot);
 
         S3.sphere(A[0], A[1], A[2], G.deltoid * s, skin, 0.14);
         S3.bone(A[0], A[1], A[2], B[0], B[1], B[2],
@@ -1210,8 +1227,10 @@
               headH * 0.80, headH * 0.68, headH * 0.86, this.facing, skinDark, 0.10);
 
       if (this.human) {
-        // Selection ring: a flat disc under the controlled player.
-        S3.box(this.x, this.y, 0.035, 1.55, 1.55, 0.02, 0, MINT, 0.0, 0.85);
+        // Selection ring under the controlled player. A torus, not a quad: a
+        // square marker reads as a decal stuck to the floor at this camera
+        // angle, where a ring reads as a marker sitting on it.
+        S3.ring(this.x, this.y, 0.05, 0.98, MINT, 0.35, 0.22);
       }
     }
 
@@ -1408,11 +1427,19 @@
        * isGuarding, since those all require states this excludes anyway. */
       const guardTarget = (this.isGuarding && !this.jumping && !this.hasBall && !this.isBusyShooting) ? 1 : 0;
       this._guardBlend = U.approach(this._guardBlend, guardTarget, 7, dt);
+      let armRoll = 0;
       if (this._guardBlend > 0.001) {
         const g = this._guardBlend;
         shoulderY += g * 0.12;                    // lower center of gravity
         flX -= g * 0.12; frX += g * 0.12;          // wider base
-        hlX -= g * 0.22; hrX += g * 0.22;          // arms spread wide
+        // Arms spread wide. This one cannot be expressed as an x offset the way
+        // the stance can: the solver works in a single flat plane, and draw()
+        // sends anything past the IK origin's own x down the FORWARD axis so a
+        // run cycle scissors properly. Pushing the hands out through hlX/hrX
+        // therefore put one arm in front and one behind. A roll angle tips both
+        // arms out of that plane instead, mirrored, which is what a defensive
+        // stance actually looks like from the sideline.
+        armRoll = g * 0.62;
         torsoLean = (torsoLean || 0) + g * 0.05;   // a touch of alert forward lean
       }
 
@@ -1664,6 +1691,7 @@
 
       p.hipY = hipY;
       p.shoulderY = shoulderY;
+      p.armRoll = armRoll;
       p.headY = shoulderY - BONE.neck - this.armRaise * 0.05;
       p.torsoLean = torsoLean;
       p.hipLean = hipLean == null ? torsoLean : hipLean;

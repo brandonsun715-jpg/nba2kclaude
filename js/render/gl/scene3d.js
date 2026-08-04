@@ -406,9 +406,14 @@
                 gloss, emissive, blend ? color[3] : 1);
     },
 
-    /** Horizontal ring (the rim). Lies flat at height z. */
-    ring(x, y, z, outerR, color, gloss) {
-      M4.fromBox(this._m, x, z, y, outerR * 2, outerR * 2, outerR * 2);
+    /**
+     * Horizontal ring (the rim). Lies flat at height z.
+     * @param {number} [flat=1] vertical squash — a rim is round in section, a
+     *        marker painted on the floor wants to be nearly flat.
+     */
+    ring(x, y, z, outerR, color, gloss, flat) {
+      const h = outerR * 2 * (flat == null ? 1 : flat);
+      M4.fromBox(this._m, x, z, y, outerR * 2, h, outerR * 2);
       this.push(this.meshes.torus, this._m, color, gloss, 0, 1);
     },
 
