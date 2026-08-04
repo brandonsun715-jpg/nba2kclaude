@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>HARDWOOD — Basketball Simulation</title>
+<meta name="description" content="An original 2D basketball simulation. Runs entirely offline." />
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+  <!-- ============================================================ canvas -->
+  <canvas id="game-canvas" aria-label="Basketball court"></canvas>
+  <!-- Screen-space 2D layer above the 3D court: shot meter, popups, vignette. -->
+  <canvas id="overlay-canvas" aria-hidden="true"></canvas>
+
+  <!-- ======================================================= broadcast HUD
+       Reserved for full 5-on-5 game modes (Quick Play / Season / Playoffs).
+       Hidden in this build's Shootaround mode. -->
+  <div id="hud" class="hud" aria-hidden="true">
+    <div class="hud-bug">
+      <div id="hud-away" class="hud-team hud-team--away">
+        <span id="hud-away-poss" class="hud-poss" aria-hidden="true"></span>
+        <span id="hud-away-abbr" class="hud-team__abbr">AWY</span>
+        <span id="hud-away-score" class="hud-team__score">0</span>
+        <span id="hud-away-bonus" class="hud-bonus">B</span>
+        <span id="hud-away-to" class="hud-dots"></span>
+        <div class="hud-stamina" aria-hidden="true"><div id="hud-away-stamina" class="hud-stamina__fill"></div></div>
+      </div>
+      <div class="hud-clockblock">
+        <div id="hud-period" class="hud-period">1ST</div>
+        <div id="hud-clock" class="hud-clock">12:00</div>
+        <div id="hud-shot-wrap" class="hud-shotwrap">
+          <span id="hud-shot" class="hud-shot">24</span>
+        </div>
+      </div>
+      <div id="hud-home" class="hud-team hud-team--home">
+        <span id="hud-home-to" class="hud-dots"></span>
+        <span id="hud-home-bonus" class="hud-bonus">B</span>
+        <span id="hud-home-score" class="hud-team__score">0</span>
+        <span id="hud-home-abbr" class="hud-team__abbr">HME</span>
+        <span id="hud-home-poss" class="hud-poss" aria-hidden="true"></span>
+        <div class="hud-stamina" aria-hidden="true"><div id="hud-home-stamina" class="hud-stamina__fill"></div></div>
+      </div>
+    </div>
+    <div id="hud-banner" class="hud-banner">
+      <div id="hud-banner-text" class="hud-banner__text"></div>
+      <div id="hud-banner-sub" class="hud-banner__sub"></div>
+    </div>
+    <div id="hud-toast" class="hud-toast"></div>
+  </div>
+
+  <!-- ========================================================= practice HUD
+       Used by Shootaround: attempts, makes, percentage, streaks. -->
+  <div id="practice-hud" class="practice">
+    <div class="practice-card">
+      <div class="practice-stat">
+        <span class="practice-stat__v" id="pr-points">0</span>
+        <span class="practice-stat__k">PTS</span>
+      </div>
+      <div class="practice-stat">
+        <span class="practice-stat__v" id="pr-fg">0/0</span>
+        <span class="practice-stat__k">FG</span>
+      </div>
+      <div class="practice-stat">
+        <span class="practice-stat__v" id="pr-pct">0%</span>
+        <span class="practice-stat__k">PCT</span>
+      </div>
+      <div class="practice-stat practice-stat--accent">
+        <span class="practice-stat__v" id="pr-streak">0</span>
+        <span class="practice-stat__k">STREAK</span>
+      </div>
+      <div class="practice-stat">
+        <span class="practice-stat__v" id="pr-best">0</span>
+        <span class="practice-stat__k">BEST</span>
+      </div>
+    </div>
+    <div class="practice-hint">
+      <kbd>WASD</kbd> move · <kbd>SPACE</kbd> hold to gather, release to shoot · <kbd>ESC</kbd> pause
+    </div>
+  </div>
+
+  <!-- =================================================== front-end screens -->
+  <div id="screens" class="screens"></div>
+
+  <!-- ============================================================ loading -->
+  <div id="boot" class="boot">
+    <div class="boot__mark"><span></span><span></span><span></span></div>
+    <div class="boot__word">HARDWOOD</div>
+    <div class="boot__bar"><div class="boot__fill" id="boot-fill"></div></div>
+  </div>
+
+  <!-- ================================================================ core -->
+  <script src="js/core/constants.js"></script>
+  <script src="js/render/gl/mat4.js"></script>
+  <script src="js/render/gl/glx.js"></script>
+  <script src="js/render/gl/geo.js"></script>
+  <script src="js/core/utils.js"></script>
+  <script src="js/core/input.js"></script>
+  <script src="js/core/audio.js"></script>
+  <script src="js/core/camera.js"></script>
+  <script src="js/core/settings.js"></script>
+  <script src="js/core/commentary.js"></script>
+  <script src="js/core/engine.js"></script>
+
+  <!-- ============================================================== render -->
+  <script src="js/render/gl/scene3d.js"></script>
+  <script src="js/render/court.js"></script>
+  <script src="js/render/arena.js"></script>
+  <script src="js/render/hoop.js"></script>
+  <script src="js/render/fx.js"></script>
+  <script src="js/render/renderer.js"></script>
+
+  <!-- ============================================================= physics -->
+  <script src="js/physics/ball.js"></script>
+  <script src="js/physics/collision.js"></script>
+
+  <!-- ================================================================ game -->
+  <script src="js/game/shooting.js"></script>
+  <script src="js/game/officiating.js"></script>
+  <script src="js/game/player.js"></script>
+  <script src="js/game/playerProfile.js"></script>
+  <script src="js/game/career.js"></script>
+  <script src="js/game/ai.js"></script>
+  <script src="js/game/team.js"></script>
+  <script src="js/game/teamai.js"></script>
+
+  <!-- ================================================================== ui -->
+  <script src="js/ui/hud.js"></script>
+  <script src="js/ui/menus.js"></script>
+
+  <!-- ============================================================ game glue -->
+  <script src="js/game/game.js"></script>
+  <script src="js/game/fivevfive.js"></script>
+
+  <!-- =============================================================== boot -->
+  <script src="js/main.js"></script>
+</body>
+</html>
