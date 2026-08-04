@@ -31,16 +31,63 @@
   // enough to read clearly next to a true-to-scale ball and rim, short
   // enough that the ball and court stay legible and the figure doesn't
   // dominate the frame.
+  // Proportions follow the eight-heads-tall figure that athletic reference
+  // uses, which is what makes a body read as an NBA player rather than a
+  // mascot: knee at 2 heads off the floor, hip joint at 4, shoulder at 6.5,
+  // chin at 7, crown at 8. Everything is written in head units (HU) so the
+  // ratios stay legible and the whole build retunes from one number.
+  const HU = 0.235;
   const BONE = {
-    thigh: 0.42, shin: 0.40,
-    torso: 0.58, neck: 0.28,
-    upperArm: 0.30, forearm: 0.30,
-    headR: 0.20,
-    hipW: 0.15, shoulderW: 0.21
+    shin: 2.00 * HU,       // floor contact up to the knee
+    thigh: 2.00 * HU,      // knee to hip joint
+    torso: 2.50 * HU,      // hip joint to shoulder joint
+    neck: 1.00 * HU,       // shoulder joint to the centre of the head
+    headR: 0.50 * HU,      // half the head's height — 1/16th of the figure
+    upperArm: 1.45 * HU,
+    forearm: 1.30 * HU,    // to the wrist; the hand adds a little more reach
+    hipW: 0.60 * HU,       // half the span between hip joints
+    shoulderW: 1.00 * HU,  // half the span between shoulder joints
+    stance: 0.74 * HU      // half the span between the feet, wider than the hips
   };
-  const REF_HEIGHT = (BONE.thigh + BONE.shin + BONE.torso + BONE.neck + BONE.headR); // 1.88
+
+  /* Limbs do not hang in a vertical plane straight off the joint they start at.
+   * Arms converge toward the body as they go down — the wrists sit well inside
+   * the shoulders — while legs splay the other way onto a base wider than the
+   * hips. These are each joint's lateral offset as a fraction of the limb's
+   * root width, and they are what stops the arms reading as slabs bolted to the
+   * outside of the torso. The pose solver can't express any of this itself: it
+   * works in a single flat plane, and everything past the IK origin's own x
+   * becomes forward motion so that a run cycle scissors properly. */
+  const SPLAY = {
+    elbow: 0.84, wrist: 0.74,
+    knee: 1.08, ankle: 1.23
+  };
+
+  // Nobody stands with locked knees, least of all somebody guarding you. The
+  // hips ride this fraction lower than a fully extended leg would put them,
+  // which the IK solver turns into a real bend at the knee and ankle.
+  const REST_CROUCH = 0.05;
+  const REST_HIP = (BONE.thigh + BONE.shin) * (1 - REST_CROUCH);
+  const REF_HEIGHT = REST_HIP + BONE.torso + BONE.neck + BONE.headR;
   const HEIGHT_LO = 4.5;
   const HEIGHT_HI = 5.55;
+
+  /* Limb thicknesses, in reference units, as {proximal, distal} pairs. Real
+   * limbs are cones, not pipes — the taper from hip to knee and from calf to
+   * ankle is most of what separates a leg from a broom handle. */
+  const GIRTH = {
+    thigh: [0.098, 0.070], calf: [0.078, 0.042], knee: 0.072, ankle: 0.048,
+    upperArm: [0.070, 0.050], forearm: [0.056, 0.034], elbow: 0.052,
+    deltoid: 0.076, sleeve: [0.082, 0.068],
+    waist: 0.170, chest: 0.186, chestDepth: 0.62,
+    shortsTop: 0.180, shortsLeg: [0.138, 0.120], shortsDepth: 0.78,
+    neck: [0.064, 0.072], yoke: 0.084, yokeW: 0.62
+  };
+  /* How far the shorts hang down the thigh, and where the jersey's sleeve
+   * starts and ends along the upper arm. */
+  const SHORTS_DROP = 0.55;
+  const SLEEVE_TOP = 0.20;
+  const SLEEVE_HEM = 0.44;
 
   /**
    * Two-bone IK. Given a fixed origin (hip/shoulder) and a target position
@@ -1049,62 +1096,118 @@
         return out;
       }
 
-      const A = TMP_P0, B = TMP_P1, D = TMP_P2;
+      const A = TMP_P0, B = TMP_P1, D = TMP_P2, E = TMP_P3, F = TMP_P4;
       const hipLean = p.hipLean * 0.45 + leanF;
       const torsoLean = p.torsoLean * 0.45 + leanF;
+      const G = GIRTH;
 
-      /* ------------------------------------------------------------- legs */
+      /* ------------------------------------------------------------- legs
+       * Bare skin from hip to ankle, tapered the whole way down, with the
+       * shorts drawn over the top half of the thigh as their own garment
+       * rather than being implied by a change of colour. */
       for (const leg of LEGS) {
         const knee = leg.side < 0 ? p.kneeL : p.kneeR;
         const w = leg.side * BONE.hipW;
         pt(A, 0, p.hipY, 0, w, hipLean);
-        pt(B, knee.jx, knee.jy, w, w, hipLean);
-        pt(D, knee.ex, knee.ey, w, w, hipLean);
+        pt(B, knee.jx, knee.jy, w, w * SPLAY.knee, hipLean);
+        pt(D, knee.ex, knee.ey, w, leg.side * BONE.stance, hipLean);
 
-        S3.limb(A[0], A[1], A[2], B[0], B[1], B[2], 0.115 * s, shorts, 0.06);
-        S3.limb(B[0], B[1], B[2], D[0], D[1], D[2], 0.082 * s, skin, 0.14);
+        S3.bone(A[0], A[1], A[2], B[0], B[1], B[2],
+                G.thigh[0] * s, G.thigh[1] * s, skin, 0.12);
+        S3.bone(B[0], B[1], B[2], D[0], D[1], D[2],
+                G.calf[0] * s, G.calf[1] * s, skin, 0.14);
+        S3.sphere(B[0], B[1], B[2], G.knee * s, skin, 0.10);
+        S3.sphere(D[0], D[1], D[2], G.ankle * s, skin, 0.12);
+
+        // Shorts leg, hanging to just above the knee.
+        mixPt(E, A, B, SHORTS_DROP);
+        S3.trunk(A[0], A[1], A[2], E[0], E[1], E[2],
+                 G.shortsLeg[0] * s, G.shortsLeg[1] * s, G.shortsDepth,
+                 rx, ry, shorts, 0.06);
 
         /* Shoe: a flat box aligned with the direction of travel. */
-        S3.box(D[0] + fx * 0.06 * s, D[1] + fy * 0.06 * s, this.z + 0.055 * s,
-               0.34 * s, 0.19 * s, 0.11 * s, this.facing, shoe, 0.25);
-        S3.box(D[0] + fx * 0.10 * s, D[1] + fy * 0.10 * s, this.z + 0.10 * s,
-               0.16 * s, 0.17 * s, 0.07 * s, this.facing, trim, 0.2);
+        S3.box(D[0] + fx * 0.05 * s, D[1] + fy * 0.05 * s, this.z + 0.048 * s,
+               0.30 * s, 0.115 * s, 0.096 * s, this.facing, shoe, 0.25);
+        S3.box(D[0] + fx * 0.09 * s, D[1] + fy * 0.09 * s, this.z + 0.088 * s,
+               0.14 * s, 0.105 * s, 0.055 * s, this.facing, trim, 0.2);
       }
 
-      /* ------------------------------------------------- pelvis and torso */
-      pt(A, 0, p.hipY, 0, 0, hipLean);
-      pt(B, 0, p.shoulderY, 0, 0, torsoLean);
-      S3.limb(A[0], A[1], A[2], B[0], B[1], B[2], 0.30 * s, jersey, 0.10);
-      // Shorts block: a slightly wider band around the hips.
-      pt(D, 0, p.hipY - 0.10, 0, 0, hipLean);
-      S3.limb(A[0], A[1], A[2], D[0], D[1], D[2], 0.34 * s, shorts, 0.06);
-      // Chest number band, a flat plate sitting proud of the jersey.
-      pt(D, 0, p.shoulderY + 0.16, 0, 0, torsoLean);
-      S3.box(D[0] + fx * 0.20 * s, D[1] + fy * 0.20 * s, D[2],
-             0.06 * s, 0.34 * s, 0.30 * s, this.facing, trim, 0.15);
+      /* ------------------------------------------------- pelvis and torso
+       * The torso is an ellipse in cross-section — twice as wide as it is
+       * deep — and widens from the waist to the chest. Both segments overrun
+       * their joints slightly so the primitive's pinched end caps fall
+       * outside the body instead of narrowing the hips and shoulders. */
+      pt(A, 0, p.hipY + 0.055, 0, 0, hipLean);
+      pt(B, 0, p.shoulderY - 0.055, 0, 0, torsoLean);
+      S3.trunk(A[0], A[1], A[2], B[0], B[1], B[2],
+               G.waist * s, G.chest * s, G.chestDepth, rx, ry, jersey, 0.10);
 
-      /* ------------------------------------------------------------- arms */
+      // Shorts: the seat, plus a waistband in the second team colour.
+      pt(A, 0, p.hipY + 0.075, 0, 0, hipLean);
+      pt(B, 0, p.hipY - 0.105, 0, 0, hipLean);
+      S3.trunk(A[0], A[1], A[2], B[0], B[1], B[2],
+               G.shortsLeg[0] * s, G.shortsTop * s, G.shortsDepth,
+               rx, ry, shorts, 0.06);
+      pt(A, 0, p.hipY - 0.075, 0, 0, hipLean);
+      pt(B, 0, p.hipY - 0.130, 0, 0, hipLean);
+      S3.trunk(A[0], A[1], A[2], B[0], B[1], B[2],
+               G.shortsTop * s, G.shortsTop * 0.94 * s, G.shortsDepth,
+               rx, ry, trim, 0.12);
+
+      // Shoulder yoke: the fabric across the traps, stopping short of the
+      // deltoids so the armholes of a sleeveless jersey stay open.
+      const yw = BONE.shoulderW * G.yokeW;
+      pt(A, 0, p.shoulderY - 0.022, 0, -yw, torsoLean);
+      pt(B, 0, p.shoulderY - 0.022, 0, yw, torsoLean);
+      S3.bone(A[0], A[1], A[2], B[0], B[1], B[2], G.yoke * s, G.yoke * s, jersey, 0.10);
+
+      // Chest number, a flat plate sitting proud of the jersey.
+      pt(D, 0, p.shoulderY + 0.235, 0, 0, torsoLean);
+      S3.box(D[0] + fx * G.chest * 0.58 * s, D[1] + fy * G.chest * 0.58 * s, D[2],
+             0.04 * s, 0.155 * s, 0.145 * s, this.facing, trim, 0.15);
+
+      /* ------------------------------------------------------------- arms
+       * Bare arms with a short jersey cap over the deltoid — the armhole of a
+       * tank sits below the shoulder, so anything more than that reads as a
+       * long-sleeve shirt nobody plays in. */
       for (const arm of ARMS) {
         const el = arm.side < 0 ? p.elbowL : p.elbowR;
         const w = arm.side * BONE.shoulderW;
         pt(A, 0, p.shoulderY, 0, w, torsoLean);
-        pt(B, el.jx, el.jy, w, w, torsoLean);
-        pt(D, el.ex, el.ey, w, w, torsoLean);
+        pt(B, el.jx, el.jy, w, w * SPLAY.elbow, torsoLean);
+        pt(D, el.ex, el.ey, w, w * SPLAY.wrist, torsoLean);
 
-        S3.sphere(A[0], A[1], A[2], 0.125 * s, jersey, 0.10);
-        S3.limb(A[0], A[1], A[2], B[0], B[1], B[2], 0.095 * s, jersey, 0.08);
-        S3.limb(B[0], B[1], B[2], D[0], D[1], D[2], 0.068 * s, skin, 0.16);
-        S3.sphere(D[0], D[1], D[2], 0.072 * s, skin, 0.18);
+        S3.sphere(A[0], A[1], A[2], G.deltoid * s, skin, 0.14);
+        S3.bone(A[0], A[1], A[2], B[0], B[1], B[2],
+                G.upperArm[0] * s, G.upperArm[1] * s, skin, 0.14);
+        S3.sphere(B[0], B[1], B[2], G.elbow * s, skin, 0.12);
+        S3.bone(B[0], B[1], B[2], D[0], D[1], D[2],
+                G.forearm[0] * s, G.forearm[1] * s, skin, 0.16);
+
+        mixPt(E, A, B, SLEEVE_TOP);
+        mixPt(F, A, B, SLEEVE_HEM);
+        S3.bone(E[0], E[1], E[2], F[0], F[1], F[2],
+                G.sleeve[0] * s, G.sleeve[1] * s, jersey, 0.08);
+
+        // Hand: flattened along the forearm rather than a ball on a stick.
+        S3.blob(D[0], D[1], D[2], 0.062 * s, 0.038 * s, 0.072 * s,
+                this.facing, skin, 0.18);
       }
 
-      /* ------------------------------------------------------------- head */
+      /* ------------------------------------------------------------- head
+       * An ellipsoid, not a sphere: a head is tallest top-to-bottom, deeper
+       * front-to-back than it is wide, and at this scale it is a sixteenth of
+       * the figure's height rather than the fifth it used to be. */
       pt(A, 0, p.shoulderY, 0, 0, torsoLean);
-      pt(B, 0, p.headY - BONE.headR * 0.9, 0, 0, torsoLean);
-      S3.limb(A[0], A[1], A[2], B[0], B[1], B[2], 0.10 * s, skin, 0.12);
-      S3.sphere(B[0], B[1], B[2], BONE.headR * 1.02 * s, skin, 0.20);
-      // Hair cap, offset back from the face so the head has a front and back.
-      S3.sphere(B[0] - fx * 0.04 * s, B[1] - fy * 0.04 * s, B[2] + 0.05 * s,
-                BONE.headR * 0.95 * s, skinDark, 0.10);
+      pt(B, 0, p.headY, 0, 0, torsoLean);
+      mixPt(E, A, B, 0.72);
+      S3.bone(A[0], A[1], A[2], E[0], E[1], E[2],
+              G.neck[0] * s, G.neck[1] * s, skin, 0.12);
+      const headH = BONE.headR * 2 * s;
+      S3.blob(B[0], B[1], B[2], headH * 0.83, headH * 0.68, headH, this.facing, skin, 0.20);
+      // Hair, offset back and up so the head has a face and a crown.
+      S3.blob(B[0] - fx * 0.020 * s, B[1] - fy * 0.020 * s, B[2] + 0.022 * s,
+              headH * 0.80, headH * 0.68, headH * 0.86, this.facing, skinDark, 0.10);
 
       if (this.human) {
         // Selection ring: a flat disc under the controlled player.
@@ -1130,61 +1233,89 @@
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
 
-      const bar = (x1, y1, x2, y2, w, col) => {
-        ctx.strokeStyle = col;
-        ctx.lineWidth = w;
+      /**
+       * A tapered bar. Canvas strokes are a fixed width, so the taper is drawn
+       * as a filled quad with a round cap at each end — the flat equivalent of
+       * what the vertex shader does to the 3D limb.
+       */
+      const bar = (x1, y1, x2, y2, w1, w2, col) => {
+        const dx = x2 - x1, dy = y2 - y1;
+        const len = Math.hypot(dx, dy) || 1;
+        const nx = -dy / len, ny = dx / len;
+        ctx.fillStyle = col;
         ctx.beginPath();
-        ctx.moveTo(x1, y1);
-        ctx.lineTo(x2, y2);
-        ctx.stroke();
+        ctx.moveTo(x1 + nx * w1, y1 + ny * w1);
+        ctx.lineTo(x2 + nx * w2, y2 + ny * w2);
+        ctx.arc(x2, y2, w2, Math.atan2(ny, nx), Math.atan2(-ny, -nx), true);
+        ctx.lineTo(x1 - nx * w1, y1 - ny * w1);
+        ctx.arc(x1, y1, w1, Math.atan2(-ny, -nx), Math.atan2(ny, nx), true);
+        ctx.closePath();
+        ctx.fill();
+      };
+      const dot = (x, y, r, col) => {
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
       };
 
+      const G = GIRTH;
       const skin = this.skin;
       const shorts = U.shade(this.jerseyMain, -0.08);
       const jersey = this.jerseyMain;
 
-      /* legs */
+      /* legs: bare and tapered, with the shorts over the top of the thigh */
       for (const side of [-1, 1]) {
         const k = side < 0 ? p.kneeL : p.kneeR;
         const hx = side * BONE.hipW;
-        bar(hx, p.hipY, k.jx, k.jy, 0.23, shorts);
-        bar(k.jx, k.jy, k.ex, k.ey, 0.165, skin);
+        bar(hx, p.hipY, k.jx, k.jy, G.thigh[0], G.thigh[1], skin);
+        bar(k.jx, k.jy, k.ex, k.ey, G.calf[0], G.calf[1], skin);
+        dot(k.jx, k.jy, G.knee, skin);
+        bar(hx, p.hipY,
+            hx + (k.jx - hx) * SHORTS_DROP, p.hipY + (k.jy - p.hipY) * SHORTS_DROP,
+            G.shortsLeg[0], G.shortsLeg[1], shorts);
         ctx.fillStyle = PAL.chalk;
         ctx.beginPath();
         ctx.ellipse(k.ex + 0.02, k.ey + 0.02, 0.10, 0.045, 0, 0, Math.PI * 2);
         ctx.fill();
       }
 
-      /* torso */
-      bar(0, p.hipY, 0, p.shoulderY, 0.60, jersey);
-      bar(0, p.hipY + 0.02, 0, p.hipY - 0.10, 0.66, shorts);
+      /* torso: waist to chest, plus the shorts seat and waistband */
+      bar(0, p.hipY + 0.055, 0, p.shoulderY - 0.055, G.waist, G.chest, jersey);
+      bar(0, p.hipY + 0.075, 0, p.hipY - 0.105, G.shortsLeg[0], G.shortsTop, shorts);
+      bar(0, p.hipY - 0.075, 0, p.hipY - 0.130, G.shortsTop, G.shortsTop * 0.94,
+          this.jerseyTrim);
+      bar(-BONE.shoulderW * G.yokeW, p.shoulderY, BONE.shoulderW * G.yokeW, p.shoulderY,
+          G.yoke, G.yoke, jersey);
 
-      /* arms */
+      /* arms: bare, with a jersey cap over the deltoid */
       for (const side of [-1, 1]) {
         const e = side < 0 ? p.elbowL : p.elbowR;
         const sx = side * BONE.shoulderW;
-        bar(sx, p.shoulderY, e.jx, e.jy, 0.19, jersey);
-        bar(e.jx, e.jy, e.ex, e.ey, 0.135, skin);
-        ctx.fillStyle = skin;
-        ctx.beginPath();
-        ctx.arc(e.ex, e.ey, 0.072, 0, Math.PI * 2);
-        ctx.fill();
+        dot(sx, p.shoulderY, G.deltoid, skin);
+        bar(sx, p.shoulderY, e.jx, e.jy, G.upperArm[0], G.upperArm[1], skin);
+        bar(e.jx, e.jy, e.ex, e.ey, G.forearm[0], G.forearm[1], skin);
+        bar(sx + (e.jx - sx) * SLEEVE_TOP, p.shoulderY + (e.jy - p.shoulderY) * SLEEVE_TOP,
+            sx + (e.jx - sx) * SLEEVE_HEM, p.shoulderY + (e.jy - p.shoulderY) * SLEEVE_HEM,
+            G.sleeve[0], G.sleeve[1], jersey);
+        dot(e.ex, e.ey, 0.05, skin);
       }
 
       /* head */
-      bar(0, p.shoulderY, 0, p.headY, 0.20, skin);
+      bar(0, p.shoulderY, 0, p.headY + BONE.headR * 0.5, G.neck[0], G.neck[1], skin);
       ctx.fillStyle = skin;
       ctx.beginPath();
-      ctx.arc(0, p.headY - BONE.headR * 0.5, BONE.headR, 0, Math.PI * 2);
+      ctx.ellipse(0, p.headY, BONE.headR * 0.78, BONE.headR, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = U.shade(this.skin, -0.32);
       ctx.beginPath();
-      ctx.arc(0, p.headY - BONE.headR * 0.62, BONE.headR * 0.98, Math.PI * 1.02, Math.PI * 1.98);
+      ctx.ellipse(0, p.headY - BONE.headR * 0.10, BONE.headR * 0.76, BONE.headR * 0.92,
+                  0, Math.PI * 1.02, Math.PI * 1.98);
       ctx.fill();
 
       /* jersey trim flash so the second team colour is visible in the panel */
       ctx.fillStyle = this.jerseyTrim;
-      ctx.fillRect(-0.18, p.shoulderY + 0.14, 0.36, 0.10);
+      ctx.fillRect(-0.10, p.shoulderY + 0.13, 0.20, 0.14);
 
       ctx.restore();
     }
@@ -1215,15 +1346,22 @@
       const speedFrac = U.clamp01(speed / top);
       const running = speed > 0.35 && !this.jumping;
 
-      const hipY = -(BONE.thigh + BONE.shin);
+      // REST_HIP sits below a fully extended leg, so the solver puts a real
+      // bend in both knees even when the player is doing nothing. Standing
+      // locked out is the single thing that most makes a figure look like a
+      // mannequin instead of an athlete waiting for the ball.
+      const hipY = -REST_HIP;
       let shoulderY = hipY - BONE.torso;
-      let torsoLean = 0;
+      // Athletes carry a few degrees of forward lean at rest — weight over the
+      // balls of the feet, ready to move, never stacked bolt upright.
+      let torsoLean = 0.025;
       let hipLean = null; // null = "follow torsoLean", set explicitly to diverge (real twist)
 
       let flX = -BONE.hipW, flY = 0;
       let frX = BONE.hipW, frY = 0;
-      let hlX = -0.32, hlY = hipY + 0.34;
-      let hrX = 0.32, hrY = hipY + 0.34;
+      // Hands hang just inside full extension so the elbows keep a soft bend.
+      let hlX = -0.30, hlY = hipY + 0.02;
+      let hrX = 0.30, hrY = hipY + 0.02;
 
       /* ---- locomotion base layer: run cycle, or idle breathing/sway ------ */
       if (running) {
@@ -1237,11 +1375,15 @@
         frX = BONE.hipW + swingR * strideLen;
         frY = -Math.max(0, swingR) * lift;
 
+        // The swing runs from a straight trailing arm at the hip up to a
+        // sharply bent lead arm at chest height — the range has to stay inside
+        // the arm's actual reach or the IK clamps it and both arms lock rigid.
         const armSwing = U.lerp(0.22, 0.58, speedFrac);
+        const armPump = U.lerp(0.16, 0.36, speedFrac);
         hlX = -0.30 + Math.sin(phase) * armSwing * 0.46;
-        hlY = hipY + 0.30 - Math.max(0, Math.sin(phase)) * 0.28;
+        hlY = hipY + 0.12 - Math.max(0, Math.sin(phase)) * armPump;
         hrX = 0.30 + Math.sin(phase + Math.PI) * armSwing * 0.46;
-        hrY = hipY + 0.30 - Math.max(0, Math.sin(phase + Math.PI)) * 0.28;
+        hrY = hipY + 0.12 - Math.max(0, Math.sin(phase + Math.PI)) * armPump;
 
         // A touch of vertical bob and stride-linked hip counter-rotation —
         // the shoulders lead a full sprint slightly ahead of the hips.
@@ -1287,8 +1429,8 @@
       if (this.hasBall && !this.isBusyShooting) {
         const c = (Math.cos(this.dribblePhase * Math.PI * 2) + 1) * 0.5; // 1=held high, 0=at the bounce
         hrX = 0.32;
-        hrY = U.lerp(hipY + 0.58, hipY + 0.20, c);
-        hlX = 0.10; hlY = hipY + 0.40; // guide hand stays close, out of the way
+        hrY = U.lerp(hipY + 0.16, hipY - 0.08, c);
+        hlX = -0.04; hlY = hipY + 0.04; // guide hand stays close, out of the way
       }
 
       /* ---- dribble moves: crossover / behind-the-back / spin / hesitation -
@@ -1363,8 +1505,8 @@
         // chest, with a slight backward counter-lean before the drive up.
         flY = U.lerp(flY, -0.05, k); frY = U.lerp(frY, -0.05, k);
         flX = U.lerp(flX, -BONE.hipW * 0.7, k); frX = U.lerp(frX, BONE.hipW * 0.7, k);
-        hlX = U.lerp(hlX, -0.14, k); hlY = U.lerp(hlY, hipY + 0.42, k);
-        hrX = U.lerp(hrX, 0.14, k); hrY = U.lerp(hrY, hipY + 0.42, k);
+        hlX = U.lerp(hlX, -0.14, k); hlY = U.lerp(hlY, hipY - 0.16, k);
+        hrX = U.lerp(hrX, 0.14, k); hrY = U.lerp(hrY, hipY - 0.16, k);
         shoulderY += 0.07 * k;
         torsoLean = -0.03 * k;
 
@@ -1373,9 +1515,9 @@
         // Higher release point, arm driven closer to full lockout, a
         // visible forward head/shoulder reach at the top of the motion.
         hrX = U.lerp(0.14, 0.24, v);
-        hrY = U.lerp(hipY + 0.42, shoulderY - 0.72, v);
+        hrY = U.lerp(hipY - 0.14, shoulderY - 0.72, v);
         hlX = U.lerp(-0.14, 0.10, v);
-        hlY = U.lerp(hipY + 0.42, shoulderY - 0.36, v);
+        hlY = U.lerp(hipY - 0.14, shoulderY - 0.36, v);
         if (this.jumping) {
           flX = -0.04; frX = 0.04;
           flY = frY = U.lerp(-0.12, 0.06, v);
@@ -1543,11 +1685,25 @@
   /* Scratch world points for draw(). Shared across every player because the
    * whole figure is submitted synchronously inside one draw() call. */
   const TMP_P0 = [0, 0, 0], TMP_P1 = [0, 0, 0], TMP_P2 = [0, 0, 0];
+  const TMP_P3 = [0, 0, 0], TMP_P4 = [0, 0, 0];
+
+  /** Point `t` of the way from world point a to world point b. */
+  function mixPt(out, a, b, t) {
+    out[0] = a[0] + (b[0] - a[0]) * t;
+    out[1] = a[1] + (b[1] - a[1]) * t;
+    out[2] = a[2] + (b[2] - a[2]) * t;
+    return out;
+  }
+
   const LEGS = [{ side: -1 }, { side: 1 }];
   const ARMS = [{ side: -1 }, { side: 1 }];
   const MINT = [0.133, 0.894, 0.627, 0.85];
 
   Player.ACTION = ACTION;
+  /* Exposed so tools/preview_player.js can measure the built figure against
+   * real anatomical proportions rather than trusting the constants by eye. */
+  Player.BONE = BONE;
+  Player.GIRTH = GIRTH;
   Player.RATING_KEYS = RATING_KEYS;
   Player.TENDENCY_KEYS = TENDENCY_KEYS;
   Player.computeOverall = computeOverall;

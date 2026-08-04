@@ -331,8 +331,62 @@ console.log('\n[5] 5v5 scene');
   check('gl clean in 5v5', o.glError === 0, 'code=' + o.glError);
 }
 
+console.log('\n[6] player creator preview');
+{
+  const r = runInPage(`
+    var BB = window.BB;
+    // The creator panel draws the figure into its own 2D canvas, outside the
+    // single WebGL context, so nothing else in this file exercises it.
+    var cv = document.createElement('canvas');
+    cv.width = 240; cv.height = 360;
+    var ctx = cv.getContext('2d');
+    var pl = new BB.Player({ height: 79, jerseyMain: '#2E5BFF', jerseyTrim: '#FF6A2E' });
+    pl._updatePose(1 / 60);
+
+    ctx.save();
+    ctx.translate(120, 330);
+    ctx.scale(150, 150);
+    pl.drawPreview(ctx);
+    ctx.restore();
+
+    // Count how much of the panel the figure covers and how many distinct
+    // colours it used: a silhouette that vanished or collapsed to one flat
+    // shape fails both, which is what a broken taper or a bad transform looks
+    // like from outside.
+    var d = ctx.getImageData(0, 0, cv.width, cv.height).data;
+    var painted = 0, cols = {};
+    for (var i = 0; i < d.length; i += 4) {
+      if (d[i + 3] > 12) {
+        painted++;
+        cols[(d[i] >> 4) + ',' + (d[i + 1] >> 4) + ',' + (d[i + 2] >> 4)] = 1;
+      }
+    }
+    // Vertical extent of the drawing, as a fraction of the panel.
+    var top = -1, bot = -1;
+    for (var y = 0; y < cv.height; y++) {
+      for (var x = 0; x < cv.width; x++) {
+        if (d[(y * cv.width + x) * 4 + 3] > 12) { if (top < 0) top = y; bot = y; break; }
+      }
+    }
+    return {
+      coverage: painted / (cv.width * cv.height),
+      colors: Object.keys(cols).length,
+      spanFrac: top < 0 ? 0 : (bot - top) / cv.height,
+      pageErr: window.__pageErr || null
+    };
+  `, 'probe');
+  if (r.err) check('creator preview probe ran', false, r.err);
+  const o = r.out || {};
+  check('preview draws without errors', !o.pageErr, o.pageErr);
+  check('preview paints a figure', o.coverage > 0.04 && o.coverage < 0.6,
+        'coverage=' + (o.coverage || 0).toFixed(3));
+  check('preview uses skin, jersey, shorts and trim', o.colors >= 4, 'colors=' + o.colors);
+  check('preview figure spans the panel', o.spanFrac > 0.5,
+        'span=' + (o.spanFrac || 0).toFixed(2));
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[6] screenshots');
+  console.log('\n[7] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],

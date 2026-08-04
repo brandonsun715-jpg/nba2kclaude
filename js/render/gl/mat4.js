@@ -153,30 +153,48 @@
      * given radius. This is how every limb, rim tube and net strand is placed:
      * one primitive, one matrix, no per-frame geometry rebuilds.
      *
+     * The cross-section can be made elliptical rather than round, which is what
+     * turns a tube into a torso: a chest is roughly twice as wide as it is deep.
+     * That only means something if the ellipse is oriented, so `ref` names the
+     * direction the WIDE axis should point — for a player, their right. Without
+     * it the basis is seeded from whichever world axis the segment is least
+     * aligned with, which is stable but arbitrary, and fine for a round tube.
+     *
      * @param {Float32Array} out
      * @param {Float32Array} a start point (GL space)
      * @param {Float32Array} b end point (GL space)
-     * @param {number} radius half-thickness across X and Z
+     * @param {number} radius half-thickness across the local X axis
+     * @param {number} [radiusZ=radius] half-thickness across the local Z axis
+     * @param {Float32Array} [ref] direction to align local X with (GL space)
      */
-    fromSegment(out, a, b, radius) {
+    fromSegment(out, a, b, radius, radiusZ, ref) {
       let dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
       let len = Math.hypot(dx, dy, dz);
       if (len < 1e-6) { dx = 0; dy = 1; dz = 0; len = 1e-6; }
       const uy = [dx / len, dy / len, dz / len];
 
-      // Any vector not parallel to the segment works as the seed for the
-      // orthonormal basis; picking the world axis the segment is least
-      // aligned with keeps the cross products numerically stable.
-      const ax = Math.abs(uy[0]), ay = Math.abs(uy[1]), az = Math.abs(uy[2]);
-      let sx = 0, sy = 0, sz = 0;
-      if (ax <= ay && ax <= az) sx = 1; else if (ay <= az) sy = 1; else sz = 1;
-
-      let ux = [
-        sy * uy[2] - sz * uy[1],
-        sz * uy[0] - sx * uy[2],
-        sx * uy[1] - sy * uy[0]
-      ];
-      let l = Math.hypot(ux[0], ux[1], ux[2]);
+      let ux;
+      if (ref) {
+        // Gram-Schmidt: strip whatever part of `ref` runs along the segment and
+        // keep the remainder as the wide axis.
+        const d = ref[0] * uy[0] + ref[1] * uy[1] + ref[2] * uy[2];
+        ux = [ref[0] - uy[0] * d, ref[1] - uy[1] * d, ref[2] - uy[2] * d];
+      }
+      let l = ux ? Math.hypot(ux[0], ux[1], ux[2]) : 0;
+      if (l < 1e-5) {
+        // No usable reference (or it was parallel to the segment). Any vector
+        // not parallel works as the seed; picking the world axis the segment is
+        // least aligned with keeps the cross products numerically stable.
+        const ax = Math.abs(uy[0]), ay = Math.abs(uy[1]), az = Math.abs(uy[2]);
+        let sx = 0, sy = 0, sz = 0;
+        if (ax <= ay && ax <= az) sx = 1; else if (ay <= az) sy = 1; else sz = 1;
+        ux = [
+          sy * uy[2] - sz * uy[1],
+          sz * uy[0] - sx * uy[2],
+          sx * uy[1] - sy * uy[0]
+        ];
+        l = Math.hypot(ux[0], ux[1], ux[2]);
+      }
       ux = [ux[0] / l, ux[1] / l, ux[2] / l];
 
       const uz = [
@@ -185,9 +203,10 @@
         ux[0] * uy[1] - ux[1] * uy[0]
       ];
 
+      const rz = radiusZ == null ? radius : radiusZ;
       out[0] = ux[0] * radius * 2; out[1] = ux[1] * radius * 2; out[2] = ux[2] * radius * 2; out[3] = 0;
       out[4] = uy[0] * len;        out[5] = uy[1] * len;        out[6] = uy[2] * len;        out[7] = 0;
-      out[8] = uz[0] * radius * 2; out[9] = uz[1] * radius * 2; out[10] = uz[2] * radius * 2; out[11] = 0;
+      out[8] = uz[0] * rz * 2;     out[9] = uz[1] * rz * 2;     out[10] = uz[2] * rz * 2;    out[11] = 0;
       out[12] = (a[0] + b[0]) * 0.5;
       out[13] = (a[1] + b[1]) * 0.5;
       out[14] = (a[2] + b[2]) * 0.5;

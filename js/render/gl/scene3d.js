@@ -37,6 +37,10 @@
 
   uniform mat4 u_viewProj;
   uniform float u_time;
+  // Per-draw reinterpretation of a_params.w, so one shared attribute can mean
+  // two different things without a second vertex format:
+  //   0  nothing  1  crowd bob amplitude  2  limb end-radius ratio
+  uniform float u_shapeMode;
 
   out vec3 v_world;
   out vec3 v_normal;
@@ -45,16 +49,40 @@
   out vec4 v_params;
 
   void main() {
+    vec3 pos = a_pos;
+    vec3 nrm = a_normal;
+
+    // Limb taper. The segment primitive is lathed around local Y with uv.y
+    // running 0 at the start cap to 1 at the end cap, so scaling the radial
+    // components by a ratio that walks from 1 to a_params.w turns a uniform
+    // tube into a real thigh (thick at the hip, narrow at the knee) or calf.
+    if (u_shapeMode > 1.5) {
+      float ratio = a_params.w;
+      float k = mix(1.0, ratio, a_uv.y);
+      pos.xz *= k;
+      // The lathed normal is (cos, -R', sin) for profile radius R(y). Scaling R
+      // by k(y) adds rho * dk/dy to the slope, and dk/dy is (ratio - 1) because
+      // the primitive is exactly one unit long. Skipped at the caps, where the
+      // radius has collapsed to zero and the normal already points along Y.
+      float c = length(a_normal.xz);
+      if (c > 1e-4) {
+        vec2 dir = a_normal.xz / c;
+        float slope = -a_normal.y / c;
+        float rho = length(a_pos.xz);
+        nrm = normalize(vec3(dir.x, -(slope * k + rho * (ratio - 1.0)), dir.y));
+      }
+    }
+
     mat4 model = mat4(a_m0, a_m1, a_m2, a_m3);
-    vec4 wp = model * vec4(a_pos, 1.0);
+    vec4 wp = model * vec4(pos, 1.0);
     // Crowd bob: params.z is a per-instance phase seed and params.w the
     // amplitude in feet. Doing it here means 1800 fans animate for free.
-    if (a_params.w > 0.0001) {
+    if (u_shapeMode > 0.5 && u_shapeMode < 1.5 && a_params.w > 0.0001) {
       wp.y += sin(u_time * 3.1 + a_params.z * 6.2831) * a_params.w;
     }
     v_world = wp.xyz;
     // Inverse-transpose so non-uniformly scaled limbs still light correctly.
-    v_normal = normalize(mat3(transpose(inverse(model))) * a_normal);
+    v_normal = normalize(mat3(transpose(inverse(model))) * nrm);
     v_uv = a_uv;
     v_color = a_color;
     v_params = a_params;
@@ -197,6 +225,7 @@
     _m: null,
     _a: new Float32Array(3),
     _b: new Float32Array(3),
+    _r: new Float32Array(3),
 
     /* Overflow counter, surfaced in the debug overlay. */
     dropped: 0,
@@ -254,7 +283,7 @@
      * array. Silently drops instances past capacity rather than reallocating
      * mid-frame, and counts the drop for the debug overlay.
      */
-    push(mesh, m, color, gloss, emissive, alpha) {
+    push(mesh, m, color, gloss, emissive, alpha, taper) {
       if (mesh.n >= mesh.capacity) { this.dropped++; return; }
       const d = mesh.data;
       let o = mesh.n * IF;
@@ -265,7 +294,8 @@
       d[o + 4] = gloss || 0;
       d[o + 5] = emissive || 0;
       d[o + 6] = 0;
-      d[o + 7] = 0;
+      // 1 means "same radius at both ends"; only the tapered-limb pass reads it.
+      d[o + 7] = taper == null ? 1 : taper;
       mesh.n++;
     },
 
@@ -299,6 +329,42 @@
                 blend ? color[3] : 1);
     },
 
+    /**
+     * Anatomical limb: a tube whose radius walks from `r0` at the first point
+     * to `r1` at the second. Real limbs are never uniform — a thigh is widest
+     * at the hip and narrowest at the knee, a calf bulges below the knee and
+     * collapses into the ankle — and that changing silhouette is most of what
+     * separates a body from a stack of pipes.
+     */
+    bone(x0, y0, z0, x1, y1, z1, r0, r1, color, gloss) {
+      const a = this._a, b = this._b;
+      a[0] = x0; a[1] = z0; a[2] = y0;
+      b[0] = x1; b[1] = z1; b[2] = y1;
+      M4.fromSegment(this._m, a, b, r0);
+      this.push(this.meshes.seg, this._m, color, gloss, 0, 1, r0 < 1e-5 ? 1 : r1 / r0);
+    },
+
+    /**
+     * Tapered limb with an elliptical cross-section — the torso, the shorts,
+     * the pelvis. A chest is about twice as wide as it is deep, and drawing it
+     * as a round tube is what makes a figure read as a snowman.
+     *
+     * @param {number} r0 half-WIDTH at the first point (across the body)
+     * @param {number} r1 half-width at the second point
+     * @param {number} depth front-to-back half-thickness as a fraction of the
+     *        width, 1 being a circular section
+     * @param {number} rx,ry the body's right axis in court space, which is the
+     *        direction the wide part of the ellipse points
+     */
+    trunk(x0, y0, z0, x1, y1, z1, r0, r1, depth, rx, ry, color, gloss) {
+      const a = this._a, b = this._b, r = this._r;
+      a[0] = x0; a[1] = z0; a[2] = y0;
+      b[0] = x1; b[1] = z1; b[2] = y1;
+      r[0] = rx; r[1] = 0; r[2] = ry;
+      M4.fromSegment(this._m, a, b, r0, r0 * depth, r);
+      this.push(this.meshes.seg, this._m, color, gloss, 0, 1, r0 < 1e-5 ? 1 : r1 / r0);
+    },
+
     /** Flat-capped cylinder between two points (poles, stanchions, railings). */
     tube(x0, y0, z0, x1, y1, z1, radius, color, gloss) {
       const a = this._a, b = this._b;
@@ -313,6 +379,19 @@
       M4.fromBox(this._m, x, z, y, radius * 2, radius * 2, radius * 2);
       this.push(blend ? this.meshes.sphereT : this.meshes.sphere, this._m, color,
                 gloss, emissive, blend ? color[3] : 1);
+    },
+
+    /**
+     * Yaw-rotated ellipsoid — same signature as box(), different primitive.
+     * A head is taller than it is deep and deeper than it is wide, so a plain
+     * sphere is the one shape it should never be.
+     *
+     * @param {number} sx size across court x, sy across court y, sz in height
+     */
+    blob(x, y, z, sx, sy, sz, yaw, color, gloss) {
+      if (yaw) M4.fromYRot(this._m, x, z, y, -yaw, sx, sz, sy);
+      else M4.fromBox(this._m, x, z, y, sx, sz, sy);
+      this.push(this.meshes.sphere, this._m, color, gloss, 0, 1);
     },
 
     /**
@@ -381,9 +460,13 @@
       gl.useProgram(this.progSolid.prog);
       this._setCommon(this.progSolid);
       GLX.drawMesh(m.box);
+      this._setShape(this.progSolid, 1);   // crowd bob
       GLX.drawMesh(m.crowd);
+      this._setShape(this.progSolid, 0);
       GLX.drawMesh(m.sphere);
+      this._setShape(this.progSolid, 2);   // limb taper
       GLX.drawMesh(m.seg);
+      this._setShape(this.progSolid, 0);
       GLX.drawMesh(m.cyl);
       GLX.drawMesh(m.torus);
       GLX.drawMesh(m.quad);
@@ -402,7 +485,9 @@
       this._setCommon(this.progSolid);
       gl.disable(gl.CULL_FACE);
       GLX.drawMesh(m.panelT);
+      this._setShape(this.progSolid, 2);
       GLX.drawMesh(m.segT);
+      this._setShape(this.progSolid, 0);
       GLX.drawMesh(m.boxT);
       GLX.drawMesh(m.sphereT);
       GLX.drawMesh(m.cylT);
@@ -412,8 +497,14 @@
       gl.disable(gl.BLEND);
     },
 
+    /** Switches what the shared a_params.w attribute means for the next draw. */
+    _setShape(p, mode) {
+      if (p.u.u_shapeMode) BB.GLX.gl.uniform1f(p.u.u_shapeMode, mode);
+    },
+
     _setCommon(p) {
       const gl = BB.GLX.gl;
+      this._setShape(p, 0);
       if (p.u.u_viewProj) gl.uniformMatrix4fv(p.u.u_viewProj, false, this._viewProj);
       if (p.u.u_eye) gl.uniform3fv(p.u.u_eye, this._eye);
       if (p.u.u_time) gl.uniform1f(p.u.u_time, this._time);
