@@ -122,6 +122,12 @@
     knee: 1.08, ankle: 1.23
   };
 
+  /* How far from the rim a sprinting drive can still take off for a layup, in
+   * feet. A real drive leaves the floor outside the restricted area (4ft) and
+   * covers the rest in the air, so this has to be comfortably past it or the
+   * shots that most want to be layups come out as jump shots. */
+  const LAYUP_TAKEOFF = 11;
+
   // Nobody stands with locked knees, least of all somebody guarding you. The
   // hips ride this fraction lower than a fully extended leg would put them,
   // which the IK solver turns into a real bend at the knee and ankle.
@@ -890,18 +896,37 @@
       const speed = Math.hypot(this.vx, this.vy);
       const driving = speed > this.phys.maxSpeed * 0.35;
 
+      /* Sprinting at the rim and pressing shoot is a LAYUP. Not a dice roll,
+       * not a jumper that happens to be taken close in — the one move the
+       * whole drive was for.
+       *
+       * Three conditions, all of them things the player can feel: they are
+       * sprinting, they are still carrying real speed, and they are pointed at
+       * the basket rather than drifting past it. LAYUP_TAKEOFF is how far out
+       * a takeoff can still cover — a drive is launched from outside the
+       * restricted area and floats in, so the old "within five feet" test
+       * turned exactly the shots that should be layups into jump shots. */
+      const toHoop = Math.atan2(hoop.y - this.y, hoop.x - this.x);
+      const headingAtRim = speed > 0.5 &&
+        Math.abs(U.angleDelta(toHoop, Math.atan2(this.vy, this.vx))) < 1.0;
+      const attacking = headingAtRim && dHoop <= LAYUP_TAKEOFF &&
+        (this.sprinting ? speed > this.phys.maxSpeed * 0.55    // holding sprint: take their word for it
+                        : speed > this.phys.maxSpeed * 0.85);  // otherwise they have to really be moving
+
       this.targetHoop = hoop;
       this.action = ACTION.GATHER;
       this.actionT = 0;
       this.armRaise = 0;
       this._shotFouled = false;
 
-      if (close) {
-        const wantsDunk = driving
-          ? U.rng.chance(this.phys.dunkChance)
-          : U.rng.chance(this.phys.dunkChance * 0.55);
+      if (attacking || close) {
+        /* A dunker still throws one down, but only with the rim right there.
+         * Past that the finish is a layup, so a drive from the free-throw line
+         * cannot come out as a standing dunk on a coin flip. */
+        const atRim = dHoop <= C.RESTRICTED_R * 0.9;
+        const wantsDunk = atRim && U.rng.chance(this.phys.dunkChance * (driving ? 1 : 0.55));
         this.shotType = wantsDunk ? 'dunk' : 'layup';
-        this.driving = driving;
+        this.driving = driving || attacking;
 
         // Finishing style: a euro step reads from driving at an angle across
         // the direct line to the rim (stepping around a defender); a hop
@@ -911,9 +936,8 @@
         // feel distinct from an open lane.
         this.layupStyle = 'standard';
         if (this.shotType === 'layup' && driving) {
-          const toHoopAngle = Math.atan2(hoop.y - this.y, hoop.x - this.x);
           const velAngle = Math.atan2(this.vy, this.vx);
-          const angleDiff = Math.abs(U.angleDelta(toHoopAngle, velAngle));
+          const angleDiff = Math.abs(U.angleDelta(toHoop, velAngle));
           if (angleDiff > 0.45) {
             this.layupStyle = 'euro';
           } else if (this.opponent && U.dist(this.x, this.y, this.opponent.x, this.opponent.y) < 4.2) {
@@ -961,7 +985,10 @@
           this.action = ACTION.METER;
           this.actionT = 0;
           if ((this.shotType === 'jumper' || this.shotType === 'freethrow') && !this.jumping) this._startJump(0.55);
-          if (this.shotType === 'layup') this._startJump(0.7);
+          // A driving layup leaves the floor harder than a standing one —
+          // that lift is what carries a takeoff from outside the paint all
+          // the way under the rim.
+          if (this.shotType === 'layup') this._startJump(this.driving ? 0.88 : 0.7);
           if (this.shotType === 'dunk') this._startJump(1.0);
           const p = this.handPosition(TMP_V);
           const baseProfile = this._profileFor(this.shotType);
@@ -1151,9 +1178,34 @@
         }
       }
 
-      if (this.hasBall && ball.owner === this && !this.isBusyShooting) {
-        const p = this.handPosition(TMP_V);
-        ball.place(p.x, p.y, p.z);
+      /* The ball rides in the hand right up to the launch — INCLUDING through
+       * the gather, the meter and the rise.
+       *
+       * It used to stop tracking the moment a shot began, which on a set jump
+       * shot nobody could see: the shooter barely moves between the gather and
+       * the release. On a drive it is glaring. The player takes off from ten
+       * feet out, sails in toward the rim, and the ball hangs in the air back
+       * where he left the floor until it teleports into his hand to launch.
+       * `_fireBall` clears ownership, so this stops on its own the instant the
+       * shot is actually away. */
+      if (this.hasBall && ball.owner === this) {
+        if (this.isBusyShooting) {
+          /* Winding up, the ball sits in the hand that is DRAWN.
+           *
+           * handPosition() answers with the release point instead, which is
+           * deliberately calibrated against the true-scale ten-foot rim rather
+           * than against the figure — the shot arc is computed from it. The
+           * figure is compressed to about five feet, so those two answers sit
+           * a couple of feet apart, and carrying the ball at the second one
+           * floats it above the player's head for the whole gather and rise.
+           * Gameplay still launches from the release point; only the carry
+           * moved. */
+          const h = this.handAt(TMP_V);
+          ball.place(h.x, h.y, h.z + C.BALL_RADIUS * 0.5);
+        } else {
+          const p = this.handPosition(TMP_V);
+          ball.place(p.x, p.y, p.z);
+        }
       }
 
       this._updatePose(dt);
@@ -1686,6 +1738,38 @@
         shoulderY += 0.07 * k;
         torsoLean = -0.03 * k;
 
+      } else if (this.action === A.METER && this.shotType === 'layup') {
+        /* The rise on a layup, held on the meter.
+         *
+         * This used to be the jump-shot pose: a driving finish squared up in
+         * mid-air, both hands over the head, feet together — the one shot in
+         * basketball that is never taken that way. A layup is asymmetric all
+         * the way through, and the shape reads before you have named it: the
+         * inside knee drives up hard, the trailing leg extends behind, the
+         * ball goes up on one side of the body away from the defender, the
+         * off hand comes off the ball, and the whole thing leans in toward
+         * the rim rather than sitting back off it. */
+        const v = U.clamp01(this.meter.value);
+        const rise = U.ease.outCubic(v);
+        const drive = this.driving ? 1 : 0.72;
+
+        // Knee drive and trailing leg — the engine of the finish.
+        flX = -BONE.hipW + 0.10 * rise;
+        flY = -0.46 * drive * rise;
+        frX = BONE.hipW - 0.16 * rise;
+        frY = 0.05 + 0.16 * rise;
+
+        // Ball up on the shooting side, off hand peeling away as it goes.
+        hrX = shR + U.lerp(0.10, 0.20, rise);
+        hrY = U.lerp(hipY + 0.16, shoulderY - 0.56, rise);
+        hlX = shL + U.lerp(0.12, 0.00, rise);
+        hlY = U.lerp(hipY + 0.06, shoulderY + 0.10, rise);
+        armRoll = 0.24 * (1 - rise);      // two hands on it early, one late
+
+        torsoLean = U.lerp(0.16, 0.03, rise);
+        hipLean = torsoLean * 0.4;
+        shoulderY -= 0.05 * rise;         // stretch up through the finish
+
       } else if (this.action === A.METER) {
         const v = U.clamp01(this.meter.value);
         // Higher release point, arm driven closer to full lockout, a
@@ -1726,8 +1810,19 @@
         torsoLean = -0.07 - snap * 0.03;
 
       } else if (this.action === A.LAYUP) {
+        /* The finish, from the instant the meter is let go.
+         *
+         * The rise above already carried the body up; this picks the figure up
+         * exactly where that left it rather than starting a new pose from
+         * nothing, which is what made the old layup snap. Three beats: the
+         * ball leaves the hand off the fingertips (the wrist flips at 0.22s,
+         * which is when _fireBall runs), the arm hangs at full extension for a
+         * moment, and then the knee comes down and the body squares up to
+         * land. */
         const k = U.clamp01(this.actionT / 0.5);
         const kneeUp = this.driving ? 1 : 0.6;
+        const flip = U.clamp01(this.actionT / 0.22);      // fingertips let go
+        const down = U.clamp01((this.actionT - 0.26) / 0.34);  // gather to land
 
         if (this.layupStyle === 'euro') {
           // Two lateral steps crossing the body before the gather — bigger
@@ -1754,15 +1849,25 @@
           torsoLean = 0.05 - k * 0.12;
 
         } else {
-          // Standard: a much bigger knee drive (the classic finishing
-          // silhouette) and a transition from two-hand protection to a
-          // one-hand extension right at the rim.
-          const oneHand = U.clamp01((k - 0.7) / 0.3);
-          flX = -0.03; flY = -0.42 * kneeUp * (1 - k * 0.25);
-          frX = 0.24; frY = 0.11 + k * 0.11;
-          hrX = shR + U.lerp(0.04, 0.16, k); hrY = U.lerp(hipY + 0.22, shoulderY - 0.68, k);
-          hlX = shL + U.lerp(0.04, -0.04, oneHand); hlY = U.lerp(shoulderY - 0.12, shoulderY - 0.30, oneHand);
-          torsoLean = 0.12 - k * 0.17;
+          /* The driving finish. Continues the rise: knee still up, trailing
+           * leg still extended, ball laid up off the fingers — then the legs
+           * come back under the body to land. */
+          flX = -BONE.hipW + 0.10 - 0.10 * down;
+          flY = -0.46 * kneeUp * (1 - down * 0.92);
+          frX = BONE.hipW - 0.16 + 0.16 * down;
+          frY = (0.21 - 0.21 * down) * (1 - down * 0.5);
+
+          // Full extension, then the wrist rolls over the ball and the arm
+          // rides back down as the body comes out of the air.
+          const reach = shoulderY - 0.56 - 0.02 * flip;
+          hrX = shR + U.lerp(0.20, 0.26, flip) - 0.20 * down;
+          hrY = U.lerp(reach, reachY(shoulderY, 0.70), down);
+          hlX = shL + 0.00 + 0.10 * down;
+          hlY = U.lerp(shoulderY + 0.10, reachY(shoulderY, 0.80), down);
+          armRoll = 0;
+
+          torsoLean = 0.03 + 0.06 * down;
+          hipLean = torsoLean * 0.4;
         }
 
       } else if (this.action === A.DUNK) {

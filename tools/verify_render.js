@@ -963,8 +963,135 @@ console.log('\n[14] the figure faces the way it is facing, and wears its own col
         'after repainting blue: ' + repaint.green + ' green px, ' + repaint.red + ' red px');
 }
 
+console.log('\n[15] a sprinting drive finishes with a layup');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, S = BB.Shooting;
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene;
+    for (var i = 0; i < 60; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+    var pl = scene.player, hoop = scene.hoop;
+    scene.ai.x = -80; scene.ai.y = -80; scene.ai.hasBall = false;
+
+    /** Sets up a drive from N feet out and asks what kind of shot it is. */
+    function attempt(dist, sprint, speedFrac) {
+      pl.placeAt(hoop.x - dist, hoop.y, 0);
+      pl.sprinting = sprint;
+      pl.vx = (sprint ? pl.phys.maxSprint : pl.phys.maxSpeed) * speedFrac;
+      pl.vy = 0; pl.z = 0; pl.jumping = false;
+      pl.action = null; pl.armRaise = 0; pl.hasBall = true;
+      pl._beginShot();
+      return pl.shotType;
+    }
+
+    var kinds = {
+      sprintNine: attempt(9, true, 0.9),
+      sprintSix: attempt(6, true, 0.9),
+      standingNine: attempt(9, false, 0),
+      standingLong: attempt(20, false, 0),
+      sprintTooFar: attempt(16, true, 0.9)
+    };
+
+    // Windows, for the same player, at the same rating scale.
+    var rt = pl.ratings;
+    var win = {
+      layup: S.greenWindowFor(rt.layup, 5, 'layup', 0),
+      layupContested: S.greenWindowFor(rt.layup, 5, 'layup', 1),
+      jumper: S.greenWindowFor(rt.midRange, 15, 'jumper', 0)
+    };
+
+    // Grade a spread of release timings: everything past a flick of the
+    // button should read green, which is what "just hold it" means.
+    var prof = { riseTime: 0.30, target: 0.94, greenWindow: win.layup, name: 'Layup' };
+    var green = ['PERFECT', 'EXCELLENT', 'SLIGHTLY_EARLY', 'SLIGHTLY_LATE'];
+    var timings = [0.25, 0.45, 0.7, 0.94, 1.15, 1.34];
+    var missed = timings.filter(function (v) {
+      return green.indexOf(S.grade(v, prof).tier.key) < 0;
+    });
+
+    /* The rise pose. A layup is asymmetric — one knee driven up, the trailing
+     * leg extended, the ball up on one side — and a jump shot is not, so the
+     * two poses have to measure differently or the layup is still a jumper
+     * wearing a different name. */
+    function poseOf(type) {
+      attempt(9, true, 0.9);
+      pl.action = BB.Player.ACTION.METER; pl.shotType = type; pl.driving = true;
+      pl.meter.start({ riseTime: 0.3, target: 0.94, greenWindow: 0.3, name: 'x' },
+                     { x: pl.x, y: pl.y, z: 0 });
+      pl.meter.value = 0.8;
+      pl._updatePose(1 / 60);
+      return {
+        knee: -pl.pose.footL.y,
+        split: Math.abs(pl.pose.footL.y - pl.pose.footR.y),
+        hands: Math.abs(pl.pose.handL.y - pl.pose.handR.y)
+      };
+    }
+    var layupPose = poseOf('layup'), jumperPose = poseOf('jumper');
+
+    /* End to end: drive, shoot, release mid-meter, and watch the ball. */
+    var made = 0, tries = 0;
+    for (var t = 0; t < 6; t++) {
+      var ball = scene.ball;
+      pl.placeAt(hoop.x - 9, hoop.y, 0);
+      pl.sprinting = true; pl.vx = pl.phys.maxSprint * 0.9; pl.vy = 0;
+      pl.z = 0; pl.jumping = false; pl.action = null; pl.armRaise = 0;
+      pl.giveBall(ball);
+      pl._beginShot();
+      var scored = false;
+      var off = ball.events.on('score', function () { scored = true; });
+      var fired = false;
+      for (var f = 0; f < 420; f++) {
+        scene.fixedUpdate(1 / 120);
+        if (!fired && pl.action === BB.Player.ACTION.METER && pl.meter.value > 0.35 + t * 0.12) {
+          pl._releaseShot(); fired = true;
+        }
+        if (scored) break;
+      }
+      if (typeof off === 'function') off();
+      ball.events.off && ball.events.off('score');
+      tries++; if (scored) made++;
+    }
+
+    return {
+      kinds: kinds,
+      win: { layup: +win.layup.toFixed(3), contested: +win.layupContested.toFixed(3),
+             jumper: +win.jumper.toFixed(3) },
+      missedTimings: missed,
+      layupPose: layupPose, jumperPose: jumperPose,
+      made: made, tries: tries,
+      pageErr: window.__pageErr || null
+    };
+  `, 'layup');
+  if (r.err) check('layup probe ran', false, r.err);
+  const o = r.out || {}, k = o.kinds || {}, w = o.win || {};
+  check('sprinting at the rim gives a layup, not a jumper',
+        k.sprintNine === 'layup' && k.sprintSix === 'layup',
+        'from 9ft: ' + k.sprintNine + ', from 6ft: ' + k.sprintSix);
+  check('standing in the same spot still gives a jump shot',
+        k.standingNine === 'jumper' && k.standingLong === 'jumper',
+        'from 9ft: ' + k.standingNine + ', from 20ft: ' + k.standingLong);
+  check('a drive from out of takeoff range is still a jumper',
+        k.sprintTooFar === 'jumper', 'from 16ft: ' + k.sprintTooFar);
+  check('the layup window is enormous next to a jumper', w.layup > w.jumper * 4,
+        'layup ' + w.layup + ' vs jumper ' + w.jumper);
+  check('a contest still tightens it', w.contested < w.layup * 0.7 && w.contested > w.jumper,
+        'contested ' + w.contested);
+  check('any real release on a layup reads green',
+        (o.missedTimings || []).length === 0,
+        'these timings did not: ' + JSON.stringify(o.missedTimings));
+  const lp = o.layupPose || {}, jp = o.jumperPose || {};
+  check('the layup rise drives a knee up', lp.knee > 0.3 && lp.knee > jp.knee * 3,
+        'layup knee ' + (lp.knee || 0).toFixed(2) + ' vs jumper ' + (jp.knee || 0).toFixed(2));
+  check('the layup rise is asymmetric, a jump shot is not',
+        lp.split > 0.4 && lp.hands > jp.hands,
+        'legs ' + (lp.split || 0).toFixed(2) + ' apart, hands ' + (lp.hands || 0).toFixed(2));
+  check('driving layups go in', o.made === o.tries,
+        o.made + ' of ' + o.tries + ' released across the meter');
+  check('layup probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[15] screenshots');
+  console.log('\n[16] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],

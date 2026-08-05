@@ -250,6 +250,26 @@
     const base = U.remap(U.clamp(rating == null ? 70 : rating, 25, 99), 25, 99, 0.022, 0.062);
     if (type === 'freethrow') return base; // always uncontested by rule
     const skill = U.clamp01(U.invLerp(25, 99, rating == null ? 70 : rating));
+
+    /* A layup's window is ENORMOUS, on purpose.
+     *
+     * The hard part of a layup is getting there — beating your man off the
+     * dribble, picking the takeoff, surviving the help. Once you are in the
+     * air a foot from the rim, asking for a sixtieth-of-a-second release is
+     * asking the wrong question, and it punishes the player for the one thing
+     * the drive was supposed to reward. So the bar goes almost entirely green:
+     * hold it through the rise, let go anywhere near the top, and it drops.
+     *
+     * What still decides a layup is the CONTEST. A body at the rim shrinks
+     * this hard, and solveShot keeps its own contest penalty on top, so
+     * driving into three defenders is still a bad idea — it is just no longer
+     * a timing minigame. */
+    if (type === 'layup') {
+      const w = U.remap(U.clamp(rating == null ? 70 : rating, 25, 99), 25, 99, 0.20, 0.34);
+      const c = U.clamp01(contest || 0);
+      return Math.max(0.05, w * (1 - c * 0.55));
+    }
+
     const difficulty = U.clamp01(U.remap(dist, 9, 32, 0, 1));
     const shrink = difficulty * U.lerp(0.82, 0.22, skill);
     let w = Math.max(0.006, base * (1 - shrink));
