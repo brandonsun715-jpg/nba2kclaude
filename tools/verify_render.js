@@ -804,8 +804,77 @@ console.log('\n[12] the front page carries every mode');
   check('front page raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[13] a created player starts at 60 and climbs');
+{
+  const r = runInPage(`
+    var BB = window.BB, P = BB.PlayerProfile;
+    BB.Engine.setState('menu'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene;
+    for (var i = 0; i < 40; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+
+    // Every build lands on the same starting overall — an archetype is a
+    // shape, not a head start, and a position is a set of ceilings.
+    var starts = [];
+    var archs = Object.keys(P.ARCHETYPES), poss = ['PG', 'SG', 'SF', 'PF', 'C'];
+    for (var a = 0; a < archs.length; a++) {
+      for (var p = 0; p < poss.length; p++) {
+        var d = P.newDraft();
+        d.archetype = archs[a]; d.position = poss[p]; d.ratings = null;
+        starts.push(P.overallOf(d));
+      }
+    }
+
+    // Spending a career point has to move the number the player sees.
+    BB.Career.reset();
+    P.clear();
+    var before = P.overallOf(P.newDraft());
+    var c = BB.Career.load(); c.points = 40; BB.Career.save(c);
+    var spent = 0;
+    for (var s = 0; s < 40; s++) if (BB.Career.spendPoint('midRange')) spent++;
+    var after = P.overallOf(P.newDraft());
+    BB.Career.reset(); P.clear();
+
+    BB.Menus.push('createPlayer');
+    var el = document.querySelector('.screen--createPlayer');
+    var hasOverallInput = !!el.querySelector('[data-key="overall"], #cp-overall');
+    var shownOvr = parseInt(el.querySelector('#cp-ovr').textContent, 10);
+    var usesModel = !!(scene.hero && scene.preview);
+    // Editing has to reach the live model, not a picture of it.
+    var sw = el.querySelectorAll('[data-key="jerseyMain"] [data-swatch]')[4];
+    sw.click();
+    var modelTookColour = scene.hero.jerseyMain === sw.dataset.swatch;
+    var h = el.querySelector('#cp-height');
+    h.value = 84; h.dispatchEvent(new Event('input', { bubbles: true }));
+    var modelTookHeight = scene.hero.heightIn === 84;
+    BB.Menus.pop();
+
+    return {
+      startMin: Math.min.apply(null, starts), startMax: Math.max.apply(null, starts),
+      before: before, after: after, spent: spent,
+      hasOverallInput: hasOverallInput, shownOvr: shownOvr, usesModel: usesModel,
+      modelTookColour: modelTookColour, modelTookHeight: modelTookHeight,
+      start: P.START_OVERALL, pageErr: window.__pageErr || null
+    };
+  `, 'probe');
+  if (r.err) check('creator probe ran', false, r.err);
+  const o = r.out || {};
+  check('every build starts on the same overall',
+        o.startMin === o.start && o.startMax === o.start,
+        'range ' + o.startMin + '..' + o.startMax + ', expected ' + o.start);
+  check('the overall slider is gone', o.hasOverallInput === false);
+  check('the creator shows the starting overall', o.shownOvr === o.start,
+        'shows ' + o.shownOvr);
+  // The whole point of removing the slider: the number is earned, not set.
+  check('spending career points raises the overall', o.spent > 0 && o.after > o.before,
+        o.before + ' -> ' + o.after + ' after ' + o.spent + ' points');
+  check('the creator edits the live 3D player', o.usesModel === true);
+  check('a colour change reaches the model', o.modelTookColour === true);
+  check('a height change reaches the model', o.modelTookHeight === true);
+  check('creator raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[13] screenshots');
+  console.log('\n[14] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],

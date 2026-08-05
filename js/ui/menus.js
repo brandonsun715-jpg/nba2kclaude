@@ -491,7 +491,19 @@
       onCancel() { M.pop(); }
     });
 
-    /* ------------------------------------------------------------ createPlayer */
+    /* ------------------------------------------------------------ createPlayer
+     *
+     * The creator edits the player you can SEE. It borrows the standby scene's
+     * live figure — the same skinned 3D model the game plays with — and writes
+     * every change straight onto it: skin, hair, kit, height. The old flat
+     * canvas portrait beside the form could only ever be an impression of the
+     * player, and a badly cropped one; this is the article itself, turning on
+     * the spot under the arena lights.
+     *
+     * The form sits in a column down the left with the floor showing through
+     * beside it, so the layout matches the front page it was opened from and
+     * the model never leaves the same part of the screen.
+     */
     M.define({
       id: 'createPlayer',
       build() {
@@ -499,109 +511,128 @@
         const draft = P.newDraft();
         const archOpts = Object.keys(P.ARCHETYPES).map((k) => [k, P.ARCHETYPES[k].label]);
         return `
-          <div class="panel panel--wide">
-            <header class="panel__head">
-              <h2>Create Player</h2>
-              <button class="btn btn--ghost" data-nav data-act="back">Back</button>
-            </header>
-            <div class="panel__body">
-              <div class="creator__layout">
-                <div class="creator__preview">
-                  <canvas id="cp-canvas" width="220" height="280"></canvas>
-                  <div class="creator__previewLabel" id="cp-label">
-                    <span id="cp-label-name">${(draft.name || 'YOU').toUpperCase()}</span>
-                    <span id="cp-label-sub">#${draft.number} \u00B7 ${draft.position} \u00B7 ${P.heightLabel(draft.height)}</span>
-                  </div>
+          <div class="creator">
+            <div class="creator__col">
+              <header class="creator__head">
+                <div>
+                  <p class="creator__eyebrow">Player</p>
+                  <h2 class="creator__title">My Player</h2>
                 </div>
-                <div class="creator__form">
-                  <section class="group">
-                    <h3>Identity</h3>
-                    <label class="row"><span class="row__k">Name</span>
-                      <input type="text" id="cp-name" data-key="name" maxlength="16" value="${escapeAttr(draft.name)}">
-                      <span></span>
-                    </label>
-                    <label class="row"><span class="row__k">Number</span>
-                      <input type="number" id="cp-number" data-key="number" min="0" max="99" value="${draft.number}">
-                      <span></span>
-                    </label>
-                    ${segmented('position', 'Position', draft.position,
-                      [['PG', 'PG'], ['SG', 'SG'], ['SF', 'SF'], ['PF', 'PF'], ['C', 'C']])}
-                  </section>
-                  <section class="group">
-                    <h3>Appearance</h3>
-                    ${swatchRow('skin', 'Skin tone', P.SKIN_TONES, draft.skin)}
-                    ${swatchRow('hair', 'Hair color', P.HAIR_COLORS, draft.hair)}
-                    ${swatchRow('jerseyMain', 'Jersey', P.JERSEY_COLORS, draft.jerseyMain)}
-                    ${swatchRow('jerseyTrim', 'Trim', P.JERSEY_COLORS, draft.jerseyTrim)}
-                    <div class="row">
-                      <span class="row__k">Height</span>
-                      <input type="range" id="cp-height" data-key="height" min="66" max="84" value="${draft.height}">
-                      <span class="row__val" id="cp-height-val">${P.heightLabel(draft.height)}</span>
-                    </div>
-                  </section>
-                  <section class="group">
-                    <h3>Ability</h3>
-                    ${segmented('archetype', 'Archetype', draft.archetype, archOpts)}
-                    <div class="row">
-                      <span class="row__k">Overall</span>
-                      <input type="range" id="cp-overall" data-key="overall" min="60" max="99" value="${draft.overall}">
-                      <span class="row__val" id="cp-overall-val">${draft.overall}</span>
-                    </div>
-                    <p class="note">Archetype shapes the full attribute spread that drives the sim — shooting touch, speed, hands on defence, all of it — not just this number.</p>
-                  </section>
+                <button class="btn btn--ghost" data-nav data-act="back">Back</button>
+              </header>
+
+              <div class="creator__card">
+                <div class="creator__ovr">
+                  <b id="cp-ovr">${P.overallOf(draft)}</b><span>OVR</span>
+                </div>
+                <div class="creator__id">
+                  <div class="creator__name" id="cp-label-name">${(draft.name || 'YOU').toUpperCase()}</div>
+                  <div class="creator__meta" id="cp-label-sub">#${draft.number} · ${draft.position} · ${P.heightLabel(draft.height)} · ${(P.ARCHETYPES[draft.archetype] || P.ARCHETYPES.balanced).label}</div>
                 </div>
               </div>
-              <div class="panel__actions">
-                <button class="btn btn--ghost" data-act="randomize">Randomize</button>
-                <button class="btn btn--danger" data-act="clear">Reset</button>
-                <button class="btn" data-act="save">Save Player</button>
+
+              <div class="creator__scroll">
+                <section class="group">
+                  <h3>Identity</h3>
+                  <label class="row"><span class="row__k">Name</span>
+                    <input type="text" id="cp-name" data-key="name" maxlength="16" value="${escapeAttr(draft.name)}">
+                    <span></span>
+                  </label>
+                  <label class="row"><span class="row__k">Number</span>
+                    <input type="number" id="cp-number" data-key="number" min="0" max="99" value="${draft.number}">
+                    <span></span>
+                  </label>
+                  ${segmented('position', 'Position', draft.position,
+                    [['PG', 'PG'], ['SG', 'SG'], ['SF', 'SF'], ['PF', 'PF'], ['C', 'C']])}
+                </section>
+
+                <section class="group">
+                  <h3>Appearance</h3>
+                  ${swatchRow('skin', 'Skin tone', P.SKIN_TONES, draft.skin)}
+                  ${swatchRow('hair', 'Hair color', P.HAIR_COLORS, draft.hair)}
+                  ${swatchRow('jerseyMain', 'Jersey', P.JERSEY_COLORS, draft.jerseyMain)}
+                  ${swatchRow('jerseyTrim', 'Trim', P.JERSEY_COLORS, draft.jerseyTrim)}
+                  <div class="row">
+                    <span class="row__k">Height</span>
+                    <input type="range" id="cp-height" data-key="height" min="66" max="84" value="${draft.height}"
+                           style="--fill:${Math.round((draft.height - 66) / 18 * 100)}%">
+                    <span class="row__val" id="cp-height-val">${P.heightLabel(draft.height)}</span>
+                  </div>
+                </section>
+
+                <section class="group">
+                  <h3>Ability</h3>
+                  ${segmented('archetype', 'Archetype', draft.archetype, archOpts)}
+                  <div class="creator__spread" id="cp-spread">${spreadHtml(draft)}</div>
+                  <p class="note">
+                    Everyone starts at <b>${P.START_OVERALL} overall</b>. The archetype decides the
+                    SHAPE of that 60 — what you are already good at and what you are not — and your
+                    position sets the ceiling each attribute can ever reach. Overall goes up by
+                    playing: win games, level up, and spend the points in Career.
+                  </p>
+                </section>
+              </div>
+
+              <div class="creator__actions">
+                <button class="btn btn--ghost" data-nav data-act="randomize">Randomize</button>
+                <button class="btn btn--danger" data-nav data-act="clear">Reset</button>
+                <button class="btn" data-nav data-act="save">Save Player</button>
               </div>
             </div>
           </div>`;
       },
+
       mount(el) {
         const P = BB.PlayerProfile;
         const draft = P.newDraft();
-        const canvas = el.querySelector('#cp-canvas');
-        const ctx = canvas.getContext('2d');
 
-        const preview = new BB.Player(P.toPlayerConfig(draft, { x: 0, y: 0 }));
-        P.applyAppearance(preview, draft);
-        preview.facing = 0;
-        preview.targetHoop = null;
+        /* The live model. The standby scene owns it; the creator just borrows
+         * it, spins it, and hands it back the way it found it. */
+        const scene = BB.Engine && BB.Engine.scene;
+        const model = scene && scene.previewMode ? scene.previewMode(true) : null;
 
-        const refreshLabel = () => {
+        const applyLook = () => {
+          if (!model) return;
+          model.skin = draft.skin;
+          model.hair = draft.hair;
+          model.jerseyMain = draft.jerseyMain;
+          model.jerseyTrim = draft.jerseyTrim;
+          model.heightIn = draft.height;
+          model.name = draft.name;
+          model.number = draft.number;
+        };
+
+        const refresh = () => {
+          const arch = (P.ARCHETYPES[draft.archetype] || P.ARCHETYPES.balanced).label;
           el.querySelector('#cp-label-name').textContent = (draft.name || 'YOU').toUpperCase();
           el.querySelector('#cp-label-sub').textContent =
-            '#' + draft.number + ' \u00B7 ' + draft.position + ' \u00B7 ' + P.heightLabel(draft.height);
+            '#' + draft.number + ' · ' + draft.position + ' · ' +
+            P.heightLabel(draft.height) + ' · ' + arch;
+          el.querySelector('#cp-ovr').textContent = P.overallOf(draft);
+          el.querySelector('#cp-spread').innerHTML = spreadHtml(draft);
         };
 
-        let last = performance.now();
-        let raf = null;
-        const tick = (now) => {
-          const dt = Math.min(0.05, (now - last) / 1000);
-          last = now;
-          preview._updatePose(dt);
-
-          ctx.setTransform(1, 0, 0, 1, 0, 0);
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-          const scale = 62;
-          ctx.setTransform(scale, 0, 0, scale, canvas.width / 2, canvas.height * 0.86);
-          preview.drawPreview(ctx);
-          ctx.setTransform(1, 0, 0, 1, 0, 0);
-
-          raf = requestAnimationFrame(tick);
+        /* Position and archetype are the two things that reshape the build,
+         * so both throw the generated spread away and roll a new one — but
+         * only for a player who has never banked a career point into it.
+         * Rerolling somebody's spent progression because they tapped a
+         * different position would be theft. */
+        const reshape = () => {
+          if (BB.Career.load().gamesPlayed === 0) draft.ratings = null;
+          P.enforceCaps(draft);
+          P.ensureRatings(draft);
+          refresh();
         };
-        raf = requestAnimationFrame(tick);
-        this._cleanup = () => { if (raf) cancelAnimationFrame(raf); };
+
+        applyLook();
 
         el.addEventListener('click', (e) => {
           const sw = e.target.closest('[data-swatch]');
           if (sw) {
             const key = sw.parentNode.dataset.key;
             draft[key] = sw.dataset.swatch;
-            preview[key] = sw.dataset.swatch;
             Array.prototype.forEach.call(sw.parentNode.children, (c) => c.classList.toggle('is-on', c === sw));
+            applyLook();
             A.play('uiMove');
             return;
           }
@@ -610,7 +641,8 @@
             const key = seg.parentNode.dataset.key;
             draft[key] = seg.dataset.seg;
             Array.prototype.forEach.call(seg.parentNode.children, (c) => c.classList.toggle('is-on', c === seg));
-            if (key === 'position') refreshLabel();
+            if (key === 'position' || key === 'archetype') reshape();
+            else refresh();
             A.play('uiMove');
             return;
           }
@@ -631,14 +663,13 @@
           if (b.dataset.act === 'randomize') {
             const arch = Object.keys(P.ARCHETYPES);
             draft.archetype = arch[U.rng.i(0, arch.length - 1)];
-            draft.overall = U.rng.i(65, 96);
             draft.skin = P.SKIN_TONES[U.rng.i(0, P.SKIN_TONES.length - 1)];
             draft.hair = P.HAIR_COLORS[U.rng.i(0, P.HAIR_COLORS.length - 1)];
             draft.jerseyMain = P.JERSEY_COLORS[U.rng.i(0, P.JERSEY_COLORS.length - 1)];
             draft.jerseyTrim = P.JERSEY_COLORS[U.rng.i(0, P.JERSEY_COLORS.length - 1)];
             draft.height = U.rng.i(68, 82);
             draft.position = ['PG', 'SG', 'SF', 'PF', 'C'][U.rng.i(0, 4)];
-            draft.ratings = null; // regenerate from the new overall/archetype below
+            draft.ratings = null;         // a new build rolls a new spread
             P.save(draft);
             M.pop(); M.push('createPlayer');
           }
@@ -646,22 +677,22 @@
 
         el.addEventListener('input', (e) => {
           const t = e.target;
-          if (t.id === 'cp-name') { draft.name = t.value.slice(0, 16) || 'YOU'; preview.name = draft.name; refreshLabel(); return; }
-          if (t.id === 'cp-number') { draft.number = U.clamp(parseInt(t.value, 10) || 0, 0, 99); preview.number = draft.number; refreshLabel(); return; }
-          if (t.id === 'cp-height') {
+          if (t.id === 'cp-name') { draft.name = t.value.slice(0, 16) || 'YOU'; }
+          else if (t.id === 'cp-number') { draft.number = U.clamp(parseInt(t.value, 10) || 0, 0, 99); }
+          else if (t.id === 'cp-height') {
             draft.height = parseInt(t.value, 10);
-            preview.heightIn = draft.height;
+            t.style.setProperty('--fill', Math.round((draft.height - 66) / 18 * 100) + '%');
             el.querySelector('#cp-height-val').textContent = P.heightLabel(draft.height);
-            refreshLabel();
-            return;
-          }
-          if (t.id === 'cp-overall') {
-            draft.overall = parseInt(t.value, 10);
-            el.querySelector('#cp-overall-val').textContent = draft.overall;
-          }
+          } else return;
+          applyLook();
+          refresh();
         });
       },
-      unmount() { if (this._cleanup) this._cleanup(); },
+
+      unmount() {
+        const scene = BB.Engine && BB.Engine.scene;
+        if (scene && scene.previewMode) scene.previewMode(false);
+      },
       onCancel() { M.pop(); }
     });
 
@@ -719,6 +750,7 @@
                   ${r.points > 0 ? `<div class="career__points">${r.points} point${r.points === 1 ? '' : 's'} to spend below</div>` : ''}
                 </div>
                 <div class="career__stats">
+                  <div class="career__stat career__stat--ovr"><b>${P.overallOf(draft)}</b><span>Overall</span></div>
                   <div class="career__stat"><b>${r.wins}-${r.losses}</b><span>Record</span></div>
                   <div class="career__stat"><b>${(r.winPct * 100).toFixed(0)}%</b><span>Win rate</span></div>
                   <div class="career__stat"><b>${r.ppg.toFixed(1)}</b><span>PPG</span></div>
@@ -874,6 +906,23 @@
             `<button class="swatch ${c === selected ? 'is-on' : ''}" data-nav data-swatch="${c}" style="--c:${c}" aria-label="${label} ${c}"></button>`).join('')}
         </div>
       </div>`;
+  }
+
+  /** The build's shape at a glance: one bar per attribute group, coloured the
+   * way the Career screen colours them, so an archetype reads as a shape
+   * rather than as a word. */
+  function spreadHtml(draft) {
+    const r = BB.PlayerProfile.ensureRatings(draft);
+    return BB.Career.GROUPS.map((g) => {
+      const avg = g.keys.reduce((sum, k) => sum + (r[k] || 0), 0) / g.keys.length;
+      const pct = Math.round(U.clamp01((avg - 25) / 74) * 100);
+      return `
+        <div class="spread__row" style="--gc:${g.color}">
+          <span class="spread__k">${g.label}</span>
+          <span class="spread__bar"><i style="width:${pct}%"></i></span>
+          <span class="spread__v">${Math.round(avg)}</span>
+        </div>`;
+    }).join('');
   }
 
   function escapeAttr(s) {

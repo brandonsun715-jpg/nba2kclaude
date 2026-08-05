@@ -92,15 +92,24 @@
     }
   };
 
+  /* Every created player starts here, and nowhere else.
+   *
+   * There is no overall slider any more: a new player is a 60 and gets better
+   * by playing, spending the points a level-up earns on whichever attributes
+   * they want (see career.js). Overall is not a stored number either — it is
+   * the weighted average of the ratings, so it rises on its own the moment one
+   * of them does, and there is nothing to keep in sync. */
+  const START_OVERALL = 60;
+
   const DEFAULT_DRAFT = {
     name: 'YOU', number: 23, position: 'SF',
     height: 79, skin: SKIN_TONES[2], hair: HAIR_COLORS[0],
     jerseyMain: JERSEY_COLORS[0], jerseyTrim: JERSEY_COLORS[8],
-    overall: 82, archetype: 'balanced'
+    archetype: 'balanced'
   };
 
   const PlayerProfile = {
-    SKIN_TONES, HAIR_COLORS, JERSEY_COLORS, ARCHETYPES, POSITION_CAPS,
+    SKIN_TONES, HAIR_COLORS, JERSEY_COLORS, ARCHETYPES, POSITION_CAPS, START_OVERALL,
 
     /** The saved player, or null if nobody's ever saved one yet. */
     load() { return U.store.get('createdPlayer', null); },
@@ -163,19 +172,40 @@
      * career points - see career.js, which respects the same caps. */
     generateRatings(draft) {
       const arch = ARCHETYPES[draft.archetype] || ARCHETYPES.balanced;
-      const base = U.clamp(draft.overall || 75, 60, 99);
-      const r = {};
+      const raw = {};
       for (const k of BB.Player.RATING_KEYS) {
-        let v = base + U.rng.gauss(0, 5);
-        if (arch.boost.indexOf(k) >= 0) v += 11;
-        if (arch.cut.indexOf(k) >= 0) v -= 9;
-        const cap = this.capFor(draft.position, draft.archetype, k);
-        r[k] = U.clamp(Math.round(v), 25, cap);
+        let v = START_OVERALL + U.rng.gauss(0, 4);
+        if (arch.boost.indexOf(k) >= 0) v += 9;
+        if (arch.cut.indexOf(k) >= 0) v -= 8;
+        raw[k] = v;
       }
-      r.shotTendency = U.clamp(Math.round(U.rng.f(55, 85)), 0, 100);
-      r.driveTendency = U.clamp(Math.round(U.rng.f(40, 75)), 0, 100);
-      r.passTendency = U.clamp(Math.round(U.rng.f(35, 65)), 0, 100);
-      return r;
+
+      /* An archetype is a SHAPE, not a head start. Left alone, a build that
+       * boosts four attributes and cuts two comes out several points of
+       * overall ahead of the balanced one for free, which turns picking a
+       * build into picking a number. So the whole spread slides until the
+       * weighted overall lands on START_OVERALL. It takes a few passes
+       * because clamping to the caps bends the average back. */
+      let out = null;
+      for (let pass = 0; pass < 6; pass++) {
+        out = {};
+        for (const k of BB.Player.RATING_KEYS) {
+          out[k] = U.clamp(Math.round(raw[k]), 25, this.capFor(draft.position, draft.archetype, k));
+        }
+        const err = START_OVERALL - BB.Player.computeOverall(out);
+        if (err === 0) break;
+        for (const k of BB.Player.RATING_KEYS) raw[k] += err;
+      }
+
+      out.shotTendency = U.clamp(Math.round(U.rng.f(55, 85)), 0, 100);
+      out.driveTendency = U.clamp(Math.round(U.rng.f(40, 75)), 0, 100);
+      out.passTendency = U.clamp(Math.round(U.rng.f(35, 65)), 0, 100);
+      return out;
+    },
+
+    /** This player's overall right now: read off the ratings, never stored. */
+    overallOf(draft) {
+      return BB.Player.computeOverall(this.ensureRatings(draft));
     },
 
     /** Attaches persisted ratings to a draft if it doesn't have any yet
@@ -191,7 +221,6 @@
         human: true, name: draft.name || 'YOU', number: draft.number,
         position: draft.position, height: draft.height,
         skin: draft.skin, hair: draft.hair,
-        overall: U.clamp(draft.overall || 75, 60, 99),
         ratings: this.ensureRatings(draft)
       }, extra || {});
     },

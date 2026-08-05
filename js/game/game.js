@@ -47,6 +47,11 @@
    * ======================================================================= */
   const MenuScene = {
     pose: 'idle',
+    preview: false,
+
+    /* Where the standby figure stands, and which way he is turned when
+     * nothing is spinning him. */
+    FACING: Math.PI * 0.42,
 
     /**
      * How far LEFT of the player the camera aims, in feet.
@@ -81,7 +86,7 @@
       BB.PlayerProfile.applyAppearance(this.hero, draft);
       // Turned a few degrees off square to the camera so the build reads in
       // three-quarters rather than as a flat cutout.
-      this.hero.placeAt(hx, hy, Math.PI * 0.42);
+      this.hero.placeAt(hx, hy, this.FACING);
       this.hero.human = false;   // no selection ring under a menu portrait
       this.ball = new BB.Ball(World.hoops);
       this.hero.giveBall(this.ball);
@@ -98,7 +103,27 @@
     exit() { this.hero = null; this.ball = null; },
 
     /** Called by the menu as the selection moves along the mode row. */
-    spotlight(pose) { this.pose = pose || 'idle'; },
+    spotlight(pose) { if (!this.preview) this.pose = pose || 'idle'; },
+
+    /**
+     * Lends the standby figure to the player creator.
+     *
+     * The creator edits a live model rather than a drawing of one, and this is
+     * that model — the same skinned mesh the game plays with, already lit and
+     * standing on the same floor. While it is borrowed the figure turns slowly
+     * on the spot so every side of the build can be seen, and the mode-driven
+     * poses stand down. Handed back exactly as it was found.
+     *
+     * @returns {object|null} the player to edit, or null if this scene is not
+     *          the one running.
+     */
+    previewMode(on) {
+      this.preview = !!on;
+      if (!this.hero) return null;
+      this.pose = 'idle';
+      if (!on) this.hero.facing = this.hero.moveFacing = this.FACING;
+      return this.hero;
+    },
 
     fixedUpdate(dt) {
       World.hoops.forEach((h) => h.update(dt));
@@ -108,6 +133,10 @@
     update(dt) {
       this._t += dt;
       const h = this.hero;
+      if (h && this.preview) {
+        // Turntable, slow enough to read the build rather than to show off.
+        h.facing = h.moveFacing = (h.facing + dt * 0.45) % (Math.PI * 2);
+      }
       if (h) {
         /* Each mode's idle is driven through the ordinary pose state the game
          * already animates — no separate menu rig to keep in sync. What the
