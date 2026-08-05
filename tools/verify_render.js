@@ -181,6 +181,7 @@ console.log('\n[2] 1v1 scene renders real geometry');
     var counts = {};
     var total = 0;
     for (var k in S3.meshes) { counts[k] = S3.meshes[k].n; total += S3.meshes[k].n; }
+    var skinned = S3._poseCount;
     var over = [];
     for (var k2 in S3.meshes) if (S3.meshes[k2].n > S3.meshes[k2].capacity) over.push(k2);
 
@@ -199,7 +200,10 @@ console.log('\n[2] 1v1 scene renders real geometry');
     }
     void px;
     return {
-      total: total, counts: counts, over: over,
+      total: total, counts: counts, over: over, skinned: skinned,
+      meshVerts: BB.PLAYER_MESH ? BB.PLAYER_MESH.vertexCount : 0,
+      bones: BB.PLAYER_MESH ? BB.PLAYER_MESH.bones.length : 0,
+      skinReady: !!(BB.Skin && BB.Skin.ready),
       dropped: S3.dropped,
       distinctColors: Object.keys(uniq).length,
       samples: samples,
@@ -211,7 +215,10 @@ console.log('\n[2] 1v1 scene renders real geometry');
   const o = r.out || {};
   check('no page errors during play', !o.pageErr, o.pageErr);
   check('instances submitted', o.total > 500, 'total=' + o.total);
-  check('players submitted limbs', (o.counts && o.counts.seg) > 20, 'seg=' + (o.counts && o.counts.seg));
+  check('skinned player mesh loaded', o.skinReady === true &&
+        o.meshVerts > 1000 && o.bones >= 12,
+        'verts=' + o.meshVerts + ' bones=' + o.bones);
+  check('both players submitted a skinned pose', o.skinned === 2, 'poses=' + o.skinned);
   check('crowd submitted', (o.counts && o.counts.crowd) > 500, 'crowd=' + (o.counts && o.counts.crowd));
   check('floor submitted', (o.counts && o.counts.floor) === 1, 'floor=' + (o.counts && o.counts.floor));
   check('net/glass submitted', (o.counts && (o.counts.segT + o.counts.panelT)) > 50,
@@ -317,7 +324,7 @@ console.log('\n[5] 5v5 scene');
     for (var k in S3.meshes) { counts[k] = S3.meshes[k].n; total += S3.meshes[k].n; }
     return {
       entities: (scene.all || scene.entities || []).length,
-      total: total, seg: counts.seg, dropped: S3.dropped,
+      total: total, seg: counts.seg, skinned: S3._poseCount, dropped: S3.dropped,
       glError: BB.GLX.gl.getError(),
       pageErr: window.__pageErr || null
     };
@@ -326,7 +333,7 @@ console.log('\n[5] 5v5 scene');
   const o = r.out || {};
   check('ten players on court', o.entities === 10, 'entities=' + o.entities);
   check('no page errors in 5v5', !o.pageErr, o.pageErr);
-  check('limb instances scale with players', o.seg > 100, 'seg=' + o.seg);
+  check('one skinned pose per player on court', o.skinned === 10, 'poses=' + o.skinned);
   check('no drops with a full roster', o.dropped === 0, 'dropped=' + o.dropped);
   check('gl clean in 5v5', o.glError === 0, 'code=' + o.glError);
 }

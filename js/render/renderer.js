@@ -56,6 +56,9 @@
       }
       this.gl = BB.GLX.gl;
       BB.S3.init();
+      // The skinned player mesh reuses the scene's solid lighting verbatim so a
+      // character lights identically to the arena around it.
+      BB.Skin.init(BB.S3.SOLID_FS);
 
       this.overlay = global.document.getElementById('overlay-canvas');
       this.ctx = this.overlay.getContext('2d', { alpha: true, desynchronized: true });

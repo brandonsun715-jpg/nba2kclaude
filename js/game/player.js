@@ -1103,143 +1103,114 @@
      * the way a naive "local x is world x" mapping would.
      */
     draw() {
-      const S3 = BB.S3;
+      const S3 = BB.S3, Skin = BB.Skin;
       const p = this.pose;
       const f = this._frame();
-      const s = f.s, squash = f.squash, stretch = f.stretch;
-      const fx = f.fx, fy = f.fy, rx = f.rx, ry = f.ry;
 
-      const skin = this._col('skin', this.skin);
-      const skinDark = this._col('skinDark', U.shade(this.skin, -0.22));
-      const shorts = this._col('shorts', U.shade(this.jerseyMain, -0.08));
-      const jersey = this._col('jersey', this.jerseyMain);
-      const trim = this._col('trim', this.jerseyTrim);
-      const shoe = this._col('shoe', PAL.chalk);
+      const sp = S3.skinnedPose();
+      if (!sp) return;
+      Skin.beginPose(sp);
 
       /* Lean tips the whole figure along its forward axis, exactly as the 2D
        * shear transform used to; hip and torso lean stay separate so a
        * crossover can still wind the shoulders against planted hips. */
       const leanF = this.lean * 0.16;
-
-      function pt(out, lx, ly, baseX, width, lean, roll, rollUp) {
-        return posePoint(out, f, lx, ly, baseX, width, lean, roll, rollUp);
-      }
-
-      const A = TMP_P0, B = TMP_P1, D = TMP_P2, E = TMP_P3, F = TMP_P4;
       const hipLean = p.hipLean * 0.45 + leanF;
       const torsoLean = p.torsoLean * 0.45 + leanF;
-      const G = GIRTH;
+
+      const A = TMP_P0, B = TMP_P1, D = TMP_P2, E = TMP_P3, F = TMP_P4;
+
+      /* Model units to world feet. The mesh is authored at its own stature, so
+       * everything scales off the ratio between that and the posed figure. */
+      const statP = -p.headY + BONE.headR;
+      const g = (statP * f.s) / Skin.height;
+      const ref = REF_DIR;
+      ref[0] = f.fx; ref[1] = f.fy; ref[2] = 0;
+
+      /* -------------------------------------------------------- centreline
+       * The spine bones are baked at fixed fractions of the model's height, so
+       * the runtime places them by measuring the same fractions along the posed
+       * body rather than by guessing which joint each one belongs to. Hip and
+       * shoulder are the two known points; everything else rides that line and
+       * therefore inherits the lean and the crouch for free. */
+      posePoint(HIP, f, 0, p.hipY, 0, 0, hipLean);
+      posePoint(SHO, f, 0, p.shoulderY, 0, 0, torsoLean);
+      const hipH = -p.hipY / statP;
+      const span = (-p.shoulderY / statP) - hipH;
+      const spineAt = (out, h) => mixPt(out, HIP, SHO, span > 1e-6 ? (h - hipH) / span : 0);
+
+      for (const name of SPINE_BONES) {
+        const seg = Skin.bind[name];
+        spineAt(A, seg[0][2] / Skin.height);
+        spineAt(B, seg[1][2] / Skin.height);
+        Skin.setBone(sp, name, A, B, ref, g);
+      }
 
       /* ------------------------------------------------------------- legs
-       * Bare skin from hip to ankle, tapered the whole way down, with the
-       * shorts drawn over the top half of the thigh as their own garment
-       * rather than being implied by a change of colour. */
+       * The solver's foot target sits on the floor, but the mesh's ankle is a
+       * few inches up inside the shoe, so the shin has to stop short of the
+       * ground or the whole foot sinks through it. */
+      const ankleUp = Skin.bind.footL[0][2] * g;
+      const toeFwd = -Skin.bind.footL[1][1] * g;
+      const toeDrop = (Skin.bind.footL[0][2] - Skin.bind.footL[1][2]) * g;
       for (const leg of LEGS) {
         const knee = leg.side < 0 ? p.kneeL : p.kneeR;
+        const sfx = leg.side < 0 ? 'L' : 'R';
         const w = leg.side * BONE.hipW;
-        pt(A, 0, p.hipY, 0, w, hipLean);
-        pt(B, knee.jx, knee.jy, w, w * SPLAY.knee, hipLean);
-        pt(D, knee.ex, knee.ey, w, leg.side * BONE.stance, hipLean);
+        posePoint(A, f, 0, p.hipY, 0, w, hipLean);
+        posePoint(B, f, knee.jx, knee.jy, w, w * SPLAY.knee, hipLean);
+        posePoint(D, f, knee.ex, knee.ey, w, leg.side * BONE.stance, hipLean);
+        D[2] += ankleUp;
 
-        S3.bone(A[0], A[1], A[2], B[0], B[1], B[2],
-                G.thigh[0] * s, G.thigh[1] * s, skin, 0.12);
-        S3.bone(B[0], B[1], B[2], D[0], D[1], D[2],
-                G.calf[0] * s, G.calf[1] * s, skin, 0.14);
-        S3.sphere(B[0], B[1], B[2], G.knee * s, skin, 0.10);
-        S3.sphere(D[0], D[1], D[2], G.ankle * s, skin, 0.12);
+        E[0] = D[0] + f.fx * toeFwd;
+        E[1] = D[1] + f.fy * toeFwd;
+        E[2] = D[2] - toeDrop;
 
-        // Shorts leg, hanging to just above the knee.
-        mixPt(E, A, B, SHORTS_DROP);
-        S3.trunk(A[0], A[1], A[2], E[0], E[1], E[2],
-                 G.shortsLeg[0] * s, G.shortsLeg[1] * s, G.shortsDepth,
-                 rx, ry, shorts, 0.06);
-
-        /* Shoe: a flat box aligned with the direction of travel. */
-        S3.box(D[0] + fx * 0.05 * s, D[1] + fy * 0.05 * s, this.z + 0.048 * s,
-               0.30 * s, 0.115 * s, 0.096 * s, this.facing, shoe, 0.25);
-        S3.box(D[0] + fx * 0.09 * s, D[1] + fy * 0.09 * s, this.z + 0.088 * s,
-               0.14 * s, 0.105 * s, 0.055 * s, this.facing, trim, 0.2);
+        Skin.setBone(sp, 'thigh' + sfx, A, B, ref, g);
+        Skin.setBone(sp, 'shin' + sfx, B, D, ref, g);
+        Skin.setBone(sp, 'foot' + sfx, D, E, ref, g);
       }
 
-      /* ------------------------------------------------- pelvis and torso
-       * The torso is an ellipse in cross-section — twice as wide as it is
-       * deep — and widens from the waist to the chest. Both segments overrun
-       * their joints slightly so the primitive's pinched end caps fall
-       * outside the body instead of narrowing the hips and shoulders. */
-      pt(A, 0, p.hipY + 0.055, 0, 0, hipLean);
-      pt(B, 0, p.shoulderY - 0.055, 0, 0, torsoLean);
-      S3.trunk(A[0], A[1], A[2], B[0], B[1], B[2],
-               G.waist * s, G.chest * s, G.chestDepth, rx, ry, jersey, 0.10);
-
-      // Shorts: the seat, plus a waistband in the second team colour.
-      pt(A, 0, p.hipY + 0.075, 0, 0, hipLean);
-      pt(B, 0, p.hipY - 0.105, 0, 0, hipLean);
-      S3.trunk(A[0], A[1], A[2], B[0], B[1], B[2],
-               G.shortsLeg[0] * s, G.shortsTop * s, G.shortsDepth,
-               rx, ry, shorts, 0.06);
-      pt(A, 0, p.hipY - 0.075, 0, 0, hipLean);
-      pt(B, 0, p.hipY - 0.130, 0, 0, hipLean);
-      S3.trunk(A[0], A[1], A[2], B[0], B[1], B[2],
-               G.shortsTop * s, G.shortsTop * 0.94 * s, G.shortsDepth,
-               rx, ry, trim, 0.12);
-
-      // Shoulder yoke: the fabric across the traps, stopping short of the
-      // deltoids so the armholes of a sleeveless jersey stay open.
-      const yw = BONE.shoulderW * G.yokeW;
-      pt(A, 0, p.shoulderY - 0.022, 0, -yw, torsoLean);
-      pt(B, 0, p.shoulderY - 0.022, 0, yw, torsoLean);
-      S3.bone(A[0], A[1], A[2], B[0], B[1], B[2], G.yoke * s, G.yoke * s, jersey, 0.10);
-
-      // Chest number, a flat plate sitting proud of the jersey.
-      pt(D, 0, p.shoulderY + 0.235, 0, 0, torsoLean);
-      S3.box(D[0] + fx * G.chest * 0.58 * s, D[1] + fy * G.chest * 0.58 * s, D[2],
-             0.04 * s, 0.155 * s, 0.145 * s, this.facing, trim, 0.15);
-
-      /* ------------------------------------------------------------- arms
-       * Bare arms with a short jersey cap over the deltoid — the armhole of a
-       * tank sits below the shoulder, so anything more than that reads as a
-       * long-sleeve shirt nobody plays in. */
+      /* ------------------------------------------------------------- arms */
+      const handLen = dist3(Skin.bind.handL[0], Skin.bind.handL[1]) * g;
       for (const arm of ARMS) {
         const el = arm.side < 0 ? p.elbowL : p.elbowR;
+        const sfx = arm.side < 0 ? 'L' : 'R';
         const w = arm.side * BONE.shoulderW;
-        // Both arms roll away from the body by the same angle, mirrored.
         const roll = arm.side * p.armRoll;
-        const pivot = -p.shoulderY * stretch;
-        pt(A, 0, p.shoulderY, 0, w, torsoLean);
-        pt(B, el.jx, el.jy, w, w * SPLAY.elbow, torsoLean, roll, pivot);
-        pt(D, el.ex, el.ey, w, w * SPLAY.wrist, torsoLean, roll, pivot);
+        const pivot = -p.shoulderY * f.stretch;
+        posePoint(A, f, 0, p.shoulderY, 0, w, torsoLean);
+        posePoint(B, f, el.jx, el.jy, w, w * SPLAY.elbow, torsoLean, roll, pivot);
+        posePoint(D, f, el.ex, el.ey, w, w * SPLAY.wrist, torsoLean, roll, pivot);
 
-        S3.sphere(A[0], A[1], A[2], G.deltoid * s, skin, 0.14);
-        S3.bone(A[0], A[1], A[2], B[0], B[1], B[2],
-                G.upperArm[0] * s, G.upperArm[1] * s, skin, 0.14);
-        S3.sphere(B[0], B[1], B[2], G.elbow * s, skin, 0.12);
-        S3.bone(B[0], B[1], B[2], D[0], D[1], D[2],
-                G.forearm[0] * s, G.forearm[1] * s, skin, 0.16);
+        // The solver stops at the wrist; the hand carries on the way the
+        // forearm was already pointing.
+        let dx = D[0] - B[0], dy = D[1] - B[1], dz = D[2] - B[2];
+        const L = Math.hypot(dx, dy, dz) || 1;
+        F[0] = D[0] + (dx / L) * handLen;
+        F[1] = D[1] + (dy / L) * handLen;
+        F[2] = D[2] + (dz / L) * handLen;
 
-        mixPt(E, A, B, SLEEVE_TOP);
-        mixPt(F, A, B, SLEEVE_HEM);
-        S3.bone(E[0], E[1], E[2], F[0], F[1], F[2],
-                G.sleeve[0] * s, G.sleeve[1] * s, jersey, 0.08);
-
-        // Hand: flattened along the forearm rather than a ball on a stick.
-        S3.blob(D[0], D[1], D[2], 0.062 * s, 0.038 * s, 0.072 * s,
-                this.facing, skin, 0.18);
+        Skin.setBone(sp, 'upperArm' + sfx, A, B, ref, g);
+        Skin.setBone(sp, 'forearm' + sfx, B, D, ref, g);
+        Skin.setBone(sp, 'hand' + sfx, D, F, ref, g);
       }
 
-      /* ------------------------------------------------------------- head
-       * An ellipsoid, not a sphere: a head is tallest top-to-bottom, deeper
-       * front-to-back than it is wide, and at this scale it is a sixteenth of
-       * the figure's height rather than the fifth it used to be. */
-      pt(A, 0, p.shoulderY, 0, 0, torsoLean);
-      pt(B, 0, p.headY, 0, 0, torsoLean);
-      mixPt(E, A, B, 0.72);
-      S3.bone(A[0], A[1], A[2], E[0], E[1], E[2],
-              G.neck[0] * s, G.neck[1] * s, skin, 0.12);
-      const headH = BONE.headR * 2 * s;
-      S3.blob(B[0], B[1], B[2], headH * 0.83, headH * 0.68, headH, this.facing, skin, 0.20);
-      // Hair, offset back and up so the head has a face and a crown.
-      S3.blob(B[0] - fx * 0.020 * s, B[1] - fy * 0.020 * s, B[2] + 0.022 * s,
-              headH * 0.80, headH * 0.68, headH * 0.86, this.facing, skinDark, 0.10);
+      /* ------------------------------------------------------------- kit
+       * The OBJ shipped an empty material library, so tools/rig_model.js tagged
+       * every vertex with a zone instead and the team's colours are applied
+       * here, per zone, at draw time. */
+      const z = this._zones || (this._zones = [
+        [0, 0, 0, 1, 0.16, 0], [0, 0, 0, 1, 0.10, 0], [0, 0, 0, 1, 0.06, 0],
+        [0, 0, 0, 1, 0.25, 0], [0, 0, 0, 1, 0.08, 0], [0, 0, 0, 1, 0.15, 0]
+      ]);
+      copyCol(z[0], this._col('skin', this.skin));
+      copyCol(z[1], this._col('jersey', this.jerseyMain));
+      copyCol(z[2], this._col('shorts', U.shade(this.jerseyMain, -0.08)));
+      copyCol(z[3], this._col('shoe', PAL.chalk));
+      copyCol(z[4], this._col('hair', U.shade(this.skin, -0.42)));
+      copyCol(z[5], this._col('trim', this.jerseyTrim));
+      Skin.setZones(sp, z);
 
       if (this.human) {
         // Selection ring under the controlled player. A torus, not a quad: a
@@ -1779,6 +1750,21 @@
     out[1] = a[1] + (b[1] - a[1]) * t;
     out[2] = a[2] + (b[2] - a[2]) * t;
     return out;
+  }
+
+  /* Bones baked at fixed fractions of the model's height, placed by measuring
+   * the same fractions along the posed body. */
+  const SPINE_BONES = ['pelvis', 'torso', 'head'];
+  const HIP = [0, 0, 0], SHO = [0, 0, 0];
+  const REF_DIR = [1, 0, 0];
+
+  function dist3(a, b) {
+    return Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+  }
+
+  /** Copies rgb into a zone row, leaving its alpha/gloss/emissive alone. */
+  function copyCol(row, c) {
+    row[0] = c[0]; row[1] = c[1]; row[2] = c[2];
   }
 
   const LEGS = [{ side: -1 }, { side: 1 }];

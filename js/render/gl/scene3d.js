@@ -230,6 +230,12 @@
     /* Overflow counter, surfaced in the debug overlay. */
     dropped: 0,
 
+    /* Skinned characters. Unlike every other submission these cannot be
+     * batched — each carries its own bone palette — so they are a pooled list
+     * of palettes drawn one call apiece. */
+    _poses: [],
+    _poseCount: 0,
+
     /* ------------------------------------------------------------------ init */
     init() {
       const GLX = BB.GLX;
@@ -275,6 +281,7 @@
       this._eye[1] = cam.eye[1];
       this._eye[2] = cam.eye[2];
       for (const k in this.meshes) this.meshes[k].n = 0;
+      this._poseCount = 0;
       this.dropped = 0;
     },
 
@@ -442,6 +449,18 @@
       this.push(this.meshes.floor, this._m, WHITE, 0, 0, 1);
     },
 
+    /**
+     * Claims a bone palette for one skinned character this frame, growing the
+     * pool on demand and never freeing it. Fill it via BB.Skin and it is drawn
+     * in the opaque pass.
+     */
+    skinnedPose() {
+      const Skin = BB.Skin;
+      if (!Skin || !Skin.ready) return null;
+      if (this._poseCount >= this._poses.length) this._poses.push(Skin.newPose());
+      return this._poses[this._poseCount++];
+    },
+
     /* ------------------------------------------------------------------ draw */
     flush() {
       const GLX = BB.GLX, gl = GLX.gl;
@@ -475,6 +494,14 @@
       GLX.drawMesh(m.cyl);
       GLX.drawMesh(m.torus);
       GLX.drawMesh(m.quad);
+
+      /* --- skinned characters: one draw call and one palette each */
+      if (this._poseCount > 0) {
+        const Skin = BB.Skin;
+        gl.useProgram(Skin.prog.prog);
+        this._setCommon(Skin.prog);
+        for (let i = 0; i < this._poseCount; i++) Skin.draw(this._poses[i]);
+      }
 
       /* --- contact shadows: blended, depth-tested, no depth write */
       gl.enable(gl.BLEND);
@@ -528,5 +555,6 @@
   const WHITE = [1, 1, 1, 1];
 
   S3.LIGHT_DIR = LIGHT_DIR;
+  S3.SOLID_FS = SOLID_FS;
   BB.S3 = S3;
 })(typeof window !== 'undefined' ? window : globalThis);
