@@ -349,6 +349,11 @@ console.log('\n[6] defensive stance spreads sideways');
     // the spread has to arrive as a roll angle out of that plane instead.
     for (var i = 0; i < 60; i++) pl._updatePose(1 / 60);
     var rest = pl.pose.armRoll;
+    var restSpreadX = Math.abs(pl.pose.handR.x - pl.pose.handL.x);
+    // Hands hang the same distance in front of their own shoulder, or the
+    // figure stands mid-stumble with one arm forward and one arm back.
+    var restFore = Math.abs((pl.pose.handL.x + BB.Player.BONE.shoulderW)
+                          - (pl.pose.handR.x - BB.Player.BONE.shoulderW));
 
     pl.isGuarding = true;
     for (var j = 0; j < 60; j++) pl._updatePose(1 / 60);
@@ -368,7 +373,8 @@ console.log('\n[6] defensive stance spreads sideways');
     return {
       rest: rest, guarding: guarding, released: released, shooting: shooting,
       handSpreadX: handSpreadX,
-      restSpreadX: Math.abs(0.30 * 2)
+      restSpreadX: restSpreadX,
+      restFore: restFore
     };
   `, 'probe');
   if (r.err) check('stance probe ran', false, r.err);
@@ -382,7 +388,10 @@ console.log('\n[6] defensive stance spreads sideways');
         'armRoll=' + (o.shooting || 0).toFixed(4));
   check('spread does not leak into fore/aft hand targets',
         Math.abs(o.handSpreadX - o.restSpreadX) < 0.02,
-        'guarding=' + (o.handSpreadX || 0).toFixed(3) + ' rest=' + o.restSpreadX);
+        'guarding=' + (o.handSpreadX || 0).toFixed(3) +
+        ' rest=' + (o.restSpreadX || 0).toFixed(3));
+  check('a standing player hangs both hands level with each other',
+        o.restFore < 0.001, 'fore/aft mismatch ' + (o.restFore || 0).toFixed(3));
 }
 
 console.log('\n[7] the dribbled ball sits in the drawn hand');
@@ -500,11 +509,9 @@ console.log('\n[9] a running player plants their feet');
     for (var i = 0; i < 240; i++) {
       pl.vx = speed; pl.vy = 0;
       pl.x += speed * dt;
-      // Drive the stride exactly as updateMovement does.
-      var top = Math.max(pl.phys.maxSpeed, 1);
-      var strideLen = U.lerp(0.17, 0.50, U.clamp01(speed / top));
-      var perCycle = Math.max(0.35, 4 * strideLen * pl.bodyScale);
-      pl.stridePhase += (speed * dt / perCycle) * Math.PI * 2;
+      // Drive the stride through the same call updateMovement makes, so this
+      // cannot drift out of step with the gait the pose is built from.
+      pl._advanceStride(speed, Math.max(pl.phys.maxSpeed, 1), dt);
       pl._updatePose(dt);
 
       pl.footAt(-1, a); pl.footAt(1, b);
@@ -516,13 +523,85 @@ console.log('\n[9] a running player plants their feet');
       }
       prevLow = low;
     }
-    return { slideRatio: bodyMove > 0 ? footMove / bodyMove : 1, samples: n };
+
+    /* Walk the cycle again, this time reading the joints themselves.
+     *
+     * The solver works in a flat plane whose x becomes the player's FORWARD
+     * axis, so a joint's x relative to its own limb root IS how far in front
+     * of that root it sits — which makes every claim below a number rather
+     * than something to squint at. */
+    var B = BB.Player.BONE, STEPS = 24;
+    /** Which side of its own root-to-tip line a middle joint sits on. */
+    function bendSide(o, j, e) {
+      return (j[0] - o[0]) * (e[1] - j[1]) - (j[1] - o[1]) * (e[0] - j[0]);
+    }
+    var kneeBend = 1e9, elbowBend = -1e9, clamp = 0, contra = 0;
+    var handSwing = 0, hipHi = -1e9, hipLo = 1e9;
+    var hLs = [], hRs = [];
+    for (var s = 0; s < STEPS; s++) {
+      pl.vx = speed; pl.vy = 0;
+      pl.stridePhase = s * Math.PI * 2 / STEPS;
+      pl._updatePose(dt);
+      var p = pl.pose;
+      // A knee bends one way and an elbow the other, and each pair agrees with
+      // itself: this is the sign the IK's bend flag picks, read back off the
+      // solved joints.
+      kneeBend = Math.min(kneeBend,
+        bendSide([-B.hipW, p.hipY], [p.kneeL.jx, p.kneeL.jy], [p.kneeL.ex, p.kneeL.ey]),
+        bendSide([B.hipW, p.hipY], [p.kneeR.jx, p.kneeR.jy], [p.kneeR.ex, p.kneeR.ey]));
+      elbowBend = Math.max(elbowBend,
+        bendSide([-B.shoulderW, p.shoulderY], [p.elbowL.jx, p.elbowL.jy], [p.elbowL.ex, p.elbowL.ey]),
+        bendSide([B.shoulderW, p.shoulderY], [p.elbowR.jx, p.elbowR.jy], [p.elbowR.ex, p.elbowR.ey]));
+      // Nothing asked for is out of reach: a clamped target freezes the limb.
+      clamp = Math.max(clamp,
+        Math.hypot(p.kneeL.ex - p.footL.x, p.kneeL.ey - p.footL.y),
+        Math.hypot(p.kneeR.ex - p.footR.x, p.kneeR.ey - p.footR.y),
+        Math.hypot(p.elbowL.ex - p.handL.x, p.elbowL.ey - p.handL.y),
+        Math.hypot(p.elbowR.ex - p.handR.x, p.elbowR.ey - p.handR.y));
+      var hL = p.handL.x + B.shoulderW, hR = p.handR.x - B.shoulderW;
+      var fL = p.footL.x + B.hipW, fR = p.footR.x - B.hipW;
+      hLs.push(hL); hRs.push(hR);
+      handSwing = Math.max(handSwing, Math.abs(hL));
+      // Correlated over the whole cycle, not merely at one lucky frame: a hand
+      // and the OPPOSITE foot reach forward together.
+      contra += hL * fR + hR * fL;
+      hipHi = Math.max(hipHi, -p.hipY); hipLo = Math.min(hipLo, -p.hipY);
+    }
+    // The two arms run the same swing, half a cycle apart.
+    var anti = 0;
+    for (var q = 0; q < STEPS; q++) {
+      anti = Math.max(anti, Math.abs(hLs[q] - hRs[(q + STEPS / 2) % STEPS]));
+    }
+    return {
+      slideRatio: bodyMove > 0 ? footMove / bodyMove : 1, samples: n,
+      kneeBend: kneeBend, elbowBend: elbowBend, clamp: clamp,
+      anti: anti, handSwing: handSwing, contra: contra / STEPS,
+      bob: hipHi - hipLo
+    };
   `, 'probe');
   if (r.err) check('stride probe ran', false, r.err);
   const o = r.out || {};
   // A foot driven on a timer slides at very nearly the body's own speed.
   check('planted foot does not skate under the player', o.slideRatio < 0.55,
         'foot travels ' + ((o.slideRatio || 1) * 100).toFixed(0) + '% of body speed');
+  // A knee only bends one way, and it is the same way on both legs. Mirroring
+  // the IK bend flag left-to-right reverses one of them, which is a leg that
+  // folds backwards at the knee.
+  check('both knees fold forward, all cycle long', o.kneeBend > 0,
+        'worst bend ' + (o.kneeBend || 0).toFixed(4) + ' (negative = a reversed knee)');
+  check('both elbows fold the other way', o.elbowBend < 0,
+        'worst bend ' + (o.elbowBend || 0).toFixed(4) + ' (positive = a reversed elbow)');
+  check('no limb target is out of reach mid-stride', o.clamp < 0.005,
+        'largest shortfall ' + (o.clamp || 0).toFixed(4));
+  check('the arms swing, half a cycle apart from each other',
+        o.handSwing > 0.15 && o.anti < 0.001,
+        'swing ' + (o.handSwing || 0).toFixed(3) + ', mismatch ' + (o.anti || 0).toFixed(4));
+  // Contralateral: the left arm reaches forward with the RIGHT leg. Same-side
+  // arm and leg swinging together is the toy-soldier walk.
+  check('each arm swings forward with the opposite leg', o.contra > 0,
+        'mean opposite-side product ' + (o.contra || 0).toFixed(4));
+  check('the body rises and falls through the cycle', o.bob > 0.005,
+        'hip travels ' + (o.bob || 0).toFixed(3) + ' vertically');
 }
 
 console.log('\n[10] player creator preview');

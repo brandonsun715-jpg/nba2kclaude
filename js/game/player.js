@@ -87,16 +87,38 @@
   }
   adoptMeshBuild(BB.PLAYER_MESH && BB.PLAYER_MESH.landmarks);
 
+  /**
+   * How far the toe sits in front of the ankle, in skeleton units.
+   *
+   * The foot is the one bone the pose solver has to know the shape of. Rolling
+   * up onto the toe at push-off means lifting the ankle by exactly the toe's
+   * own length times the sine of the roll — do it by any other number and the
+   * shoe either hovers or sinks through the hardwood. Read off the same bind
+   * skeleton draw() places the mesh with, so the two cannot drift apart.
+   */
+  BONE.toe = (function () {
+    const M = BB.PLAYER_MESH;
+    if (!M || !M.bind || !M.bind.footL) return 0.16;
+    return (-M.bind.footL[1][1] / M.height) * REF_STATURE;
+  })();
+
   /* Limbs do not hang in a vertical plane straight off the joint they start at.
-   * Arms converge toward the body as they go down — the wrists sit well inside
-   * the shoulders — while legs splay the other way onto a base wider than the
-   * hips. These are each joint's lateral offset as a fraction of the limb's
-   * root width, and they are what stops the arms reading as slabs bolted to the
-   * outside of the torso. The pose solver can't express any of this itself: it
-   * works in a single flat plane, and everything past the IK origin's own x
-   * becomes forward motion so that a run cycle scissors properly. */
+   * These are each joint's lateral offset as a fraction of the limb's root
+   * width. The pose solver can't express any of this itself: it works in a
+   * single flat plane, and everything past the IK origin's own x becomes
+   * forward motion so that a run cycle scissors properly.
+   *
+   * The arm numbers are measured against the mesh rather than chosen by eye.
+   * This body is half a stature wide through the ribs (torso radius 0.100 of
+   * stature) and its shoulder joints sit at 0.109, so an arm pulled even
+   * slightly inboard of its own shoulder buries the humerus inside the
+   * ribcage: the earlier 0.84/0.74 put the elbow at 0.091 and the wrist at
+   * 0.081, both well inside a chest that reaches 0.100 — which is why the
+   * arms read as melted into the jersey and tore the deltoid open. Hanging
+   * them all but straight down off the joint, converging only slightly, keeps
+   * the limb outside the torso with its surface just brushing it. */
   const SPLAY = {
-    elbow: 0.84, wrist: 0.74,
+    elbow: 1.06, wrist: 1.02,
     knee: 1.08, ankle: 1.23
   };
 
@@ -345,7 +367,7 @@
       this._animClock = U.rng.f(0, 6.28); // phase-offset so idle players don't sync
       this.pose = {
         hipY: 0, shoulderY: 0, headY: 0, torsoLean: 0, hipLean: 0, armRoll: 0,
-        footL: { x: 0, y: 0 }, footR: { x: 0, y: 0 },
+        footL: { x: 0, y: 0, pitch: 0 }, footR: { x: 0, y: 0, pitch: 0 },
         handL: { x: 0, y: 0 }, handR: { x: 0, y: 0 },
         kneeL: { jx: 0, jy: 0, ex: 0, ey: 0 }, kneeR: { jx: 0, jy: 0, ex: 0, ey: 0 },
         elbowL: { jx: 0, jy: 0, ex: 0, ey: 0 }, elbowR: { jx: 0, jy: 0, ex: 0, ey: 0 }
@@ -646,18 +668,7 @@
         this.facing = U.angleLerp(this.facing, this.pivotTarget, U.clamp01(this.phys.turnRate * 1.6 * dt));
       }
 
-      if (speed > 0.05) {
-        // Advance the stride by GROUND COVERED, not by elapsed time.
-        //
-        // A time-based rate has no relationship to how fast the body is
-        // actually travelling, so the planted foot slides backwards under the
-        // player and the whole run reads as skating. Tying phase to distance
-        // makes a foot stay where it was put: one full cycle is two steps, and
-        // a step carries the body twice the stride amplitude.
-        const strideLen = U.lerp(0.17, 0.50, U.clamp01(speed / top));
-        const perCycle = Math.max(0.35, 4 * strideLen * this.bodyScale);
-        this.stridePhase += (speed * dt / perCycle) * Math.PI * 2;
-      }
+      if (speed > 0.05) this._advanceStride(speed, top, dt);
       if (this.hasBall && this._dribbleLive && this.action === ACTION.MOVE) {
         this.dribblePhase += dt * (1.7 + (speed / top) * 1.3);
       } else if (this.hasBall && this._dribbleLive && this.action === ACTION.IDLE) {
@@ -689,6 +700,22 @@
       }
 
       this.action = mag > 0.05 ? ACTION.MOVE : (this.isBusyShooting ? this.action : ACTION.IDLE);
+    }
+
+    /**
+     * Advances the stride by GROUND COVERED, not by elapsed time.
+     *
+     * A time-based rate has no relationship to how fast the body is actually
+     * travelling, so the planted foot slides backwards under the player and
+     * the whole run reads as skating. Tying phase to distance makes a foot
+     * stay where it was put: each foot sweeps twice the stride amplitude while
+     * it is down, and it is down for `stance` of the cycle, so a cycle has to
+     * carry the body 2 * stride / stance for the contact to hold still.
+     */
+    _advanceStride(speed, top, dt) {
+      const g = gaitOf(U.clamp01(speed / Math.max(top, 1)));
+      const perCycle = Math.max(0.35, (2 * g.stride / g.stance) * this.bodyScale);
+      this.stridePhase += (speed * dt / perCycle) * Math.PI * 2;
     }
 
     _integrate(dt) {
@@ -1204,6 +1231,16 @@
         const seg = Skin.bind[name];
         spineAt(A, seg[0][2] / Skin.height);
         spineAt(B, seg[1][2] / Skin.height);
+        /* The head does not ride the lean.
+         *
+         * Every other bone on this line inherits the hip-to-shoulder tilt,
+         * which is right for a spine and wrong for a neck: a sprinter's chest
+         * pitches a long way forward but the eyes stay level and on the play,
+         * and the neck is what takes the difference back out. Left following
+         * the spine, the face at full tilt is aimed at the floor five feet
+         * ahead. The base stays welded to the top of the torso and only the
+         * crown swings back over it, so nothing detaches. */
+        if (name === 'head') uprightHead(A, B);
         Skin.setBone(sp, name, A, B, ref, g);
       }
 
@@ -1216,6 +1253,7 @@
       const toeDrop = (Skin.bind.footL[0][2] - Skin.bind.footL[1][2]) * g;
       for (const leg of LEGS) {
         const knee = leg.side < 0 ? p.kneeL : p.kneeR;
+        const foot = leg.side < 0 ? p.footL : p.footR;
         const sfx = leg.side < 0 ? 'L' : 'R';
         const w = leg.side * BONE.hipW;
         posePoint(A, f, 0, p.hipY, 0, w, hipLean);
@@ -1223,9 +1261,19 @@
         posePoint(D, f, knee.ex, knee.ey, w, leg.side * BONE.stance, hipLean);
         D[2] += ankleUp;
 
-        E[0] = D[0] + f.fx * toeFwd;
-        E[1] = D[1] + f.fy * toeFwd;
-        E[2] = D[2] - toeDrop;
+        /* The foot pitches about the ankle: toe down through push-off, toe up
+         * to clear the floor and land heel-first. _updatePose has already put
+         * the matching lift into the ankle target, so through push-off the
+         * contact point stays exactly where it was planted and the heel is
+         * what comes up. */
+        const pitch = foot.pitch || 0;
+        const cp = Math.cos(pitch), sp2 = Math.sin(pitch);
+        const outFwd = toeFwd * cp - toeDrop * sp2;
+        const outUp = -toeFwd * sp2 - toeDrop * cp;
+
+        E[0] = D[0] + f.fx * outFwd;
+        E[1] = D[1] + f.fy * outFwd;
+        E[2] = D[2] + outUp;
 
         Skin.setBone(sp, 'thigh' + sfx, A, B, ref, g);
         Skin.setBone(sp, 'shin' + sfx, B, D, ref, g);
@@ -1416,24 +1464,48 @@
       // bend in both knees even when the player is doing nothing. Standing
       // locked out is the single thing that most makes a figure look like a
       // mannequin instead of an athlete waiting for the ball.
-      const hipY = -REST_HIP;
+      let hipY = -REST_HIP;
       let shoulderY = hipY - BONE.torso;
       // Athletes carry a few degrees of forward lean at rest — weight over the
       // balls of the feet, ready to move, never stacked bolt upright.
       let torsoLean = 0.025;
       let hipLean = null; // null = "follow torsoLean", set explicitly to diverge (real twist)
+      let pitchL = 0, pitchR = 0;
+
+      /* Every hand target below is written as THIS HAND'S OWN SHOULDER plus an
+       * offset, never as a bare number.
+       *
+       * draw() sends whatever is left after subtracting the arm's own shoulder
+       * x down the player's FORWARD axis, so a pair of hand targets at -0.30
+       * and +0.30 is not a symmetric pose at all: with the shoulder joints at
+       * ±0.20 it hangs the left hand a fifth of a unit behind the body and the
+       * right hand the same distance in front of it. Anchoring on the shoulder
+       * is what makes a symmetric pose come out symmetric, and it is why a
+       * figure that was meant to be standing still no longer stands like it is
+       * mid-stumble. */
+      const shL = -BONE.shoulderW, shR = BONE.shoulderW;
 
       let flX = -BONE.hipW, flY = 0;
       let frX = BONE.hipW, frY = 0;
       // Hands hang just inside full extension so the elbows keep a soft bend.
-      let hlX = -0.30, hlY = reachY(shoulderY, 0.96);
-      let hrX = 0.30, hrY = reachY(shoulderY, 0.96);
+      let hlX = shL, hlY = reachY(shoulderY, 0.96);
+      let hrX = shR, hrY = reachY(shoulderY, 0.96);
 
       /* ---- locomotion base layer: run cycle, or idle breathing/sway ------ */
       if (running) {
         const phase = this.stridePhase;
-        const strideLen = U.lerp(0.17, 0.50, speedFrac);
-        const lift = U.lerp(0.055, 0.21, speedFrac);
+        const gait = gaitOf(speedFrac);
+
+        /* The body rises through the float and sinks through mid-stance, twice
+         * a cycle — and hips and shoulders move together, because a bob
+         * applied to the shoulders alone is not a bob at all, it is the spine
+         * concertinaing. Anchored on mid-stance (half of stance into the
+         * cycle) so it stays in step when the stance fraction changes with
+         * speed. */
+        const bob = -U.lerp(0.004, 0.026, speedFrac)
+                  * Math.cos(phase * 2 - Math.PI * 2 * gait.stance);
+        hipY += gait.crouch - bob;   // pose y is negative for up
+        shoulderY = hipY - BONE.torso;
 
         // Each leg walks a stance-then-swing cycle, half a period apart.
         // A plain sine on both axes cannot describe a run: it sends the
@@ -1442,32 +1514,44 @@
         // driven. During stance the foot tracks straight back at exactly the
         // rate the body moves forward, which is what leaves it standing still
         // on the hardwood.
-        stepFoot(STEP_L, phase + Math.PI, strideLen, lift);
-        stepFoot(STEP_R, phase, strideLen, lift);
-        flX = -BONE.hipW + STEP_L.x; flY = STEP_L.y;
-        frX = BONE.hipW + STEP_R.x; frY = STEP_R.y;
+        stepFoot(STEP_L, phase + Math.PI, gait);
+        stepFoot(STEP_R, phase, gait);
+        flX = -BONE.hipW + STEP_L.x; flY = STEP_L.y; pitchL = STEP_L.pitch;
+        frX = BONE.hipW + STEP_R.x; frY = STEP_R.y; pitchR = STEP_R.pitch;
 
-        // The swing runs from a straight trailing arm at the hip up to a
-        // sharply bent lead arm at chest height — the range has to stay inside
-        // the arm's actual reach or the IK clamps it and both arms lock rigid.
-        const armSwing = U.lerp(0.22, 0.58, speedFrac);
-        const armPump = U.lerp(0.22, 0.52, speedFrac);
-        hlX = -0.30 + Math.sin(phase) * armSwing * 0.46;
-        hlY = reachY(shoulderY, 1.02 - Math.max(0, Math.sin(phase)) * armPump);
-        hrX = 0.30 + Math.sin(phase + Math.PI) * armSwing * 0.46;
-        hrY = reachY(shoulderY, 1.02 - Math.max(0, Math.sin(phase + Math.PI)) * armPump);
+        /* Arms swing as pendulums from the shoulder, on an arc rather than up
+         * and down a line: the hand travels forward AND rises as it comes
+         * through, which is the shape the eye actually reads as an arm
+         * swinging. The elbow keeps a real bend throughout because the hand
+         * rides at a fraction of full reach — driving it out past full reach
+         * makes the IK clamp, and a clamped arm is a straight arm, frozen.
+         *
+         * cos, not sin: the left arm hits its front stop at the same instant
+         * the right foot hits its own, which is what contralateral means. A
+         * quarter-cycle out and the figure looks like it is being puppeted. */
+        const armLen = BONE.upperArm + BONE.forearm;
+        const swingAmp = U.lerp(0.34, 0.92, speedFrac);
+        const carry = U.lerp(0.93, 0.74, speedFrac);   // elbows fold tighter at speed
+        const pump = U.lerp(0.05, 0.16, speedFrac);    // the leading arm folds tighter still
+        const swL = Math.cos(phase), swR = -swL;
+        const angL = swL * swingAmp, angR = swR * swingAmp;
+        const reachL = armLen * (carry - Math.max(0, swL) * pump);
+        const reachR = armLen * (carry - Math.max(0, swR) * pump);
+        hlX = shL + Math.sin(angL) * reachL;
+        hlY = shoulderY + Math.cos(angL) * reachL;
+        hrX = shR + Math.sin(angR) * reachR;
+        hrY = shoulderY + Math.cos(angR) * reachR;
 
-        // A touch of vertical bob and stride-linked hip counter-rotation —
-        // the shoulders lead a full sprint slightly ahead of the hips.
-        shoulderY += Math.abs(Math.sin(phase * 2)) * -0.014 * speedFrac;
         torsoLean = speedFrac * 0.16;
-        hipLean = torsoLean - Math.sin(phase) * 0.05 * speedFrac;
+        hipLean = torsoLean - Math.cos(phase) * 0.04 * speedFrac;
       } else if (!this.jumping) {
         const sway = Math.sin(t * 1.15) * 0.024;
         const breathe = Math.sin(t * 0.85) * 0.014;
         const weightShift = Math.sin(t * 0.42) * 0.028; // slow idle weight transfer, knee to knee
         flX += sway + weightShift; frX -= sway - weightShift;
-        flY = Math.max(0, -weightShift) * 0.4; frY = Math.max(0, weightShift) * 0.4;
+        // The unweighted foot comes up off the floor, never down through it:
+        // pose y is negative for up, so a positive lift here buries the shoe.
+        flY = -Math.max(0, -weightShift) * 0.4; frY = -Math.max(0, weightShift) * 0.4;
         shoulderY += breathe;
         hlY += Math.sin(t * 1.0 + 1.4) * 0.020;
         hrY += Math.sin(t * 1.0) * 0.020;
@@ -1483,7 +1567,12 @@
       let armRoll = 0;
       if (this._guardBlend > 0.001) {
         const g = this._guardBlend;
-        shoulderY += g * 0.12;                    // lower center of gravity
+        // Lower centre of gravity. The whole upper body sinks — hips, shoulders
+        // and the hands riding off them — because dropping the shoulders alone
+        // does not crouch a figure, it shortens its spine by a fifth.
+        const drop = g * 0.12;
+        hipY += drop; shoulderY += drop;
+        hlY += drop; hrY += drop;
         flX -= g * 0.12; frX += g * 0.12;          // wider base
         // Arms spread wide. This one cannot be expressed as an x offset the way
         // the stance can: the solver works in a single flat plane, and draw()
@@ -1508,9 +1597,9 @@
       /* ---- dribbling hand: reaches down on the bounce, up on the catch --- */
       if (this.hasBall && !this.isBusyShooting) {
         const c = (Math.cos(this.dribblePhase * Math.PI * 2) + 1) * 0.5; // 1=held high, 0=at the bounce
-        hrX = 0.32;
-        hrY = U.lerp(reachY(shoulderY, 1.02), reachY(shoulderY, 0.72), c);
-        hlX = -0.04; hlY = reachY(shoulderY, 0.98); // guide hand stays close, out of the way
+        hrX = shR + 0.11;                          // ball works out in front of the hip
+        hrY = U.lerp(reachY(shoulderY, 0.99), reachY(shoulderY, 0.72), c);
+        hlX = shL + 0.09; hlY = reachY(shoulderY, 0.94); // guide hand close, out of the way
       }
 
       /* ---- dribble moves: crossover / behind-the-back / spin / hesitation -
@@ -1528,9 +1617,10 @@
           // Lower and sharper than a normal dribble — the ball dips toward
           // the floor at the midpoint of the sweep, the classic low snap.
           const dip = Math.sin(sweep * Math.PI);
-          hrX = U.lerp(-0.34 * dir, 0.34 * dir, sweep);
+          const sweepX = U.lerp(-0.28 * dir, 0.28 * dir, sweep);
+          hrX = shR + sweepX;
           hrY = hipY + 0.10 + dip * 0.14;
-          hlX = -hrX * 0.32; hlY = hipY + 0.30 - dip * 0.06;
+          hlX = shL - sweepX * 0.32; hlY = hipY + 0.30 - dip * 0.06;
           torsoLean = -dip * dir * 0.07;
           hipLean = dip * dir * 0.035; // hips barely move — the fake lives in the shoulders
           shoulderY += dip * 0.03;
@@ -1540,17 +1630,18 @@
           const dip = Math.sin(sweep * Math.PI);
           // A wider, lower sweep that carries past the hip to read as going
           // around the body, with real torso wind-up against planted hips.
-          hrX = U.lerp(-0.40 * dir, 0.44 * dir, sweep);
+          const sweepX = U.lerp(-0.34 * dir, 0.38 * dir, sweep);
+          hrX = shR + sweepX;
           hrY = hipY + 0.02 + dip * 0.18;
-          hlX = -hrX * 0.28; hlY = hipY + 0.28;
+          hlX = shL - sweepX * 0.28; hlY = hipY + 0.28;
           torsoLean = dip * dir * 0.09;
           hipLean = dip * dir * 0.02;
 
         } else if (this.moveState === 'spin') {
           // Ball protected in tight to the body for the whole rotation, low
           // and compact, with a deeper knee bend to sell the pivot.
-          hrX = 0.11; hrY = hipY + 0.22;
-          hlX = -0.15; hlY = hipY + 0.30;
+          hrX = shR + 0.02; hrY = hipY + 0.22;
+          hlX = shL + 0.06; hlY = hipY + 0.30;
           flX *= 0.42; frX *= 0.42;
           flY -= 0.05; frY -= 0.05;
           // The shoulders lead the turn; hips catch up a beat behind.
@@ -1564,15 +1655,15 @@
             const kk = U.clamp01(k / 0.55);
             const stutter = (Math.cos(this._animClock * 16) + 1) * 0.5;
             const crouch = U.ease.outCubic(kk) * 0.14;
-            hrX = 0.30; hrY = hipY + 0.02 + stutter * 0.04 + crouch * 0.3;
-            hlX = 0.08; hlY = hipY + 0.26;
+            hrX = shR + 0.10; hrY = hipY + 0.02 + stutter * 0.04 + crouch * 0.3;
+            hlX = shL + 0.12; hlY = hipY + 0.26;
             flY -= crouch * 0.5; frY -= crouch * 0.5;
             torsoLean = crouch * 0.5;
           } else {
             // The burst: full extension as the player explodes forward,
             // hand climbing back up and out ahead of the body.
             const go = U.ease.outCubic((k - 0.55) / 0.45);
-            hrX = U.lerp(0.30, 0.40, go); hrY = U.lerp(hipY + 0.16, hipY + 0.50, go);
+            hrX = shR + U.lerp(0.10, 0.22, go); hrY = U.lerp(hipY + 0.16, hipY + 0.50, go);
             torsoLean = U.lerp(0.07, -0.10, go);
           }
         }
@@ -1585,8 +1676,9 @@
         // chest, with a slight backward counter-lean before the drive up.
         flY = U.lerp(flY, -0.05, k); frY = U.lerp(frY, -0.05, k);
         flX = U.lerp(flX, -BONE.hipW * 0.7, k); frX = U.lerp(frX, BONE.hipW * 0.7, k);
-        hlX = U.lerp(hlX, -0.14, k); hlY = U.lerp(hlY, reachY(shoulderY, 0.62), k);
-        hrX = U.lerp(hrX, 0.14, k); hrY = U.lerp(hrY, reachY(shoulderY, 0.62), k);
+        hlX = U.lerp(hlX, shL + 0.13, k); hlY = U.lerp(hlY, reachY(shoulderY, 0.62), k);
+        hrX = U.lerp(hrX, shR + 0.13, k); hrY = U.lerp(hrY, reachY(shoulderY, 0.62), k);
+        hipY += 0.07 * k;
         shoulderY += 0.07 * k;
         torsoLean = -0.03 * k;
 
@@ -1594,12 +1686,22 @@
         const v = U.clamp01(this.meter.value);
         // Higher release point, arm driven closer to full lockout, a
         // visible forward head/shoulder reach at the top of the motion.
-        hrX = U.lerp(0.14, 0.24, v);
-        hrY = U.lerp(reachY(shoulderY, 0.64), shoulderY - 0.72, v);
-        hlX = U.lerp(-0.14, 0.10, v);
-        hlY = U.lerp(reachY(shoulderY, 0.64), shoulderY - 0.36, v);
+        // The shooting hand climbs to nearly full extension over the head; the
+        // guide hand stays a good deal lower and tucked in beside the ball. Two
+        // hands thrown up to the same height reads as a touchdown signal, not a
+        // jumper. Neither target passes the arm's actual reach — a target the
+        // IK has to clamp comes out as a locked, poker-straight arm.
+        hrX = shR + U.lerp(0.03, 0.10, v);
+        hrY = U.lerp(reachY(shoulderY, 0.64), shoulderY - 0.56, v);
+        hlX = shL + U.lerp(0.05, 0.15, v);
+        hlY = U.lerp(reachY(shoulderY, 0.64), shoulderY - 0.22, v);
+        // Both hands work in toward the ball as they come up. Same roll the
+        // defensive stance uses, and above the shoulder it draws the arms
+        // together instead of apart — without it the two arms rise on rails a
+        // shoulder-width apart and the shot reads as a touchdown signal.
+        armRoll = v * 0.34;
         if (this.jumping) {
-          flX = -0.04; frX = 0.04;
+          flX = -BONE.hipW + 0.02; frX = BONE.hipW + 0.02;
           flY = frY = U.lerp(-0.12, 0.06, v);
         }
         torsoLean = U.lerp(0.02, -0.07, v);
@@ -1611,10 +1713,11 @@
         // holding still — the signature "cookie jar" finish.
         const snap = k < 0.35 ? U.ease.outCubic(k / 0.35) : 1;
         const curl = k > 0.35 ? U.ease.inOutSine((k - 0.35) / 0.65) : 0;
-        hrX = U.lerp(0.24, 0.14, curl); hrY = shoulderY - 0.68 - snap * 0.10 + curl * 0.12;
-        hlX = -0.04; hlY = shoulderY - 0.44;
+        hrX = shR + U.lerp(0.10, 0.05, curl); hrY = shoulderY - 0.56 - snap * 0.03 + curl * 0.12;
+        hlX = shL + 0.14; hlY = shoulderY - 0.24;
+        armRoll = 0.34 * (1 - curl * 0.5);   // hands stay in over the ball, then relax
         // Toe point — the plant foot stretches down through extension.
-        flX = -0.06; frX = 0.06;
+        flX = -BONE.hipW; frX = BONE.hipW;
         flY = frY = this.jumping ? -0.09 - snap * 0.03 : U.lerp(-0.05, 0.01, k);
         torsoLean = -0.07 - snap * 0.03;
 
@@ -1630,8 +1733,8 @@
           flY = -0.13 * (1 - k);
           frX = U.lerp(0.28, -0.14, step1) + step2 * 0.38;
           frY = 0.07 + step2 * 0.15;
-          hrX = U.lerp(0.10, 0.34, k); hrY = U.lerp(hipY + 0.24, shoulderY - 0.66, k);
-          hlX = -0.24; hlY = shoulderY - 0.08;
+          hrX = shR + U.lerp(-0.02, 0.16, k); hrY = U.lerp(hipY + 0.24, shoulderY - 0.66, k);
+          hlX = shL + 0.02; hlY = shoulderY - 0.08;
           torsoLean = 0.08 - k * 0.13 + Math.sin(k * Math.PI) * 0.08;
           hipLean = torsoLean * 0.5;
 
@@ -1642,8 +1745,8 @@
           const rise = U.clamp01((k - 0.4) / 0.6);
           flX = U.lerp(-0.18, -0.09, gather); flY = -0.06 * gather - rise * 0.26;
           frX = U.lerp(0.22, 0.09, gather); frY = -0.06 * gather - rise * 0.26;
-          hrX = U.lerp(0.14, 0.32, k); hrY = U.lerp(hipY + 0.20, shoulderY - 0.68, k);
-          hlX = -0.18; hlY = shoulderY - 0.10;
+          hrX = shR + U.lerp(0.02, 0.14, k); hrY = U.lerp(hipY + 0.20, shoulderY - 0.68, k);
+          hlX = shL + 0.06; hlY = shoulderY - 0.10;
           torsoLean = 0.05 - k * 0.12;
 
         } else {
@@ -1653,8 +1756,8 @@
           const oneHand = U.clamp01((k - 0.7) / 0.3);
           flX = -0.03; flY = -0.42 * kneeUp * (1 - k * 0.25);
           frX = 0.24; frY = 0.11 + k * 0.11;
-          hrX = U.lerp(0.16, 0.34, k); hrY = U.lerp(hipY + 0.22, shoulderY - 0.68, k);
-          hlX = U.lerp(-0.20, -0.30, oneHand); hlY = U.lerp(shoulderY - 0.12, shoulderY - 0.30, oneHand);
+          hrX = shR + U.lerp(0.04, 0.16, k); hrY = U.lerp(hipY + 0.22, shoulderY - 0.68, k);
+          hlX = shL + U.lerp(0.04, -0.04, oneHand); hlY = U.lerp(shoulderY - 0.12, shoulderY - 0.30, oneHand);
           torsoLean = 0.12 - k * 0.17;
         }
 
@@ -1665,11 +1768,11 @@
         // A much bigger wind-up (the ball goes way back and high) and a full
         // overhead extension on the thrust, off-arm driving up too for a
         // real two-arm power slam silhouette instead of one hand poking up.
-        flX = -0.13; flY = -0.40 * (1 - thrust * 0.5);
-        frX = 0.13; frY = -0.40 * (1 - thrust * 0.5);
-        hrX = U.lerp(0.16, 0.04, thrust);
+        flX = -BONE.hipW - 0.03; flY = -0.40 * (1 - thrust * 0.5);
+        frX = BONE.hipW - 0.03; frY = -0.40 * (1 - thrust * 0.5);
+        hrX = shR + U.lerp(-0.06, 0.10, thrust);
         hrY = U.lerp(shoulderY - 0.22 - cock * 0.46, shoulderY - 0.95 + thrust * 0.62, thrust);
-        hlX = U.lerp(0.06, -0.10, thrust);
+        hlX = shL + U.lerp(0.10, 0.04, thrust);
         hlY = shoulderY - 0.58 - cock * 0.26 - thrust * 0.30;
         torsoLean = -0.14 - cock * 0.06 - thrust * 0.16;
 
@@ -1699,13 +1802,15 @@
         const legTuck = landed
           ? 0.05 + absorb * 0.16
           : U.lerp(0.24, 0.15, rise) + load * 0.05;
-        flX = -0.09 - load * 0.03; flY = -legTuck;
-        frX = 0.09 + load * 0.03; frY = -legTuck;
+        flX = -BONE.hipW + 0.01 - load * 0.03; flY = -legTuck;
+        frX = BONE.hipW + 0.01 + load * 0.03; frY = -legTuck;
 
         const reachY = shoulderY - 0.10 - rise * 0.90 - load * 0.08 + absorb * 0.55;
-        const reachX = 0.13 - rise * 0.06;
-        hrX = reachX + swat * 0.24; hrY = reachY + swat * 0.34;
-        hlX = -reachX - swat * 0.05; hlY = reachY + swat * 0.10;
+        // Straight overhead as the arms extend, so a contest is a wall rather
+        // than one hand in front of the face and one behind the head.
+        const reachX = 0.04 - rise * 0.03;
+        hrX = shR + reachX + swat * 0.26; hrY = reachY + swat * 0.34;
+        hlX = shL + reachX - swat * 0.05; hlY = reachY + swat * 0.10;
 
         torsoLean = 0.05 + load * 0.09 + rise * 0.08 - swat * 0.08 - absorb * 0.10;
 
@@ -1719,10 +1824,10 @@
         const lunge = U.ease.outCubic(Math.min(1, k * 1.9));
         const recover = k > 0.75 ? (k - 0.75) / 0.25 : 0;
         const amt = lunge * (1 - recover * 0.4);
-        hrX = 0.14 + amt * 0.40; hrY = hipY + 0.34 - amt * 0.18;
-        hlX = -0.24 - amt * 0.06; hlY = hipY + 0.18 + amt * 0.05;
-        flX = -0.07 - amt * 0.02; flY = -amt * 0.03;
-        frX = 0.14 + amt * 0.16; frY = 0.02;
+        hrX = shR + 0.02 + amt * 0.42; hrY = hipY + 0.34 - amt * 0.18;
+        hlX = shL - 0.04 - amt * 0.06; hlY = hipY + 0.18 + amt * 0.05;
+        flX = -BONE.hipW + 0.03 - amt * 0.02; flY = -amt * 0.03;
+        frX = BONE.hipW + 0.04 + amt * 0.16; frY = 0.02;
         torsoLean = 0.20 * amt;
 
       }
@@ -1748,14 +1853,30 @@
       p.headY = shoulderY - BONE.neck - this.armRaise * 0.05;
       p.torsoLean = torsoLean;
       p.hipLean = hipLean == null ? torsoLean : hipLean;
-      p.footL.x = flX; p.footL.y = flY;
-      p.footR.x = frX; p.footR.y = frY;
+      p.footL.x = flX; p.footL.y = flY; p.footL.pitch = pitchL;
+      p.footR.x = frX; p.footR.y = frY; p.footR.pitch = pitchR;
       p.handL.x = hlX; p.handL.y = hlY;
       p.handR.x = hrX; p.handR.y = hrY;
 
-      solveIK2(-BONE.hipW, hipY, flX, flY, BONE.thigh, BONE.shin, 1, p.kneeL);
+      /* The bend flag picks which of the two mirror-image IK solutions to
+       * take, and BOTH legs take the same one, as do both arms.
+       *
+       * Mirroring it left-to-right is only correct in a flat front-on view,
+       * where left and right limbs really are mirrored across the screen. In
+       * this solver's plane the axis is the player's FORWARD, not their left,
+       * so a mirrored flag does not mirror anything — it points one knee where
+       * it belongs and puts the other one in backwards, which is the reversed,
+       * bird-legged knee and the elbow folded the wrong way across the chest.
+       *
+       * -1 for legs puts the knee ahead of the hip-to-ankle line and +1 for
+       * arms puts the elbow behind the shoulder-to-wrist line, which is the
+       * only way either joint goes. Being fore/aft, both are direction-aware
+       * for free: the same +1 that keeps a hanging elbow behind the arm also
+       * carries it out in front once the hand goes up over the head, exactly
+       * as a real elbow travels through a jump shot. */
+      solveIK2(-BONE.hipW, hipY, flX, flY, BONE.thigh, BONE.shin, -1, p.kneeL);
       solveIK2(BONE.hipW, hipY, frX, frY, BONE.thigh, BONE.shin, -1, p.kneeR);
-      solveIK2(-BONE.shoulderW, shoulderY, hlX, hlY, BONE.upperArm, BONE.forearm, -1, p.elbowL);
+      solveIK2(-BONE.shoulderW, shoulderY, hlX, hlY, BONE.upperArm, BONE.forearm, 1, p.elbowL);
       solveIK2(BONE.shoulderW, shoulderY, hrX, hrY, BONE.upperArm, BONE.forearm, 1, p.elbowR);
     }
   }
@@ -1825,29 +1946,98 @@
   }
 
   /**
+   * The whole gait as one function of how fast the player is moving.
+   *
+   * update() needs it to advance the stride by ground covered and _updatePose
+   * needs it to place the feet. They have to agree exactly — a stride phase
+   * advanced against one stride length and spent against another is precisely
+   * the skate this is all built to avoid — so both read it from here.
+   *
+   * `stride` is the foot's travel each way from under the hip, and it is the
+   * number the leg's reach caps. A leg of length L with the hip carried at
+   * height h can only put a foot sqrt(L^2 - h^2) from directly below it;
+   * anything past that is a target the IK has to clamp, which stops the foot
+   * where it can reach instead of where it was asked for and puts the skate
+   * straight back. This build's leg is 0.90 with the hips at 0.86, which
+   * allows 0.28 — so the hips also sink as the stride opens up, exactly as a
+   * sprinter's do, and that is what buys the longer step.
+   */
+  function gaitOf(speedFrac, out) {
+    const g = out || GAIT;
+    g.stride = U.lerp(0.14, 0.34, speedFrac);
+    // Fraction of the cycle each foot spends on the floor. Over a half the
+    // feet overlap (a walk's double support); under it they leave a float
+    // phase with neither foot down, which is what makes a run a run.
+    g.stance = U.lerp(0.62, 0.38, speedFrac);
+    g.lift = U.lerp(0.05, 0.20, speedFrac);
+    g.crouch = U.lerp(0.005, 0.070, speedFrac);
+    return g;
+  }
+  const GAIT = { stride: 0, stance: 0, lift: 0, crouch: 0 };
+
+  /* How far the foot rolls over the toe at push-off, and how far the toe comes
+   * up to clear the floor on the way through and land heel-first. A foot held
+   * rigidly flat through all of this is the single clearest tell of an
+   * animation rig that stops at the ankle. */
+  const TOE_OFF = 0.60;
+  const HEEL_UP = 0.22;
+
+  /**
    * One foot's offset for a point in the stride cycle.
    *
-   * The first half is stance: the foot is on the floor and travels straight
-   * back, covering exactly the ground the body covers forward. The second half
-   * is swing: it lifts in an arc and returns to the front. Writing it this way
-   * rather than as a sine is the difference between running and skating.
+   * Stance is on the floor, travelling straight back, covering exactly the
+   * ground the body covers forward. Swing lifts in an arc and returns to the
+   * front. Writing it this way rather than as a sine is the difference between
+   * running and skating.
    *
-   * @param {object} out {x, y} in pose units; y is negative for lift
+   * The ankle also rises through the back of stance. That is not a lift off
+   * the floor: the foot is pivoting over a toe that stays planted, so the
+   * ankle has to climb by the toe's length times the sine of the roll for the
+   * contact point to stay exactly where it was put.
+   *
+   * @param {object} out {x, y, pitch}; y is negative for lift, pitch is
+   *        radians with the toe going down
    * @param {number} phase radians, advanced by distance travelled
+   * @param {object} g a gait from gaitOf
    */
-  function stepFoot(out, phase, stride, lift) {
+  function stepFoot(out, phase, g) {
     const u = ((phase / (Math.PI * 2)) % 1 + 1) % 1;
-    if (u < 0.5) {
-      out.x = stride * (1 - 4 * u);
-      out.y = 0;
+    if (u < g.stance) {
+      const k = u / g.stance;                    // 0 at touchdown, 1 at toe-off
+      out.x = g.stride * (1 - 2 * k);
+      const roll = k > 0.62 ? (k - 0.62) / 0.38 : 0;
+      const heelOff = TOE_OFF * roll * roll;
+      // Heel strike: the toe is still up for the first moments of contact.
+      out.pitch = heelOff - HEEL_UP * Math.max(0, 1 - k / 0.12);
+      out.y = -BONE.toe * Math.sin(heelOff);
     } else {
-      const k = (u - 0.5) * 2;
-      out.x = stride * (2 * k - 1);
-      out.y = -Math.sin(k * Math.PI) * lift;
+      const k = (u - g.stance) / (1 - g.stance); // 0 at toe-off, 1 at touchdown
+      out.x = g.stride * (2 * k - 1);
+      out.y = -Math.sin(k * Math.PI) * g.lift;
+      // The foot leaves the floor still pointed, then dorsiflexes to land.
+      out.pitch = U.lerp(TOE_OFF, -HEEL_UP, U.ease.inOutSine(Math.min(1, k * 1.35)));
     }
     return out;
   }
-  const STEP_L = { x: 0, y: 0 }, STEP_R = { x: 0, y: 0 };
+  const STEP_L = { x: 0, y: 0, pitch: 0 }, STEP_R = { x: 0, y: 0, pitch: 0 };
+
+  /**
+   * Rotates a bone's tail back toward vertical about its own head, keeping its
+   * length. HEAD_UPRIGHT is how much of the spine's tilt is taken out: 1 would
+   * be a head bolted permanently level, 0 the head riding the lean in full.
+   */
+  const HEAD_UPRIGHT = 0.78;
+  function uprightHead(a, b) {
+    const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
+    const len = Math.hypot(dx, dy, dz);
+    if (len < 1e-6) return;
+    const t = HEAD_UPRIGHT;
+    const ux = dx * (1 - t), uy = dy * (1 - t), uz = dz * (1 - t) + len * t;
+    const ul = Math.hypot(ux, uy, uz) || 1;
+    b[0] = a[0] + (ux / ul) * len;
+    b[1] = a[1] + (uy / ul) * len;
+    b[2] = a[2] + (uz / ul) * len;
+  }
 
   /** Point `t` of the way from world point a to world point b. */
   function mixPt(out, a, b, t) {
