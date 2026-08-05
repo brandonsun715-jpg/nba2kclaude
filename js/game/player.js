@@ -50,6 +50,43 @@
     stance: 0.74 * HU      // half the span between the feet, wider than the hips
   };
 
+  /* Reference stature in skeleton units. Every pose offset in this file is
+   * hand-tuned against this scale, so it stays fixed even when the build
+   * underneath it changes. */
+  const REF_STATURE = 8 * HU;
+
+  /**
+   * Adopts a skinned mesh's own proportions.
+   *
+   * The table above is a drawn figure's build. A real mesh has its own, and if
+   * the two disagree the skinning has to stretch bones to reconcile them — this
+   * model's thighs were coming out 28% longer than the mesh was modelled with
+   * and its hips 45% wider, which is most of why the figure looked wrong no
+   * matter how good the animation driving it was. Taking the mesh's landmarks
+   * as the skeleton means almost nothing has to stretch at all.
+   *
+   * Landmarks are fractions of stature, so they scale onto whatever reference
+   * height the pose constants were tuned against.
+   */
+  function adoptMeshBuild(L) {
+    if (!L) return;
+    const S = REF_STATURE;
+    // Legs are measured from the FLOOR, not the ankle: the solver's foot target
+    // is the ground contact, and draw() lifts the mesh's ankle back up into the
+    // shoe afterwards.
+    BONE.shin = L.knee * S;
+    BONE.thigh = (L.hip - L.knee) * S;
+    BONE.torso = (L.shoulder - L.hip) * S;
+    BONE.neck = (L.headCenter - L.shoulder) * S;
+    BONE.headR = (L.crown - L.headCenter) * S;
+    BONE.upperArm = L.upperArm * S;
+    BONE.forearm = L.forearm * S;
+    BONE.hipW = L.hipW * S;
+    BONE.shoulderW = L.shoulderW * S;
+    BONE.stance = L.hipW * 1.30 * S;
+  }
+  adoptMeshBuild(BB.PLAYER_MESH && BB.PLAYER_MESH.landmarks);
+
   /* Limbs do not hang in a vertical plane straight off the joint they start at.
    * Arms converge toward the body as they go down — the wrists sit well inside
    * the shoulders — while legs splay the other way onto a base wider than the
@@ -365,6 +402,22 @@
       return out;
     }
 
+    /**
+     * Where the drawn foot is, in world feet. The leg counterpart to handAt,
+     * and the only way to tell whether a planted foot is actually staying put
+     * rather than sliding along under the player.
+     */
+    footAt(side, out) {
+      out = out || { x: 0, y: 0, z: 0 };
+      const p = this.pose, f = this._frame();
+      const knee = side < 0 ? p.kneeL : p.kneeR;
+      const w = side * BONE.hipW;
+      const lean = p.hipLean * 0.45 + this.lean * 0.16;
+      posePoint(TMP_P0, f, knee.ex, knee.ey, w, side * BONE.stance, lean);
+      out.x = TMP_P0[0]; out.y = TMP_P0[1]; out.z = TMP_P0[2];
+      return out;
+    }
+
     /** World point the ball should render at while this player controls it. */
     handPosition(out) {
       out = out || { x: 0, y: 0, z: 0 };
@@ -594,8 +647,16 @@
       }
 
       if (speed > 0.05) {
-        // Stride rate scales with speed so a jog and a sprint read differently.
-        this.stridePhase += dt * (1.6 + (speed / top) * 3.4);
+        // Advance the stride by GROUND COVERED, not by elapsed time.
+        //
+        // A time-based rate has no relationship to how fast the body is
+        // actually travelling, so the planted foot slides backwards under the
+        // player and the whole run reads as skating. Tying phase to distance
+        // makes a foot stay where it was put: one full cycle is two steps, and
+        // a step carries the body twice the stride amplitude.
+        const strideLen = U.lerp(0.17, 0.50, U.clamp01(speed / top));
+        const perCycle = Math.max(0.35, 4 * strideLen * this.bodyScale);
+        this.stridePhase += (speed * dt / perCycle) * Math.PI * 2;
       }
       if (this.hasBall && this._dribbleLive && this.action === ACTION.MOVE) {
         this.dribblePhase += dt * (1.7 + (speed / top) * 1.3);
@@ -1365,30 +1426,36 @@
       let flX = -BONE.hipW, flY = 0;
       let frX = BONE.hipW, frY = 0;
       // Hands hang just inside full extension so the elbows keep a soft bend.
-      let hlX = -0.30, hlY = hipY + 0.02;
-      let hrX = 0.30, hrY = hipY + 0.02;
+      let hlX = -0.30, hlY = reachY(shoulderY, 0.96);
+      let hrX = 0.30, hrY = reachY(shoulderY, 0.96);
 
       /* ---- locomotion base layer: run cycle, or idle breathing/sway ------ */
       if (running) {
         const phase = this.stridePhase;
         const strideLen = U.lerp(0.17, 0.50, speedFrac);
         const lift = U.lerp(0.055, 0.21, speedFrac);
-        const swingL = Math.sin(phase + Math.PI), swingR = Math.sin(phase);
 
-        flX = -BONE.hipW + swingL * strideLen;
-        flY = -Math.max(0, swingL) * lift;
-        frX = BONE.hipW + swingR * strideLen;
-        frY = -Math.max(0, swingR) * lift;
+        // Each leg walks a stance-then-swing cycle, half a period apart.
+        // A plain sine on both axes cannot describe a run: it sends the
+        // planted foot backwards and then forwards again while it is still on
+        // the floor, so the foot has to slide no matter how the phase is
+        // driven. During stance the foot tracks straight back at exactly the
+        // rate the body moves forward, which is what leaves it standing still
+        // on the hardwood.
+        stepFoot(STEP_L, phase + Math.PI, strideLen, lift);
+        stepFoot(STEP_R, phase, strideLen, lift);
+        flX = -BONE.hipW + STEP_L.x; flY = STEP_L.y;
+        frX = BONE.hipW + STEP_R.x; frY = STEP_R.y;
 
         // The swing runs from a straight trailing arm at the hip up to a
         // sharply bent lead arm at chest height — the range has to stay inside
         // the arm's actual reach or the IK clamps it and both arms lock rigid.
         const armSwing = U.lerp(0.22, 0.58, speedFrac);
-        const armPump = U.lerp(0.16, 0.36, speedFrac);
+        const armPump = U.lerp(0.22, 0.52, speedFrac);
         hlX = -0.30 + Math.sin(phase) * armSwing * 0.46;
-        hlY = hipY + 0.12 - Math.max(0, Math.sin(phase)) * armPump;
+        hlY = reachY(shoulderY, 1.02 - Math.max(0, Math.sin(phase)) * armPump);
         hrX = 0.30 + Math.sin(phase + Math.PI) * armSwing * 0.46;
-        hrY = hipY + 0.12 - Math.max(0, Math.sin(phase + Math.PI)) * armPump;
+        hrY = reachY(shoulderY, 1.02 - Math.max(0, Math.sin(phase + Math.PI)) * armPump);
 
         // A touch of vertical bob and stride-linked hip counter-rotation —
         // the shoulders lead a full sprint slightly ahead of the hips.
@@ -1442,8 +1509,8 @@
       if (this.hasBall && !this.isBusyShooting) {
         const c = (Math.cos(this.dribblePhase * Math.PI * 2) + 1) * 0.5; // 1=held high, 0=at the bounce
         hrX = 0.32;
-        hrY = U.lerp(hipY + 0.16, hipY - 0.08, c);
-        hlX = -0.04; hlY = hipY + 0.04; // guide hand stays close, out of the way
+        hrY = U.lerp(reachY(shoulderY, 1.02), reachY(shoulderY, 0.72), c);
+        hlX = -0.04; hlY = reachY(shoulderY, 0.98); // guide hand stays close, out of the way
       }
 
       /* ---- dribble moves: crossover / behind-the-back / spin / hesitation -
@@ -1518,8 +1585,8 @@
         // chest, with a slight backward counter-lean before the drive up.
         flY = U.lerp(flY, -0.05, k); frY = U.lerp(frY, -0.05, k);
         flX = U.lerp(flX, -BONE.hipW * 0.7, k); frX = U.lerp(frX, BONE.hipW * 0.7, k);
-        hlX = U.lerp(hlX, -0.14, k); hlY = U.lerp(hlY, hipY - 0.16, k);
-        hrX = U.lerp(hrX, 0.14, k); hrY = U.lerp(hrY, hipY - 0.16, k);
+        hlX = U.lerp(hlX, -0.14, k); hlY = U.lerp(hlY, reachY(shoulderY, 0.62), k);
+        hrX = U.lerp(hrX, 0.14, k); hrY = U.lerp(hrY, reachY(shoulderY, 0.62), k);
         shoulderY += 0.07 * k;
         torsoLean = -0.03 * k;
 
@@ -1528,9 +1595,9 @@
         // Higher release point, arm driven closer to full lockout, a
         // visible forward head/shoulder reach at the top of the motion.
         hrX = U.lerp(0.14, 0.24, v);
-        hrY = U.lerp(hipY - 0.14, shoulderY - 0.72, v);
+        hrY = U.lerp(reachY(shoulderY, 0.64), shoulderY - 0.72, v);
         hlX = U.lerp(-0.14, 0.10, v);
-        hlY = U.lerp(hipY - 0.14, shoulderY - 0.36, v);
+        hlY = U.lerp(reachY(shoulderY, 0.64), shoulderY - 0.36, v);
         if (this.jumping) {
           flX = -0.04; frX = 0.04;
           flY = frY = U.lerp(-0.12, 0.06, v);
@@ -1743,6 +1810,44 @@
     out[2] = f.z + up * f.s;
     return out;
   }
+
+  /**
+   * Pose-space y for a hand hanging `frac` of the arm's full reach below the
+   * shoulder. Pose space has -y as up, so a larger fraction hangs lower.
+   *
+   * Every rest and locomotion hand target goes through this instead of naming
+   * a distance below the hip. The IK solver clamps a target it cannot reach,
+   * which freezes the arm straight, and whether a given offset is reachable
+   * depends entirely on how long this particular model's arms are.
+   */
+  function reachY(shoulderY, frac) {
+    return shoulderY + (BONE.upperArm + BONE.forearm) * frac;
+  }
+
+  /**
+   * One foot's offset for a point in the stride cycle.
+   *
+   * The first half is stance: the foot is on the floor and travels straight
+   * back, covering exactly the ground the body covers forward. The second half
+   * is swing: it lifts in an arc and returns to the front. Writing it this way
+   * rather than as a sine is the difference between running and skating.
+   *
+   * @param {object} out {x, y} in pose units; y is negative for lift
+   * @param {number} phase radians, advanced by distance travelled
+   */
+  function stepFoot(out, phase, stride, lift) {
+    const u = ((phase / (Math.PI * 2)) % 1 + 1) % 1;
+    if (u < 0.5) {
+      out.x = stride * (1 - 4 * u);
+      out.y = 0;
+    } else {
+      const k = (u - 0.5) * 2;
+      out.x = stride * (2 * k - 1);
+      out.y = -Math.sin(k * Math.PI) * lift;
+    }
+    return out;
+  }
+  const STEP_L = { x: 0, y: 0 }, STEP_R = { x: 0, y: 0 };
 
   /** Point `t` of the way from world point a to world point b. */
   function mixPt(out, a, b, t) {

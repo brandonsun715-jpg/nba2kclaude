@@ -243,8 +243,15 @@
       if (!S3 || !S3.ready || !this._crowd) return;
 
       /* Arena deck: the dark floor the whole building sits on, extending well
-       * past the stands so the camera never sees the void behind them. */
-      S3.box(C.HALF_L, C.HALF_W, -0.35, 260, 260, 0.7, 0, DECK, 0.02);
+       * past the stands so the camera never sees the void behind them.
+       *
+       * Its top face has to stay clear of the court's floor plane at z = 0.
+       * Sitting flush there made the two surfaces coplanar, and at broadcast
+       * distance the depth buffer cannot separate them: whichever won varied
+       * with sub-pixel camera movement, so the hardwood tore into bands and
+       * whole stretches of it flipped to this dark deck colour frame to frame.
+       * The court reads as a floor laid on the deck, which is what it is. */
+      S3.box(C.HALF_L, C.HALF_W, -0.75, 260, 260, 0.7, 0, DECK, 0.02);
 
       S3.pushBatch(S3.meshes.box, this._structure, this._structureCount);
       S3.pushBatch(S3.meshes.crowd, this._crowd, this._crowdCount);

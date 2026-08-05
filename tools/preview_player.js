@@ -37,6 +37,14 @@ const POSES = {
   shoot: 'pl.action = "meter"; pl.actionT = 0.2; pl.meter.value = 0.85; pl.armRaise = 1;'
 };
 
+/* gait0..gait7 walk one full stride cycle. Rendered side by side they show
+ * whether the feet plant or skate, which a single frame cannot. */
+const GAIT_STEPS = 8;
+for (let i = 0; i < GAIT_STEPS; i++) {
+  POSES['gait' + i] = 'pl.vx = 13; pl.vy = 0; pl.facing = 0; pl.sprinting = true;' +
+    ' pl.stridePhase = ' + (i * Math.PI * 2 / GAIT_STEPS).toFixed(6) + ';';
+}
+
 /* The broadcast rig is bolted to the sideline — its closest approach to a
  * player at centre court is about 25 feet, which is a whole basketball court
  * too far away to judge a jersey seam. Rather than bend the real camera into a

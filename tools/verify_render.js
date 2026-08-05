@@ -434,7 +434,98 @@ console.log('\n[7] the dribbled ball sits in the drawn hand');
         'gap=' + (o.topGap || 0).toFixed(3) + 'ft');
 }
 
-console.log('\n[8] player creator preview');
+console.log('\n[8] the floor does not fight the arena deck');
+{
+  const r = runInPage(`
+    var BB = window.BB;
+    BB.Engine.setState('shootaround'); BB.Engine._applyPending();
+    var sc = BB.Engine.scene, gl = BB.GLX.gl, M4 = BB.M4, cam = BB.Camera;
+    for (var w = 0; w < 200; w++) { sc.fixedUpdate(1/120); if (w % 2 === 0) sc.update(1/60, 1/60); }
+
+    // Nudge the rig by inches and re-render. Two coplanar surfaces cannot be
+    // separated by the depth buffer at broadcast distance, so which one wins
+    // flips with sub-pixel camera movement — whole stretches of hardwood turn
+    // into dark deck and back, which is what reads on screen as the court
+    // glitching. A scene with real depth separation barely moves at all.
+    var W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
+    var buf = new Uint8Array(W * H * 4), nudge = 0;
+    cam._rebuild = function () {
+      this.eye[0] = 47 + nudge * 0.31; this.eye[1] = 15.5; this.eye[2] = 83;
+      this.target[0] = 47; this.target[1] = 2.2; this.target[2] = 36;
+      M4.perspective(this.proj, 40 * Math.PI / 180, this.vw / Math.max(1, this.vh), 0.6, 420);
+      M4.lookAt(this.view, this.eye, this.target, [0, 1, 0]);
+      M4.multiply(this.viewProj, this.proj, this.view);
+    };
+    var cov = [];
+    for (var i = 0; i < 16; i++) {
+      nudge = i; cam._rebuild(); sc.render(0);
+      gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+      var warm = 0, n = 0;
+      for (var o = 0; o < buf.length; o += 4) {
+        if (buf[o] - buf[o + 2] > 30 && buf[o] > 70) warm++;
+        n++;
+      }
+      cov.push(warm / n);
+    }
+    var mn = Math.min.apply(null, cov), mx = Math.max.apply(null, cov);
+    // The mip chain is capped so the smallest level the hardware may fall back
+    // to is still a legible court rather than a one-pixel average.
+    gl.bindTexture(gl.TEXTURE_2D, BB.Court.tex);
+    var maxLevel = gl.getTexParameter(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    return { min: mn, max: mx, spread: mx - mn, maxLevel: maxLevel, glError: gl.getError() };
+  `, 'probe');
+  if (r.err) check('floor probe ran', false, r.err);
+  const o = r.out || {};
+  check('court floor is visible at broadcast distance', o.min > 0.2,
+        'min coverage=' + ((o.min || 0) * 100).toFixed(1) + '%');
+  check('floor does not flicker as the camera moves', o.spread < 0.03,
+        'spread=' + ((o.spread || 0) * 100).toFixed(1) + ' points');
+  check('court mip chain is capped on every GPU', o.maxLevel > 0 && o.maxLevel <= 6,
+        'TEXTURE_MAX_LEVEL=' + o.maxLevel);
+  check('gl clean after the sweep', o.glError === 0, 'code=' + o.glError);
+}
+
+console.log('\n[9] a running player plants their feet');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U;
+    var pl = new BB.Player({ height: 79 });
+    pl.placeAt(20, 25, 0);
+    pl.facing = pl.moveFacing = 0;
+    var dt = 1 / 60, speed = 14;
+
+    var prevLow = null, footMove = 0, bodyMove = 0, n = 0;
+    var a = { x: 0, y: 0, z: 0 }, b = { x: 0, y: 0, z: 0 };
+    for (var i = 0; i < 240; i++) {
+      pl.vx = speed; pl.vy = 0;
+      pl.x += speed * dt;
+      // Drive the stride exactly as updateMovement does.
+      var top = Math.max(pl.phys.maxSpeed, 1);
+      var strideLen = U.lerp(0.17, 0.50, U.clamp01(speed / top));
+      var perCycle = Math.max(0.35, 4 * strideLen * pl.bodyScale);
+      pl.stridePhase += (speed * dt / perCycle) * Math.PI * 2;
+      pl._updatePose(dt);
+
+      pl.footAt(-1, a); pl.footAt(1, b);
+      // The lower foot is the one taking the player's weight.
+      var low = a.z <= b.z ? { x: a.x, y: a.y, z: a.z } : { x: b.x, y: b.y, z: b.z };
+      if (i > 20 && prevLow) {
+        var same = Math.hypot(low.x - prevLow.x, low.y - prevLow.y) < speed * dt * 3;
+        if (same) { footMove += Math.hypot(low.x - prevLow.x, low.y - prevLow.y); bodyMove += speed * dt; n++; }
+      }
+      prevLow = low;
+    }
+    return { slideRatio: bodyMove > 0 ? footMove / bodyMove : 1, samples: n };
+  `, 'probe');
+  if (r.err) check('stride probe ran', false, r.err);
+  const o = r.out || {};
+  // A foot driven on a timer slides at very nearly the body's own speed.
+  check('planted foot does not skate under the player', o.slideRatio < 0.55,
+        'foot travels ' + ((o.slideRatio || 1) * 100).toFixed(0) + '% of body speed');
+}
+
+console.log('\n[10] player creator preview');
 {
   const r = runInPage(`
     var BB = window.BB;
@@ -489,7 +580,7 @@ console.log('\n[8] player creator preview');
 }
 
 if (process.argv.includes('--shots')) {
-  console.log('\n[9] screenshots');
+  console.log('\n[11] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],

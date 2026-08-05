@@ -202,6 +202,10 @@ function boneSegments(J) {
   };
 }
 
+function dist3(a, b) {
+  return Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+}
+
 function distToSegment(p, a, b) {
   const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
   const L2 = dx * dx + dy * dy + dz * dz;
@@ -405,6 +409,22 @@ function pack(verts, tris, J) {
       return o;
     })(),
     height: J.height,
+    /* Landmark heights and half-spans, as fractions of stature. The IK solver
+     * adopts these so it works in the model's own build: matching the skeleton
+     * to the mesh means the skinning barely has to stretch any bone, and a
+     * bone stretched 30 percent is exactly what makes a limb look wrong. */
+    landmarks: {
+      ankle: J.ankleL[2] / J.height,
+      knee: J.kneeL[2] / J.height,
+      hip: J.hipL[2] / J.height,
+      shoulder: J.shoulderL[2] / J.height,
+      headCenter: J.head[2] / J.height,
+      crown: 1,
+      hipW: Math.abs(J.hipL[0]) / J.height,
+      shoulderW: Math.abs(J.shoulderL[0]) / J.height,
+      upperArm: dist3(J.shoulderL, J.elbowL) / J.height,
+      forearm: dist3(J.elbowL, J.wristL) / J.height
+    },
     buffers: {
       pos: pos.toString('base64'),
       nrm: nrm.toString('base64'),

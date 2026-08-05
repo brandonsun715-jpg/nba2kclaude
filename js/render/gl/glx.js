@@ -24,6 +24,9 @@
   /* Instance stride in floats: 16 matrix + 4 colour + 4 params. */
   const INSTANCE_FLOATS = 24;
 
+  /* This module loads before core/utils.js, so it cannot reach BB.U. */
+  function U_clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
   const GLX = {
     gl: null,
     canvas: null,
@@ -204,14 +207,27 @@
       if (ext) {
         const max = gl.getParameter(ext.MAX_TEXTURE_MAX_ANISOTROPY_EXT);
         gl.texParameterf(gl.TEXTURE_2D, ext.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(16, max));
-      } else {
-        // Without anisotropy a grazing view of the floor selects an extremely
-        // high mip level, and the top of that chain is the average of the whole
-        // image — mostly the near-black apron — which drains the colour out of
-        // the far half of the court. Capping the chain keeps the maple looking
-        // like maple on hardware that lacks the extension.
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, 4);
       }
+
+      // Cap the mip chain — always, not just when anisotropy is missing.
+      //
+      // A grazing view of a 94-foot floor produces a texture-footprint ratio
+      // far past the 16:1 anisotropy hardware actually delivers, and past that
+      // limit it falls back to a high mip level anyway. The top of this chain
+      // is the average of the whole image, which is mostly the near-black
+      // apron, so the floor turns into a flat dark sheet with a hard edge
+      // where the ratio crosses the limit — and that edge sweeps across the
+      // court as the camera moves, which reads as the floor flickering.
+      //
+      // Capping so the smallest level still has a few hundred pixels along its
+      // long edge keeps the maple looking like maple at any angle. This has to
+      // apply on every GPU: the extension is present almost everywhere, which
+      // is exactly why guarding it behind a missing-extension fallback meant
+      // the cap never ran.
+      const longEdge = Math.max(src.width || 0, src.height || 0);
+      const level = U_clamp(Math.floor(Math.log2(Math.max(1, longEdge) / 256)), 2, 6);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, level);
+
       gl.bindTexture(gl.TEXTURE_2D, null);
       return tex;
     },
