@@ -489,7 +489,7 @@ console.log('\n[8] player creator preview');
 }
 
 if (process.argv.includes('--shots')) {
-  console.log('\n[7] screenshots');
+  console.log('\n[9] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],
