@@ -127,86 +127,211 @@
    * ===================================================================== */
   function registerScreens(M) {
 
-    /* ------------------------------------------------------------ main menu */
+    /* ------------------------------------------------------------ main menu
+     *
+     * A front page rather than a list: one row of modes across the top, and
+     * whichever mode the cursor is on gets the whole left column to explain
+     * itself — what kind of thing it is, a sentence about it, and one button
+     * that starts it. Nothing is buried in a submenu, and the scene behind is
+     * left showing on the right, where the standby camera holds a live player
+     * who changes what he is doing with the selection. The front end and the
+     * game are obviously the same thing, because they are.
+     *
+     * MODES is the entire menu. Every mode this build has appears here exactly
+     * once and owns its own copy, its action, and the pose the standby player
+     * strikes while it is selected.
+     */
+    const MODES = [
+      {
+        id: 'oneVone', tab: '1 vs 1', title: '1 vs 1', pose: 'dribble',
+        tags: ['Half Court', 'First to 11', 'Live Defender'],
+        body: 'Take an AI defender off the dribble, one on one. Crossovers, ' +
+              'step-backs and contested jumpers, with the real ruleset behind ' +
+              'them — travels, fouls, and a shot clock that does not care ' +
+              'how open you thought you were.',
+        cta: 'Play 1 vs 1',
+        act: function () { M.closeAll(); BB.Engine.setState('oneVone'); }
+      },
+      {
+        id: 'fiveVfive', tab: '5 vs 5', title: '5 vs 5', pose: 'guard',
+        tags: ['Full Court', 'Quarters', 'Team Control'],
+        body: 'A full team game with a running clock, quarters, team fouls ' +
+              'and the bonus. Control any player on the floor and switch on ' +
+              'the fly — the other nine run their own offence and defence ' +
+              'while you do.',
+        cta: 'Play 5 vs 5',
+        act: function () { M.closeAll(); BB.Engine.setState('fiveVfive'); }
+      },
+      {
+        id: 'shootaround', tab: 'Shootaround', title: 'Shootaround', pose: 'shoot',
+        tags: ['Free Practice', 'No Clock', 'Streaks'],
+        body: 'An open gym and as many shots as you want. Learn the release ' +
+              'meter, work on your range, and watch the streak counter climb. ' +
+              'Nothing is guarding you and nothing is being scored against you.',
+        cta: 'Start Shooting',
+        act: function () { M.closeAll(); BB.Engine.setState('shootaround'); }
+      },
+      {
+        id: 'createPlayer', tab: 'My Player', title: 'My Player', pose: 'idle',
+        tags: ['Build', 'Appearance', 'Ratings'],
+        body: 'Name, number, position, height, build and colours, plus the ' +
+              'ratings that decide how this player actually moves and shoots. ' +
+              'Whoever you make here is who you are in every other mode.',
+        cta: 'Open Creator',
+        status: function () {
+          const p = BB.PlayerProfile.load();
+          return p ? (p.name + '  ·  #' + p.number + '  ·  ' + p.position)
+                   : 'No player saved yet';
+        },
+        act: function () { M.push('createPlayer'); }
+      },
+      {
+        id: 'career', tab: 'Career', title: 'Career', pose: 'celebrate',
+        tags: ['Progression', 'Upgrades', 'Record'],
+        body: 'Every game banks experience. Level up to earn attribute points ' +
+              'and spend them wherever you want them — your record and ' +
+              'everything you have earned follow you from mode to mode.',
+        cta: 'Open Career',
+        status: function () {
+          const r = BB.Career.record();
+          return 'Level ' + r.level + '  ·  ' + r.wins + '-' + r.losses +
+                 (r.points > 0 ? '  ·  ' + r.points + ' point' +
+                  (r.points === 1 ? '' : 's') + ' to spend' : '');
+        },
+        act: function () { M.push('career'); }
+      },
+      {
+        id: 'settings', tab: 'Settings', title: 'Settings', pose: 'idle',
+        tags: ['Audio', 'Presentation', 'Difficulty'],
+        body: 'Mix the crowd against the commentary, pick a camera, set a ' +
+              'render quality your machine is happy with, and choose how hard ' +
+              'the AI plays — Rookie through Hall of Fame.',
+        cta: 'Open Settings',
+        act: function () { M.push('settings'); }
+      },
+      {
+        id: 'controls', tab: 'Controls', title: 'Controls', pose: 'guard',
+        tags: ['Keyboard', 'Gamepad', 'Rebindable'],
+        body: 'The full layout for keyboard and controller, every action ' +
+              'rebindable. Worth a minute before your first game: the dribble ' +
+              'moves and the pickup live on keys of their own.',
+        cta: 'Open Controls',
+        act: function () { M.push('controls'); }
+      }
+    ];
+
+    function modeById(id) {
+      for (let i = 0; i < MODES.length; i++) if (MODES[i].id === id) return MODES[i];
+      return MODES[0];
+    }
+
+    /** Tells the standby scene how to pose, when it is the scene running. */
+    function spotlight(mode) {
+      const s = BB.Engine && BB.Engine.scene;
+      if (s && s.spotlight) s.spotlight(mode.pose);
+    }
+
+    function heroHtml(mode) {
+      const status = mode.status ? mode.status() : '';
+      return `
+        <p class="menu-hero__tags">${mode.tags.join('<i aria-hidden="true">|</i>')}</p>
+        <h2 class="menu-hero__title">${mode.title}</h2>
+        <p class="menu-hero__body">${mode.body}</p>
+        ${status ? `<p class="menu-hero__status">${status}</p>` : ''}
+        <button class="menu-cta" data-nav data-autofocus data-go>
+          <span class="menu-cta__dot" aria-hidden="true"></span>${mode.cta}
+        </button>`;
+    }
+
     M.define({
       id: 'main',
-      build() {
+      build(params) {
+        const active = modeById(params && params.mode);
         return `
-          <div class="menu-stage">
-            <div class="menu-brand">
-              <div class="menu-brand__mark" aria-hidden="true">
-                <span></span><span></span><span></span>
-              </div>
-              <h1 class="menu-brand__word">HARDWOOD</h1>
-              <p class="menu-brand__tag">A basketball simulation</p>
+          <div class="menu">
+            <div class="menu__brand">
+              <span class="menu__mark" aria-hidden="true"></span>
+              <span class="menu__word">HARDWOOD</span>
             </div>
-            <nav class="menu-list" aria-label="Main menu">
-              <button class="menu-item menu-item--lead" data-nav data-autofocus data-act="oneVone">
-                <span class="menu-item__k">1 vs 1</span>
-                <span class="menu-item__d">Half-court game against an AI defender — first to 11</span>
-              </button>
-              <button class="menu-item" data-nav data-act="fiveVfive">
-                <span class="menu-item__k">5 vs 5</span>
-                <span class="menu-item__d">Full-court team game — switch control between teammates</span>
-              </button>
-              <button class="menu-item" data-nav data-act="play">
-                <span class="menu-item__k">Shootaround</span>
-                <span class="menu-item__d">Free shooting on a live court</span>
-              </button>
-              <button class="menu-item" data-nav data-act="createPlayer">
-                <span class="menu-item__k">Create Player</span>
-                <span class="menu-item__d">${(function () {
-                  const p = BB.PlayerProfile.load();
-                  return p ? ('Editing ' + p.name + ' \u2014 #' + p.number + ', ' + p.position) : 'Build your player — name, look, height, ability';
-                })()}</span>
-              </button>
-              <button class="menu-item" data-nav data-act="career">
-                <span class="menu-item__k">Career</span>
-                <span class="menu-item__d">${(function () {
-                  const r = BB.Career.record();
-                  return 'Level ' + r.level + ' \u00B7 ' + r.wins + '-' + r.losses
-                    + (r.points > 0 ? ' \u00B7 ' + r.points + ' point' + (r.points === 1 ? '' : 's') + ' to spend' : '');
-                })()}</span>
-              </button>
-              <button class="menu-item" data-nav data-act="settings">
-                <span class="menu-item__k">Settings</span>
-                <span class="menu-item__d">Audio, presentation, difficulty</span>
-              </button>
-              <button class="menu-item" data-nav data-act="controls">
-                <span class="menu-item__k">Controls</span>
-                <span class="menu-item__d">Keyboard and controller layout</span>
-              </button>
+            <nav class="menu-tabs" role="tablist" aria-label="Game modes">
+              ${MODES.map((m) => `
+                <button class="menu-tab${m === active ? ' is-on' : ''}" role="tab"
+                        aria-selected="${m === active}" data-nav data-tab="${m.id}"
+                  >${m.tab}</button>`).join('')}
             </nav>
-            <p class="menu-foot">Build ${BB.C.VERSION} · ${BB.C.BUILD}</p>
+            <div class="menu-hero" id="menu-hero">${heroHtml(active)}</div>
+            <p class="menu__foot">Build ${BB.C.VERSION} · ${BB.C.BUILD}</p>
           </div>`;
       },
-      mount(el) {
-        el.addEventListener('click', (e) => {
-          const b = e.target.closest('[data-act]');
-          if (!b) return;
-          A.unlock();
-          switch (b.dataset.act) {
-            case 'oneVone':
-              M.closeAll();
-              BB.Engine.setState('oneVone');
-              break;
-            case 'fiveVfive':
-              M.closeAll();
-              BB.Engine.setState('fiveVfive');
-              break;
-            case 'play':
-              M.closeAll();
-              BB.Engine.setState('shootaround');
-              break;
-            case 'createPlayer': M.push('createPlayer'); break;
-            case 'career': M.push('career'); break;
-            case 'settings': M.push('settings'); break;
-            case 'controls': M.push('controls'); break;
+
+      mount(el, params) {
+        let active = modeById(params && params.mode);
+        const hero = el.querySelector('#menu-hero');
+        const tabs = Array.prototype.slice.call(el.querySelectorAll('[data-tab]'));
+
+        /* Changing mode rewrites the hero panel in place instead of pushing a
+         * screen. The tab row has to stay exactly where it is, and a mode you
+         * are reading about is not a place you have gone to — only the
+         * button takes you anywhere. */
+        function select(mode) {
+          if (mode === active) return;
+          // Rewriting the panel destroys whatever is focused inside it. If
+          // that was the button, the focus falls to <body>, which is outside
+          // this screen — and every key handler on it, so the arrow keys that
+          // just changed the mode would stop working after one press.
+          const hadCta = document.activeElement &&
+                         document.activeElement.hasAttribute('data-go');
+          active = mode;
+          for (const t of tabs) {
+            const on = t.dataset.tab === mode.id;
+            t.classList.toggle('is-on', on);
+            t.setAttribute('aria-selected', String(on));
           }
+          hero.innerHTML = heroHtml(mode);
+          hero.classList.remove('is-swap');
+          void hero.offsetWidth;              // restart the wipe
+          hero.classList.add('is-swap');
+          if (hadCta) hero.querySelector('[data-go]').focus();
+          spotlight(mode);
+          A.play('uiMove');
+        }
+
+        el.addEventListener('click', (e) => {
+          const tab = e.target.closest('[data-tab]');
+          if (tab) { A.unlock(); select(modeById(tab.dataset.tab)); return; }
+          if (e.target.closest('[data-go]')) { A.unlock(); active.act(); }
         });
+
+        // Sweeping the row previews as it goes, the way a console front end
+        // does under a thumbstick.
+        el.addEventListener('mouseover', (e) => {
+          const tab = e.target.closest('[data-tab]');
+          if (tab) select(modeById(tab.dataset.tab));
+        });
+        el.addEventListener('focusin', (e) => {
+          const tab = e.target.closest('[data-tab]');
+          if (tab) select(modeById(tab.dataset.tab));
+        });
+
+        // Left/right walk the row. Up/down still cycles every control on the
+        // screen through the manager, so both habits work.
+        el.addEventListener('keydown', (e) => {
+          if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+          e.preventDefault();
+          const n = MODES.length;
+          const next = MODES[(MODES.indexOf(active) + (e.key === 'ArrowRight' ? 1 : n - 1)) % n];
+          select(next);
+          tabs[MODES.indexOf(next)].focus();
+        });
+
+        spotlight(active);
       },
+
       onCancel() { /* main menu is the root; nothing to cancel to */ }
     });
+
+    /* Exposed so tools can enumerate the front page without scraping the DOM. */
+    M.MODES = MODES;
 
     /* -------------------------------------------------------------- settings */
     M.define({

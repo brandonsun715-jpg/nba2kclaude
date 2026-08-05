@@ -24,17 +24,24 @@
     BROADCAST: 'broadcast',   // follows the ball, standard rig height
     WIDE: 'wide',             // pulled back, most of the court in frame
     TIGHT: 'tight',           // pushed in on the action
-    FIXED: 'fixed'            // locked to a target point
+    FIXED: 'fixed',           // locked to a target point
+    PORTRAIT: 'portrait'      // in close at eye level — the front-end standby shot
   };
 
   /* Rig presets in feet. `dist` is how far outside the near sideline the
    * camera body sits, `height` its elevation, `look` the height of the point
-   * it aims at (roughly chest height on a standing player). */
+   * it aims at (roughly chest height on a standing player).
+   *
+   * `across` is how far the aim leans off centre court toward the focus: a
+   * play rig only leans partway so the far sideline never swings out of frame,
+   * but the portrait rig aims dead at its subject, because there is only one
+   * and it is the whole shot. */
   const RIG = {
     broadcast: { dist: 33, height: 15.5, look: 2.2, across: 0.46 },
     wide:      { dist: 54, height: 22.0, look: 3.4, across: 0.55 },
     tight:     { dist: 26, height: 10.5, look: 3.0, across: 0.36 },
-    fixed:     { dist: 33, height: 15.5, look: 2.2, across: 0.46 }
+    fixed:     { dist: 33, height: 15.5, look: 2.2, across: 0.46 },
+    portrait:  { dist: 6.0, height: 4.4, look: 2.9, across: 1.0 }
   };
 
   const FOV_Y = 40 * Math.PI / 180;

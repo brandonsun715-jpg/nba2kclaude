@@ -329,49 +329,160 @@ kbd {
 .screen.is-out { opacity: 0; transform: translateY(-10px) scale(0.99); }
 .screen.is-behind { opacity: 0; pointer-events: none; }
 
-/* ---------------------------------------------------------------- main menu */
-.menu-stage { display: flex; flex-direction: column; align-items: center; gap: 34px; width: min(420px, 92vw); }
-
-.menu-brand { display: flex; flex-direction: column; align-items: center; gap: 10px; }
-.menu-brand__mark { display: flex; gap: 8px; margin-bottom: 4px; }
-.menu-brand__mark span { width: 10px; height: 10px; border-radius: 50%; }
-.menu-brand__mark span:nth-child(1) { background: var(--orange); }
-.menu-brand__mark span:nth-child(2) { background: var(--mint); }
-.menu-brand__mark span:nth-child(3) { background: var(--gold); }
-
-.menu-brand__word {
-  margin: 0; font: var(--display); font-size: clamp(40px, 9vw, 64px);
-  letter-spacing: 0.045em; color: var(--chalk);
-  text-shadow: 0 8px 30px rgba(255,90,31,0.18);
+/* ---------------------------------------------------------------- main menu
+   A front page laid over the live scene rather than a panel floating on a
+   backdrop: modes across the top, the selected one explained down the left,
+   and the right side deliberately left alone so the standby camera's player
+   is part of the composition instead of something hidden behind a scrim. */
+.screen--main {
+  align-items: stretch; justify-content: flex-start;
+  padding: 0;
+  /* Dark where the words go, clear where the player stands. The vertical pass
+     puts weight back under the tab row and along the floor line so neither
+     dissolves into a bright patch of court. */
+  background:
+    linear-gradient(180deg, rgba(4,6,10,0.86) 0%, rgba(4,6,10,0.10) 26%,
+                            rgba(4,6,10,0.00) 58%, rgba(4,6,10,0.55) 100%),
+    linear-gradient(90deg, rgba(4,6,10,0.97) 0%, rgba(4,6,10,0.94) 34%,
+                           rgba(4,6,10,0.74) 47%, rgba(4,6,10,0.22) 70%,
+                           rgba(4,6,10,0.00) 88%);
+  overflow: hidden;
 }
-.menu-brand__tag { margin: 0; font: 600 13px var(--body); color: var(--chalk-dim); letter-spacing: 0.04em; }
 
-.menu-list { display: flex; flex-direction: column; gap: 10px; width: 100%; }
-.menu-list--tight { gap: 8px; }
+.menu {
+  position: relative; flex: 1;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  padding: clamp(16px, 3.2vh, 34px) clamp(20px, 4.5vw, 66px) clamp(14px, 2.6vh, 26px);
+  min-height: 0;
+}
 
-.menu-item {
+/* ---- brand */
+.menu__brand { display: flex; align-items: center; gap: 10px; }
+.menu__mark {
+  width: 22px; height: 22px; border-radius: 5px;
+  background: linear-gradient(135deg, var(--orange) 0%, var(--gold) 100%);
+  box-shadow: 0 0 18px rgba(255, 90, 31, 0.45);
+  position: relative;
+}
+/* Two lines across the mark: a ball's seams, at the size where a whole ball
+   would just read as an orange dot. */
+.menu__mark::before, .menu__mark::after {
+  content: ''; position: absolute; background: rgba(6, 9, 14, 0.55);
+}
+.menu__mark::before { left: 0; right: 0; top: 50%; height: 1.5px; transform: translateY(-50%); }
+.menu__mark::after { top: 0; bottom: 0; left: 50%; width: 1.5px; transform: translateX(-50%); }
+.menu__word {
+  font: var(--display); font-size: clamp(17px, 2.1vw, 23px);
+  letter-spacing: 0.10em; color: var(--chalk);
+}
+
+/* ---- mode row */
+.menu-tabs {
+  display: flex; align-items: flex-end; flex-wrap: wrap;
+  gap: clamp(10px, 2.4vw, 34px);
+  margin-top: clamp(12px, 2.4vh, 26px);
+}
+.menu-tab {
   all: unset; cursor: pointer;
-  display: flex; flex-direction: column; gap: 3px;
-  padding: 16px 20px;
-  background: rgba(243, 240, 231, 0.045);
-  border: 1px solid rgba(243, 240, 231, 0.10);
-  border-left: 3px solid transparent;
-  border-radius: 8px;
-  transition: background 0.16s var(--ease), border-color 0.16s var(--ease), transform 0.16s var(--ease);
+  font: var(--display); font-size: clamp(12px, 1.35vw, 16px);
+  letter-spacing: 0.04em; color: rgba(243, 240, 231, 0.52);
+  padding: 4px 2px 9px;
+  position: relative;
+  transition: color 0.16s var(--ease);
+  white-space: nowrap;
 }
-.menu-item:hover, .menu-item:focus-visible {
-  background: rgba(243, 240, 231, 0.09);
-  border-left-color: var(--orange);
-  transform: translateX(3px);
+.menu-tab:hover, .menu-tab:focus-visible { color: var(--chalk); outline: none; }
+/* The underline is the selection. It grows from the middle so sweeping the
+   row reads as one marker travelling rather than seven lamps blinking. */
+.menu-tab::after {
+  content: ''; position: absolute; left: 50%; right: 50%; bottom: 0; height: 2px;
+  background: var(--chalk);
+  transition: left 0.2s var(--ease), right 0.2s var(--ease), background-color 0.2s var(--ease);
+}
+.menu-tab.is-on { color: var(--chalk); }
+.menu-tab.is-on::after { left: 0; right: 0; }
+.menu-tab:focus-visible::after { left: 0; right: 0; background: var(--orange); }
+
+/* ---- hero */
+.menu-hero {
+  align-self: center;
+  width: min(500px, 54vw);
+  display: flex; flex-direction: column; align-items: flex-start;
+  gap: 12px;
+}
+.menu-hero.is-swap { animation: heroIn 0.26s var(--ease) both; }
+@keyframes heroIn {
+  from { opacity: 0; transform: translateX(-14px); }
+  to { opacity: 1; transform: none; }
+}
+
+.menu-hero__title {
+  margin: 0; font: var(--display);
+  font-size: clamp(34px, 5.4vw, 62px); line-height: 0.96;
+  letter-spacing: 0.02em; color: var(--chalk);
+  text-shadow: 0 10px 34px rgba(0, 0, 0, 0.55);
+}
+.menu-hero__tags {
+  margin: 0; order: -1;
+  font: 800 clamp(10px, 1.05vw, 12px) var(--mono);
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--orange);
+  text-shadow: 0 2px 12px rgba(4, 6, 10, 0.9);
+  white-space: nowrap;
+}
+.menu-hero__tags i { font-style: normal; color: rgba(255, 90, 31, 0.45); margin: 0 7px; }
+.menu-hero__body {
+  margin: 0; max-width: 44ch;
+  font: 500 clamp(12.5px, 1.15vw, 14.5px)/1.55 var(--body);
+  color: rgba(243, 240, 231, 0.78);
+  text-shadow: 0 2px 12px rgba(4, 6, 10, 0.9);
+}
+.menu-hero__status {
+  margin: 0;
+  font: 700 11px var(--mono); letter-spacing: 0.07em;
+  color: var(--gold);
+}
+
+.menu-cta {
+  all: unset; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 9px;
+  margin-top: 6px; padding: 10px 22px 10px 14px;
+  border-radius: 999px;
+  background: var(--orange);
+  font: var(--display); font-size: clamp(12px, 1.25vw, 15px); letter-spacing: 0.04em;
+  color: var(--chalk);
+  box-shadow: 0 10px 26px rgba(255, 90, 31, 0.30);
+  transition: transform 0.16s var(--ease), box-shadow 0.16s var(--ease), background 0.16s var(--ease);
+}
+.menu-cta:hover, .menu-cta:focus-visible {
+  transform: translateY(-1px);
+  background: color-mix(in srgb, var(--orange) 88%, #fff);
+  box-shadow: 0 14px 32px rgba(255, 90, 31, 0.44);
   outline: none;
 }
-.menu-item--lead { border-left-color: var(--orange); background: rgba(255, 90, 31, 0.10); }
-.menu-item--warn:hover, .menu-item--warn:focus-visible { border-left-color: var(--red); }
+.menu-cta__dot {
+  width: 15px; height: 15px; border-radius: 50%;
+  border: 2px solid rgba(243, 240, 231, 0.9);
+  box-shadow: inset 0 0 0 2px var(--orange);
+  background: var(--chalk);
+}
 
-.menu-item__k { font: var(--display); font-size: 17px; letter-spacing: 0.02em; color: var(--chalk); }
-.menu-item__d { font: 500 12.5px var(--body); color: var(--chalk-dim); }
+.menu__foot {
+  margin: 0; justify-self: start;
+  font: 600 10px var(--mono); color: rgba(243, 240, 231, 0.28); letter-spacing: 0.08em;
+}
 
-.menu-foot { font: 600 11px var(--mono); color: rgba(243,240,231,0.30); letter-spacing: 0.06em; }
+/* Short or narrow windows: the hero would collide with the tab row, so it
+   gives up its centring and the scene keeps whatever is left. */
+@media (max-height: 520px), (max-width: 700px) {
+  .menu-hero { align-self: start; margin-top: clamp(10px, 3vh, 26px); width: min(470px, 72vw); }
+  .menu-hero__body { display: none; }
+  .screen--main {
+    background:
+      linear-gradient(180deg, rgba(4,6,10,0.90) 0%, rgba(4,6,10,0.35) 42%, rgba(4,6,10,0.62) 100%),
+      linear-gradient(100deg, rgba(4,6,10,0.96) 0%, rgba(4,6,10,0.80) 46%, rgba(4,6,10,0.20) 100%);
+  }
+}
 
 /* -------------------------------------------------------------------- panel */
 .panel {

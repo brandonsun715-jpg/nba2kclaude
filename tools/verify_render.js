@@ -728,8 +728,84 @@ console.log('\n[11] the shot meter clears the scorebug');
         'meter spans ' + Math.round(hi.minX) + '..' + Math.round(hi.maxX) + ' of ' + o.vw);
 }
 
+console.log('\n[12] the front page carries every mode');
+{
+  const r = runInPage(`
+    var BB = window.BB;
+    BB.Engine.setState('menu'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene;
+    for (var i = 0; i < 40; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+
+    var tabs = [].slice.call(document.querySelectorAll('[data-tab]'));
+    var ids = tabs.map(function (t) { return t.dataset.tab; });
+
+    // Every mode the build can actually enter, and where it is reachable from.
+    var states = Object.keys(BB.Engine.states || {});
+    var screens = Object.keys(BB.Menus.screens || {});
+
+    // Each tab has to produce a complete hero: tags, title, body, button.
+    var incomplete = [], poses = {};
+    for (var k = 0; k < tabs.length; k++) {
+      tabs[k].click();
+      var h = document.getElementById('menu-hero');
+      if (!h.querySelector('.menu-hero__tags') || !h.querySelector('.menu-hero__title') ||
+          !h.querySelector('.menu-hero__body') || !h.querySelector('[data-go]') ||
+          !h.querySelector('.menu-hero__title').textContent.trim()) {
+        incomplete.push(tabs[k].dataset.tab);
+      }
+      poses[tabs[k].dataset.tab] = scene.pose;
+    }
+
+    // Exactly one tab reads as selected at a time.
+    var onCount = document.querySelectorAll('[data-tab].is-on').length;
+
+    /* The keyboard path all the way through: focus the button, walk the row
+     * with the arrow keys, and check the focus is still somewhere this
+     * screen can hear. Rebuilding the panel under a focused button is exactly
+     * how that gets lost. */
+    tabs[0].click();                       // known starting point
+    document.querySelector('[data-go]').focus();
+    var screenEl = document.querySelector('.screen--main');
+    for (var a = 0; a < 3; a++) {
+      screenEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    }
+    var focusHeld = screenEl.contains(document.activeElement);
+    var afterArrows = document.querySelector('[data-tab].is-on').dataset.tab;
+
+    return {
+      ids: ids, incomplete: incomplete, onCount: onCount,
+      focusHeld: focusHeld, afterArrows: afterArrows,
+      poses: poses, states: states, screens: screens,
+      heroOnCourt: !!(scene.hero && scene.hero.x > 0),
+      pageErr: window.__pageErr || null
+    };
+  `, 'probe');
+  if (r.err) check('front page probe ran', false, r.err);
+  const o = r.out || {};
+  const ids = o.ids || [];
+  // Everything this build can do is on the front page: the three playable
+  // scenes plus every screen the menu can open, minus the ones that only make
+  // sense from inside a game.
+  const want = ['oneVone', 'fiveVfive', 'shootaround', 'createPlayer', 'career', 'settings', 'controls'];
+  const missing = want.filter((w) => ids.indexOf(w) < 0);
+  check('every mode has a tab', missing.length === 0, 'missing: ' + missing.join(', '));
+  check('no tab is a dead end', (o.incomplete || []).length === 0,
+        'incomplete: ' + (o.incomplete || []).join(', '));
+  check('exactly one tab reads as selected', o.onCount === 1, 'selected=' + o.onCount);
+  check('arrows walk the row', o.afterArrows === ids[3], 'landed on ' + o.afterArrows);
+  check('focus survives a mode change', o.focusHeld === true,
+        'focus left the screen after arrowing');
+  // The standby figure is the point of the layout: no player, no front page.
+  check('a live player stands in the frame', o.heroOnCourt === true);
+  check('modes drive different standby poses',
+        Object.keys(o.poses || {}).map((k) => o.poses[k])
+          .filter((v, i, all) => all.indexOf(v) === i).length >= 3,
+        'poses=' + JSON.stringify(o.poses));
+  check('front page raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[12] screenshots');
+  console.log('\n[13] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],

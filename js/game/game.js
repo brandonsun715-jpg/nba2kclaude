@@ -46,14 +46,59 @@
    * Scene: menu
    * ======================================================================= */
   const MenuScene = {
+    pose: 'idle',
+
+    /**
+     * How far LEFT of the player the camera aims, in feet.
+     *
+     * The standby player belongs on the right of frame because the menu's
+     * words live down the left, and the rig always centres whatever it is
+     * aimed at — so the aim point sits off to the player's left and he slides
+     * over to where the composition wants him. How far that is depends on the
+     * window: the rig's horizontal reach is its vertical one times the aspect
+     * ratio, so a fixed offset in feet that frames him beautifully on a wide
+     * monitor walks him clean off the edge of a tall narrow one.
+     */
+    offset() {
+      const cam = BB.Camera;
+      return U.clamp(1.9 * (cam.vw / Math.max(1, cam.vh)), 1.0, 4.2);
+    },
+
     enter() {
       ensureWorld();
-      BB.Camera.reset(C.HALF_L, C.HALF_W - 2, 1);
-      BB.Camera.setMode(BB.Camera.MODES.WIDE);
       BB.HUD.hide();
+
+      /* The figure on the front page is the player you actually made — same
+       * profile, same build, same colours the game will hand you when you
+       * press the button. A stock draft stands in until there is one. */
+      /* Standing well up the floor toward the camera side: the portrait rig
+       * sits just outside the sideline, so a figure out at mid-width is
+       * thirty feet away and reads as a doll. Close in, he fills the right of
+       * the frame and the court and stands fall away behind him. */
+      const hx = C.HALF_L + 7, hy = C.COURT_W - 4.5;
+      const draft = BB.PlayerProfile.load() || BB.PlayerProfile.newDraft();
+      this.hero = new BB.Player(BB.PlayerProfile.toPlayerConfig(draft, { x: hx, y: hy }));
+      BB.PlayerProfile.applyAppearance(this.hero, draft);
+      // Turned a few degrees off square to the camera so the build reads in
+      // three-quarters rather than as a flat cutout.
+      this.hero.placeAt(hx, hy, Math.PI * 0.42);
+      this.hero.human = false;   // no selection ring under a menu portrait
+      this.ball = new BB.Ball(World.hoops);
+      this.hero.giveBall(this.ball);
+      this._t = 0;
+
+      BB.Camera.setMode(BB.Camera.MODES.PORTRAIT);
+      BB.Camera.reset(hx - this.offset(), hy, 1);
+      BB.Camera.update(0, { x: hx - this.offset(), y: hy }, null);
+
       BB.Menus.replace('main');
       BB.Audio.setCrowdIntensity(0.06, 2);
     },
+
+    exit() { this.hero = null; this.ball = null; },
+
+    /** Called by the menu as the selection moves along the mode row. */
+    spotlight(pose) { this.pose = pose || 'idle'; },
 
     fixedUpdate(dt) {
       World.hoops.forEach((h) => h.update(dt));
@@ -61,10 +106,62 @@
     },
 
     update(dt) {
-      // A slow, silent pan across the floor sells a "broadcast standby" feel.
-      const t = BB.Engine.elapsed * 0.05;
-      const fx = C.HALF_L + Math.sin(t) * 10;
-      const fy = C.HALF_W + Math.cos(t * 0.7) * 4;
+      this._t += dt;
+      const h = this.hero;
+      if (h) {
+        /* Each mode's idle is driven through the ordinary pose state the game
+         * already animates — no separate menu rig to keep in sync. What the
+         * player is doing IS what that mode is about. */
+        h.hasBall = false; h.isGuarding = false; h.action = null;
+        h.armRaise = 0; h.vx = h.vy = 0;
+        switch (this.pose) {
+          case 'dribble':
+            // Ball held and worked, never bounced: the true-scale ball beside
+            // a deliberately compressed figure looks enormous on the floor,
+            // and this close to camera there is nowhere for that to hide.
+            h.hasBall = true;
+            h.dribblePhase = Math.sin(this._t * 1.15) * 0.15;
+            break;
+          case 'shoot': {
+            // A slow loop: gather, rise, hold the follow-through, reset.
+            const k = (this._t % 3.4) / 3.4;
+            h.hasBall = true;
+            if (k < 0.45) { h.dribblePhase = Math.sin(this._t * 1.15) * 0.15; }
+            else if (k < 0.78) {
+              h.action = BB.Player.ACTION.METER;
+              h.meter.value = U.clamp01((k - 0.45) / 0.33);
+              h.armRaise = h.meter.value;
+            } else {
+              h.action = BB.Player.ACTION.RELEASE;
+              h.actionT = (k - 0.78) * 3.4;
+              h.armRaise = 1;
+            }
+            break;
+          }
+          case 'guard':
+            h.isGuarding = true;
+            h._guardBlend = U.approach(h._guardBlend, 1, 6, dt);
+            break;
+          case 'celebrate':
+            // Arms up and held — but only partway up the rise, because full
+            // extension puts both hands out through the top of this framing.
+            h.action = BB.Player.ACTION.BLOCK;
+            h.actionT = 0.03;
+            break;
+          default: break;
+        }
+        h._updatePose(dt);
+        if (h.hasBall && this.ball) {
+          const p = h.handPosition(TMP_HAND);
+          this.ball.place(p.x, p.y, p.z);
+        }
+      }
+
+      // A long, slow drift on the rig — a live camera on standby, not a
+      // locked-off still. Small enough that the figure stays put in frame.
+      const sway = Math.sin(this._t * 0.16) * 1.4;
+      const fx = (h ? h.x : C.HALF_L) - this.offset() + sway;
+      const fy = (h ? h.y : C.HALF_W) + Math.cos(this._t * 0.11) * 1.0;
       BB.Camera.update(dt, { x: fx, y: fy }, null);
       World.arena.update(dt, 0.08);
     },
@@ -72,10 +169,12 @@
     render() {
       BB.Renderer.render({
         camera: BB.Camera, court: World.court, arena: World.arena,
-        hoops: World.hoops, ball: null, entities: [], fx: BB.FX, dimmed: 0
+        hoops: World.hoops, ball: this.hero && this.hero.hasBall ? this.ball : null,
+        entities: this.hero ? [this.hero] : [], fx: BB.FX, dimmed: 0
       });
     }
   };
+  const TMP_HAND = { x: 0, y: 0, z: 0 };
 
   /* ==========================================================================
    * Scene: shootaround
