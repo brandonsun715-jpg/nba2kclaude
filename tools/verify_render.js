@@ -658,8 +658,78 @@ console.log('\n[10] player creator preview');
         'span=' + (o.spanFrac || 0).toFixed(2));
 }
 
+console.log('\n[11] the shot meter clears the scorebug');
+{
+  const r = runInPage(`
+    var BB = window.BB;
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene;
+    for (var i = 0; i < 60; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+    var cam = BB.Camera, dpr = cam.dpr || 1;
+    var safe = BB.HUD.safeTop();
+
+    /* Measure what the meter actually paints rather than re-deriving it: wrap
+     * the context and walk every arc it strokes. A clamp that is right in the
+     * arithmetic and wrong in the drawing call would pass any check written
+     * the other way round. */
+    var ctx = BB.Renderer.ctx, realArc = ctx.arc, realStroke = ctx.stroke;
+    var minY = 1e9, maxY = -1e9, minX = 1e9, maxX = -1e9, pending = null;
+    ctx.arc = function (x, y, r, a0, a1) {
+      pending = { x: x, y: y, r: r, a0: a0, a1: a1 };
+      return realArc.apply(this, arguments);
+    };
+    ctx.stroke = function () {
+      if (pending) {
+        var half = (this.lineWidth || 1) / 2;
+        for (var a = pending.a0; a <= pending.a1 + 1e-6; a += 0.02) {
+          var px = pending.x + Math.cos(a) * pending.r;
+          var py = pending.y + Math.sin(a) * pending.r;
+          minY = Math.min(minY, py - half); maxY = Math.max(maxY, py + half);
+          minX = Math.min(minX, px - half); maxX = Math.max(maxX, px + half);
+        }
+        pending = null;
+      }
+      return realStroke.apply(this, arguments);
+    };
+
+    // A shooter whose anchor projects way above the top of the frame: without
+    // a clamp the whole green end of the bar lands under the scorebug.
+    var pl = scene.player;
+    pl.placeAt(scene.hoop.x - 20, 25, 0);
+    pl.meter.start(pl.releaseProfileJumper, { x: pl.x, y: pl.y, z: 26 });
+    pl.meter.value = 0.9;
+    pl.meter.draw(ctx, cam);
+    var high = { minY: minY, maxY: maxY, minX: minX, maxX: maxX };
+
+    // And one at the near baseline, where it would fall off the bottom.
+    minY = 1e9; maxY = -1e9; minX = 1e9; maxX = -1e9;
+    pl.meter.setAnchor({ x: pl.x, y: pl.y, z: -30 });
+    pl.meter.draw(ctx, cam);
+    var low = { minY: minY, maxY: maxY, minX: minX, maxX: maxX };
+
+    ctx.arc = realArc; ctx.stroke = realStroke;
+    return { safe: safe, dpr: dpr, vw: cam.vw, vh: cam.vh, high: high, low: low };
+  `, 'probe');
+  if (r.err) check('meter probe ran', false, r.err);
+  const o = r.out || {};
+  const hi = o.high || {}, lo = o.low || {};
+  // The bug is DOM over canvas, so anything the meter paints above its bottom
+  // edge is simply gone — and the meter fills upward, so what is lost is the
+  // green window.
+  check('the scorebug stays a thin strip', o.safe > 0 && o.safe < 46,
+        'bug ends ' + Math.round(o.safe || 0) + 'px down the screen');
+  check('meter stays clear of the scorebug', hi.minY >= o.safe * o.dpr,
+        'meter top at ' + Math.round(hi.minY) + 'px, bug ends at ' +
+        Math.round((o.safe || 0) * (o.dpr || 1)) + 'px');
+  check('meter stays on screen at the near baseline', lo.maxY <= o.vh,
+        'meter bottom at ' + Math.round(lo.maxY) + 'px of ' + o.vh);
+  check('meter stays inside the frame sideways',
+        hi.minX >= 0 && hi.maxX <= o.vw,
+        'meter spans ' + Math.round(hi.minX) + '..' + Math.round(hi.maxX) + ' of ' + o.vw);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[11] screenshots');
+  console.log('\n[12] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],

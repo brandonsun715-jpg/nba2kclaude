@@ -133,7 +133,27 @@
       // Circle centre sits to the right of the anchor so the leftward bow of
       // the crescent lands roughly over/beside the shooter instead of well
       // off to their side.
-      const cx = anchor.x + R * 0.62, cy = anchor.y;
+      let cx = anchor.x + R * 0.62, cy = anchor.y;
+
+      /* Keep the whole crescent in the clear.
+       *
+       * The bar is canvas; the scorebug is DOM sitting on top of it. A shooter
+       * anywhere up the floor puts the top of this bar underneath that bug,
+       * and since the bar fills bottom-to-top the part that disappears is the
+       * green window itself — the one part the player is actually reading. The
+       * same goes for the edges of the window. So the bar follows the shooter
+       * until it would leave the free area, then holds at the boundary rather
+       * than sliding out of sight.
+       *
+       * The crescent only bows LEFT of its circle centre, so its box is not
+       * centred on cx: it runs from cx - R to cx - R*cos(HALF_SPAN), and
+       * cy ± R*sin(HALF_SPAN). PAD covers the track's own thickness and the
+       * release flash, which rings a little wider still. */
+      const PAD = 24 * cam.fit;
+      const vExt = R * Math.sin(HALF_SPAN) + PAD;
+      const top = (BB.HUD && BB.HUD.safeTop ? BB.HUD.safeTop() : 0) * (cam.dpr || 1);
+      cy = U.clamp(cy, top + vExt, Math.max(top + vExt, cam.vh - vExt));
+      cx = U.clamp(cx, R + PAD, Math.max(R + PAD, cam.vw - PAD + R * Math.cos(HALF_SPAN)));
 
       ctx.save();
       ctx.setTransform(1, 0, 0, 1, 0, 0);

@@ -17,6 +17,7 @@
     root: null,
     el: {},
     _prev: Object.create(null),
+    _safe: null,
     visible: false,
 
     init() {
@@ -49,11 +50,36 @@
         bannerSub: q('hud-banner-sub'),
         toast: q('hud-toast')
       };
+      global.addEventListener('resize', () => { this._safe = null; });
       return this;
     },
 
-    show() { this.visible = true; this.root.classList.add('is-live'); },
+    show() { this.visible = true; this._safe = null; this.root.classList.add('is-live'); },
     hide() { this.visible = false; this.root.classList.remove('is-live'); },
+
+    /**
+     * Where the scorebug ends, in CSS pixels down from the top of the window.
+     *
+     * The scorebug is DOM and the shot meter is canvas underneath it, so
+     * anything the meter draws up here is simply painted over — and because
+     * the meter fills bottom-to-top, the part it loses is the top, which is
+     * exactly where the green window lives. Rather than have the meter guess
+     * at a margin, it asks.
+     *
+     * Measured off the layout box (offsetTop/offsetHeight) rather than
+     * getBoundingClientRect, because the bug slides down under a transform
+     * when it appears and the transformed box would read high for the length
+     * of that animation. Cached: the size is fixed by CSS, so it only changes
+     * on a resize.
+     */
+    safeTop() {
+      if (!this.visible) return 0;
+      if (this._safe == null) {
+        const bug = this.root && this.root.querySelector('.hud-bug');
+        this._safe = bug ? bug.offsetTop + bug.offsetHeight : 0;
+      }
+      return this._safe;
+    },
 
     /** Paint the fixed identity of both teams. Call once per game. */
     setTeams(away, home) {
