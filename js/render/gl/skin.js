@@ -255,7 +255,26 @@
       gl.uniform4fv(u.u_zoneColor, pose.zc);
       gl.uniform2fv(u.u_zoneSurface, pose.zs);
       gl.bindVertexArray(this.vao);
+      /* Wind the other way for this one draw.
+       *
+       * Court space is (x length, y width, z up) and GL space is (x, y up, z),
+       * and the palette write at the end of setBone moves between them by
+       * swapping two axes. Swapping two axes is a REFLECTION, so every bone
+       * matrix here carries one, and a reflection reverses the winding of
+       * every triangle it moves. Against the renderer's global CCW/cull-back
+       * the figure therefore drew INSIDE OUT: the surface facing the camera
+       * was culled and what you saw was the inner face of the model's far
+       * side.
+       *
+       * That is one bug wearing three costumes. The player looked like he had
+       * his back turned while walking toward you — you were looking at the
+       * inside of the back of his head. His shading was dark and blotchy —
+       * those normals point away from the light. His shoulders and hips looked
+       * torn — that is the inside of a limb seen through the inside of a
+       * torso. None of it was the animation, and none of it was the mesh. */
+      gl.frontFace(gl.CW);
       gl.drawElements(gl.TRIANGLES, this.indexCount, this.indexType, 0);
+      gl.frontFace(gl.CCW);
       gl.bindVertexArray(null);
     }
   };

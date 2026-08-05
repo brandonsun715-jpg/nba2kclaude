@@ -48,7 +48,13 @@ function runInPage(payload, label) {
   // registered after the game's and therefore runs once boot() has completed.
   // Everything is then done before the load event, which is the moment
   // --dump-dom captures the DOM — no timers, no waiting on real frames.
-  const probe = src.replace('</body>', `
+  /* Keep the drawing buffer around after a frame. Checks that read pixels back
+   * (see the facing check) render outside the animation loop, and without this
+   * the buffer's contents are undefined by the time readPixels runs. */
+  const withCapture = src.replace('<script src="js/core/constants.js"></script>',
+    '<script>window.__HW_CAPTURE = true;</script>\n  <script src="js/core/constants.js"></script>');
+
+  const probe = withCapture.replace('</body>', `
   <script>
   window.__pageErr = null;
   window.addEventListener('error', function (e) {
@@ -873,8 +879,92 @@ console.log('\n[13] a created player starts at 60 and climbs');
   check('creator raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[14] the figure faces the way it is facing, and wears its own colours');
+{
+  /* Read the head back off the framebuffer.
+   *
+   * Painting the skin pure green and the hair pure red turns "which way is
+   * this figure looking" into something countable. The rigger puts hair on the
+   * crown and the BACK of the head, so a figure looking at the camera reads
+   * green and one looking away reads red. That catches a reversed facing AND a
+   * model drawing inside out, which from out here are the same pixel.
+   *
+   * One page per look: reading pixels back is only reliable for the frame the
+   * page rendered, so each case gets its own run rather than sharing one.
+   */
+  const look = (facing, skin, hair) => runInPage(`
+    var BB = window.BB;
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene;
+    for (var i = 0; i < 60; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+    var pl = scene.player, cam = BB.Camera, gl = BB.GLX.gl, M4 = BB.M4;
+    scene.ai.x = -80; scene.ai.y = -80;
+    if (scene.ball) { scene.ball.owner = null; scene.ball.x = -80; scene.ball.y = -80; }
+    pl.placeAt(47, 25, 0);
+    pl.vx = pl.vy = 0; pl.hasBall = false; pl.action = null; pl.armRaise = 0;
+    pl.skin = '${skin}'; pl.hair = '${hair}';
+    pl.facing = ${facing};
+    pl._updatePose(1 / 60);
+
+    // A tight head shot from the camera side: the broadcast rig is 25 feet
+    // out, where the head is a dozen pixels and the crowd behind it votes.
+    var headZ = -pl.pose.headY * pl.bodyScale;
+    cam._rebuild = function () {
+      this.eye[0] = pl.x; this.eye[1] = headZ; this.eye[2] = pl.y + 5;
+      this.target[0] = pl.x; this.target[1] = headZ; this.target[2] = pl.y;
+      M4.perspective(this.proj, 20 * Math.PI / 180, this.vw / Math.max(1, this.vh), 0.3, 420);
+      M4.lookAt(this.view, this.eye, this.target, [0, 1, 0]);
+      M4.multiply(this.viewProj, this.proj, this.view);
+    };
+    cam._rebuild();
+    scene.render(0);
+
+    var n = Math.round(Math.min(cam.vw, cam.vh) * 0.13);
+    var buf = new Uint8Array(n * n * 4);
+    gl.readPixels(Math.round(cam.vw / 2 - n / 2), Math.round(cam.vh / 2 - n / 2), n, n,
+                  gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    var green = 0, red = 0;
+    for (var p = 0; p < buf.length; p += 4) {
+      /* Classify by RATIO, not brightness. The back of a head is lit from the
+       * front, so its hair comes back at a third the value the face does —
+       * a threshold on absolute brightness reads "unlit" as "not there". */
+      var rr = buf[p], gg = buf[p + 1], bb2 = buf[p + 2];
+      if (gg > 24 && gg > rr * 2 && gg > bb2 * 2) green++;
+      else if (rr > 24 && rr > gg * 2 && rr > bb2 * 2) red++;
+    }
+    var mr=0,mg=0,mb=0;
+    for (var q = 0; q < buf.length; q += 4) { mr+=buf[q]; mg+=buf[q+1]; mb+=buf[q+2]; }
+    var np = buf.length/4;
+    return { green: green, red: red, total: n * n,
+             mean: [Math.round(mr/np), Math.round(mg/np), Math.round(mb/np)],
+             headZ: +headZ.toFixed(2), n: n, vw: cam.vw, vh: cam.vh,
+             pageErr: window.__pageErr || null };
+  `, 'facing');
+
+  // The rig sits outside the +y sideline, so +PI/2 looks straight at it.
+  const toward = (look(Math.PI / 2, '#00FF00', '#FF0000').out) || {};
+  const away = (look(-Math.PI / 2, '#00FF00', '#FF0000').out) || {};
+  const repaint = (look(Math.PI / 2, '#0000FF', '#0000FF').out) || {};
+
+  // The crown is hair from either side, so neither look is pure; what matters
+  // is which one wins, and that it wins clearly.
+  check('a player looking at the camera shows their face',
+        toward.green > toward.red * 1.3,
+        'facing camera: ' + toward.green + ' skin px vs ' + toward.red + ' hair px');
+  check('a player looking away shows the back of their head',
+        away.red > away.green * 1.3,
+        'facing away: ' + away.red + ' hair px vs ' + away.green + ' skin px');
+  // Inside-out geometry shows the far surface, which flips both of those.
+  check('the head is drawn solid, not inside out',
+        toward.green > 40 && away.red > 40,
+        'front ' + toward.green + ' skin px, back ' + away.red + ' hair px');
+  check('skin and hair colours reach the screen',
+        repaint.green < 10 && repaint.red < 10,
+        'after repainting blue: ' + repaint.green + ' green px, ' + repaint.red + ' red px');
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[14] screenshots');
+  console.log('\n[15] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],

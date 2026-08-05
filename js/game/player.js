@@ -1317,7 +1317,11 @@
       copyCol(z[1], this._col('jersey', this.jerseyMain));
       copyCol(z[2], this._col('shorts', U.shade(this.jerseyMain, -0.08)));
       copyCol(z[3], this._col('shoe', PAL.chalk));
-      copyCol(z[4], this._col('hair', U.shade(this.skin, -0.42)));
+      // The player's own hair colour, not a darkened skin tone. The creator
+      // has offered seven of them since the day it shipped and every one of
+      // them landed on the floor: this zone was painted from `skin`, so a
+      // black-haired player and a blond one came out identical.
+      copyCol(z[4], this._col('hair', this.hair || U.shade(this.skin, -0.42)));
       copyCol(z[5], this._col('trim', this.jerseyTrim));
       Skin.setZones(sp, z);
 

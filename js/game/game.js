@@ -447,9 +447,16 @@
       }));
       if (savedPlayer) BB.PlayerProfile.applyAppearance(this.player, draft);
 
+      /* The CPU gets a look of its own. Two figures in the same skin and the
+       * same hair standing a yard apart read as one player and their mirror,
+       * which is exactly what you do not want in a game about beating this
+       * specific guy. */
+      const P = BB.PlayerProfile;
       this.ai = new BB.Player({
         human: false, name: 'CPU', number: 5, position: 'SG',
-        overall: d.overall, height: 77, x: this.hoop.x - 22, y: C.HALF_W
+        overall: d.overall, height: 77, x: this.hoop.x - 22, y: C.HALF_W,
+        skin: P.SKIN_TONES[U.rng.i(0, P.SKIN_TONES.length - 1)],
+        hair: P.HAIR_COLORS[U.rng.i(0, P.HAIR_COLORS.length - 1)]
       });
       this.ai.jerseyMain = PAL.red;
       this.ai.jerseyTrim = PAL.chalk;
