@@ -360,7 +360,8 @@
                 ${segmented('quality', 'Render quality', S.get('quality'),
                   [['high', 'High'], ['balanced', 'Balanced'], ['performance', 'Performance']])}
                 ${segmented('cameraMode', 'Camera', S.get('cameraMode'),
-                  [['broadcast', 'Broadcast'], ['wide', 'Wide'], ['tight', 'Tight']])}
+                  [['broadcast', 'Broadcast'], ['wide', 'Wide'], ['tight', 'Tight'],
+                   ['forward', 'Forward']])}
                 ${slider('screenShake', 'Screen shake', S.get('screenShake'))}
                 ${toggle('showDebug', 'Show performance readout', S.get('showDebug'))}
               </section>

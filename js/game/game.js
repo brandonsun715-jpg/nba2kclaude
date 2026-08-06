@@ -355,6 +355,8 @@
 
       const ball = this.ball;
       const focus = ball.inFlight ? ball : this.player;
+      // Which way is downcourt, for the forward rig. Ignored by the others.
+      BB.Camera.setAim(this.hoop.x, this.hoop.y);
       BB.Camera.update(dt, { x: focus.x, y: focus.y }, { x: focus.vx, y: focus.vy });
 
       World.arena.update(dt, this.hype);
@@ -949,6 +951,7 @@
 
       const ball = this.ball;
       const focus = ball.inFlight ? ball : (ball.owner || this.player);
+      BB.Camera.setAim(this.hoop.x, this.hoop.y);
       BB.Camera.update(dt, { x: focus.x, y: focus.y }, { x: focus.vx || 0, y: focus.vy || 0 });
 
       const spread = Math.abs(this.score.you - this.score.cpu);

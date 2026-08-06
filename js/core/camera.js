@@ -25,7 +25,8 @@
     WIDE: 'wide',             // pulled back, most of the court in frame
     TIGHT: 'tight',           // pushed in on the action
     FIXED: 'fixed',           // locked to a target point
-    PORTRAIT: 'portrait'      // in close at eye level — the front-end standby shot
+    PORTRAIT: 'portrait',     // in close at eye level — the front-end standby shot
+    FORWARD: 'forward'        // behind the play, looking down the floor at the rim
   };
 
   /* Rig presets in feet. `dist` is how far outside the near sideline the
@@ -41,7 +42,13 @@
     wide:      { dist: 54, height: 22.0, look: 3.4, across: 0.55 },
     tight:     { dist: 26, height: 10.5, look: 3.0, across: 0.36 },
     fixed:     { dist: 33, height: 15.5, look: 2.2, across: 0.46 },
-    portrait:  { dist: 6.0, height: 4.4, look: 2.9, across: 1.0 }
+    portrait:  { dist: 6.0, height: 4.4, look: 2.9, across: 1.0 },
+    /* The one rig that does not live on the sideline. It sits BEHIND the play
+     * on the line running to the basket being attacked and looks down the
+     * floor, so the hoop is straight ahead instead of off to one side.
+     * `ahead` is how far past the focus it aims, which is what holds the rim
+     * up in frame instead of the floor at the player's feet. */
+    forward:   { dist: 21, height: 9.0, look: 4.6, across: 0, ahead: 11 }
   };
 
   const FOV_Y = 40 * Math.PI / 180;
@@ -83,6 +90,13 @@
 
     /* Scale factor tying overlay UI sizes to viewport height. */
     fit: 1,
+
+    /* Which basket the FORWARD rig looks toward. Scenes set it as possession
+     * changes; every other rig ignores it. _dx/_dy is the smoothed direction
+     * actually used, so the camera swings around behind a player who runs past
+     * the rim instead of snapping through 180 degrees. */
+    aimX: C.COURT_L, aimY: C.HALF_W,
+    _aimA: 0, _dx: 1, _dy: 0,
 
     /* ---------------------------------------------------------- 3D state
      * The rig sits OUTSIDE the +y sideline looking back across the floor. That
@@ -127,6 +141,9 @@
       }
     },
 
+    /** Points the FORWARD rig at a basket. No effect in any other mode. */
+    setAim(x, y) { this.aimX = x; this.aimY = y; },
+
     /* ----------------------------------------------------------------- shake */
     /** @param {number} amount 0..1 — added to trauma, clamped. */
     addTrauma(amount) {
@@ -148,6 +165,23 @@
         }
         this.x = tx;
         this.y = ty;
+      }
+
+      if (this.mode === MODES.FORWARD) {
+        /* Aim down the floor. Held steady while the focus is right on top of
+         * the basket, where the direction is noise. */
+        const dx = this.aimX - this._x, dy = this.aimY - this._y;
+        if (Math.hypot(dx, dy) > 3) {
+          /* Turn the heading as an ANGLE, not by easing the vector.
+           * Easing a unit vector toward its own opposite shrinks it along a
+           * line and renormalising snaps it straight back — the one case that
+           * matters, a change of possession, is exactly 180 degrees, and the
+           * camera would sit facing the wrong basket forever. */
+          const k = U.clamp01(1 - Math.exp(-2.2 * Math.max(dt, 0)));
+          this._aimA = U.angleLerp(this._aimA, Math.atan2(dy, dx), k);
+          this._dx = Math.cos(this._aimA);
+          this._dy = Math.sin(this._aimA);
+        }
       }
 
       const rate = this.mode === MODES.FIXED ? 2.0 : this.followRate;
@@ -189,17 +223,29 @@
       const sx = this.shakeX * 0.9;
       const sy = this.shakeY * 0.5;
 
-      // The rig dollies along x with the ball but only leans a fraction of the
-      // way across the width, so the far sideline never swings out of frame.
-      const aimY = U.lerp(C.HALF_W, this._y, rig.across);
+      if (this.mode === MODES.FORWARD) {
+        // Behind the play, on the line to the basket, looking down the floor.
+        const ahead = rig.ahead || 10;
+        this.eye[0] = this._x - this._dx * dist + sx;
+        this.eye[1] = height + sy;
+        this.eye[2] = this._y - this._dy * dist;
 
-      this.eye[0] = this._x + sx;
-      this.eye[1] = height + sy;
-      this.eye[2] = C.COURT_W + dist;
+        this.target[0] = this._x + this._dx * ahead + sx * 0.4;
+        this.target[1] = rig.look;
+        this.target[2] = this._y + this._dy * ahead;
+      } else {
+        // The rig dollies along x with the ball but only leans a fraction of the
+        // way across the width, so the far sideline never swings out of frame.
+        const aimY = U.lerp(C.HALF_W, this._y, rig.across);
 
-      this.target[0] = this._x + sx * 0.4;
-      this.target[1] = rig.look;
-      this.target[2] = aimY;
+        this.eye[0] = this._x + sx;
+        this.eye[1] = height + sy;
+        this.eye[2] = C.COURT_W + dist;
+
+        this.target[0] = this._x + sx * 0.4;
+        this.target[1] = rig.look;
+        this.target[2] = aimY;
+      }
 
       const aspect = this.vw / Math.max(1, this.vh);
       M4.perspective(this.proj, FOV_Y, aspect, NEAR, FAR);
@@ -225,9 +271,13 @@
      * global scale because perspective makes it depth dependent.
      */
     scale() {
-      const dz = this.eye[1] - 0;
-      const dy = this.eye[2] - this._y;
-      const depth = Math.hypot(dz, dy) || 1;
+      // Straight-line distance from the rig to the focus. The old form measured
+      // only height and width, which is the same thing ONLY for a rig parked on
+      // the sideline — the forward rig stands off along x and read as if it
+      // were on top of the play.
+      const depth = Math.hypot(this.eye[0] - this._x,
+                               this.eye[1],
+                               this.eye[2] - this._y) || 1;
       return (this.vh * 0.5) / (Math.tan(FOV_Y * 0.5) * depth);
     },
 

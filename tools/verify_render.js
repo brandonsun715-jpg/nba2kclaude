@@ -1090,8 +1090,63 @@ console.log('\n[15] a sprinting drive finishes with a layup');
   check('layup probe raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[16] the forward camera looks down the floor');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U;
+    BB.Settings.set('cameraMode', 'forward');
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene, cam = BB.Camera, hoop = scene.hoop;
+    for (var i = 0; i < 240; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+    var pl = scene.player;
+    pl.placeAt(hoop.x - 20, hoop.y, 0);
+    for (var j = 0; j < 120; j++) { scene.fixedUpdate(1 / 120); if (j % 2 === 0) scene.update(1 / 60, 1 / 60); }
+    scene.render(0);
+
+    // GL space: [0] is court x, [2] is court y.
+    var eyeToHoop = Math.hypot(hoop.x - cam.eye[0], hoop.y - cam.eye[2]);
+    var focusToHoop = Math.hypot(hoop.x - cam.x, hoop.y - cam.y);
+    var rim = cam.project(hoop.x, hoop.y, 10, null);
+    var player = cam.project(pl.x, pl.y, 3, null);
+
+    // Aim at the OTHER basket: the rig has to swing around behind the play.
+    var other = BB.C.HOOPS[0].x === hoop.x ? BB.C.HOOPS[1] : BB.C.HOOPS[0];
+    cam.setAim(other.x, other.y);
+    for (var k = 0; k < 180; k++) cam.update(1 / 60, { x: pl.x, y: pl.y }, null);
+    var flippedEyeToOther = Math.hypot(other.x - cam.eye[0], other.y - cam.eye[2]);
+    var flippedFocusToOther = Math.hypot(other.x - cam.x, other.y - cam.y);
+
+    return {
+      mode: cam.mode,
+      behind: eyeToHoop - focusToHoop,
+      rimX: rim.x / cam.vw, rimY: rim.y / cam.vh, rimBehind: rim.behind,
+      playerX: player.x / cam.vw,
+      flippedBehind: flippedEyeToOther - flippedFocusToOther,
+      pageErr: window.__pageErr || null
+    };
+  `, 'forward');
+  if (r.err) check('forward camera probe ran', false, r.err);
+  const o = r.out || {};
+  check('forward mode is what the scene selected', o.mode === 'forward', 'mode=' + o.mode);
+  // The whole point: the rig stands off on the far side of the player FROM the
+  // basket, so the basket is downrange rather than off a shoulder.
+  check('the rig sits behind the play', o.behind > 12,
+        'camera is ' + (o.behind || 0).toFixed(1) + 'ft further from the rim than the player');
+  check('the rim is dead ahead, not off to one side',
+        !o.rimBehind && Math.abs(o.rimX - 0.5) < 0.14,
+        'rim at ' + ((o.rimX || 0) * 100).toFixed(0) + '% across the frame');
+  check('the rim sits in the upper half of the frame', o.rimY < 0.5,
+        'rim at ' + ((o.rimY || 0) * 100).toFixed(0) + '% down the frame');
+  check('the player is centred too', Math.abs(o.playerX - 0.5) < 0.14,
+        'player at ' + ((o.playerX || 0) * 100).toFixed(0) + '% across');
+  // Possession changes have to turn the camera around, not leave it backwards.
+  check('it swings around on a change of possession', o.flippedBehind > 12,
+        'after flipping aim: ' + (o.flippedBehind || 0).toFixed(1) + 'ft behind');
+  check('forward camera raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[16] screenshots');
+  console.log('\n[17] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],

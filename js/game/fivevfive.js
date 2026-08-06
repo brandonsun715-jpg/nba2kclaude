@@ -956,6 +956,10 @@
 
       const ball = this.ball;
       const focus = ball.inFlight ? ball : (ball.owner || this.controlled);
+      // Downcourt is whichever basket the team in possession is attacking, so
+      // the forward rig turns around with the ball on a change of possession.
+      const aim = this._hoopFor(ball.owner || this.controlled);
+      if (aim) BB.Camera.setAim(aim.x, aim.y);
       BB.Camera.update(dt, { x: focus.x, y: focus.y }, { x: focus.vx || 0, y: focus.vy || 0 });
 
       const spread = Math.abs(this.score.away - this.score.home);
