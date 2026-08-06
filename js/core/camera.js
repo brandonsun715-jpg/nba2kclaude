@@ -170,15 +170,22 @@
       if (this.mode === MODES.FORWARD) {
         /* Aim down the floor. Held steady while the focus is right on top of
          * the basket, where the direction is noise. */
-        const dx = this.aimX - this._x, dy = this.aimY - this._y;
-        if (Math.hypot(dx, dy) > 3) {
-          /* Turn the heading as an ANGLE, not by easing the vector.
-           * Easing a unit vector toward its own opposite shrinks it along a
-           * line and renormalising snaps it straight back — the one case that
-           * matters, a change of possession, is exactly 180 degrees, and the
-           * camera would sit facing the wrong basket forever. */
+        /* The heading is LOCKED to the court's length. It is either straight
+         * down the floor or straight back up it — never anything between.
+         *
+         * Aiming the rig at the basket from wherever the player happened to
+         * be standing swung it left and right all game: drift to the wing and
+         * the whole arena rotated under you, so "forward" was a different
+         * direction every second. Snapping to the axis keeps the far basket
+         * dead ahead and the sidelines square no matter where on the floor
+         * the play is. The rig still dollies to follow — it just never yaws.
+         *
+         * Still interpolated, because a change of possession is a 180 and
+         * that should swing round rather than cut. */
+        const dx = this.aimX - this._x;
+        if (Math.abs(dx) > 3) {
           const k = U.clamp01(1 - Math.exp(-2.2 * Math.max(dt, 0)));
-          this._aimA = U.angleLerp(this._aimA, Math.atan2(dy, dx), k);
+          this._aimA = U.angleLerp(this._aimA, dx >= 0 ? 0 : Math.PI, k);
           this._dx = Math.cos(this._aimA);
           this._dy = Math.sin(this._aimA);
         }

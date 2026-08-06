@@ -1109,6 +1109,27 @@ console.log('\n[16] the forward camera looks down the floor');
     var rim = cam.project(hoop.x, hoop.y, 10, null);
     var player = cam.project(pl.x, pl.y, 3, null);
 
+    // Walk out to each wing and measure whether the arena turned underneath
+    // the play. Project a 20ft line running along the court's length: if the
+    // rig is square to the floor that line runs straight up the screen, and
+    // if the rig has yawed to chase the basket it comes out slanted.
+    var sign = hoop.x >= pl.x ? 1 : -1;
+    function wing(offY) {
+      pl.placeAt(hoop.x - 24, hoop.y + offY, 0);
+      cam.setAim(hoop.x, hoop.y);
+      for (var n = 0; n < 240; n++) cam.update(1 / 60, { x: pl.x, y: pl.y }, null);
+      var a = cam.project(pl.x, pl.y, 0, null);
+      var b = cam.project(pl.x + 20 * sign, pl.y, 0, null);
+      return {
+        tilt: Math.abs(b.x - a.x) / Math.max(1, Math.abs(b.y - a.y)),
+        heading: Math.atan2(cam._dy, cam._dx),
+        follow: cam.eye[2] - pl.y
+      };
+    }
+    var wingL = wing(-20), wingR = wing(20);
+    pl.placeAt(hoop.x - 20, hoop.y, 0);
+    for (var m = 0; m < 120; m++) cam.update(1 / 60, { x: pl.x, y: pl.y }, null);
+
     // Aim at the OTHER basket: the rig has to swing around behind the play.
     var other = BB.C.HOOPS[0].x === hoop.x ? BB.C.HOOPS[1] : BB.C.HOOPS[0];
     cam.setAim(other.x, other.y);
@@ -1121,6 +1142,7 @@ console.log('\n[16] the forward camera looks down the floor');
       behind: eyeToHoop - focusToHoop,
       rimX: rim.x / cam.vw, rimY: rim.y / cam.vh, rimBehind: rim.behind,
       playerX: player.x / cam.vw,
+      wingL: wingL, wingR: wingR,
       flippedBehind: flippedEyeToOther - flippedFocusToOther,
       pageErr: window.__pageErr || null
     };
@@ -1139,6 +1161,23 @@ console.log('\n[16] the forward camera looks down the floor');
         'rim at ' + ((o.rimY || 0) * 100).toFixed(0) + '% down the frame');
   check('the player is centred too', Math.abs(o.playerX - 0.5) < 0.14,
         'player at ' + ((o.playerX || 0) * 100).toFixed(0) + '% across');
+  /* Drifting off centre must not rotate the world. The heading is pinned to
+   * the court's length axis, so both wings look down the same line and the
+   * court's length still runs straight up the screen. */
+  const wl = o.wingL || {}, wr = o.wingR || {};
+  check('the floor does not turn under you on the wing',
+        wl.tilt < 0.06 && wr.tilt < 0.06,
+        'length axis slants ' + ((wl.tilt || 0) * 100).toFixed(0) + '% / ' +
+        ((wr.tilt || 0) * 100).toFixed(0) + '% off vertical');
+  check('both wings share one heading',
+        Math.abs((wl.heading || 0) - (wr.heading || 0)) < 0.02,
+        'headings ' + ((wl.heading || 0) * 57.3).toFixed(1) + ' vs ' +
+        ((wr.heading || 0) * 57.3).toFixed(1) + ' degrees');
+  // Locked heading, but the rig still slides across to keep the play in shot.
+  check('the rig still dollies across to follow',
+        Math.abs(wl.follow) < 1 && Math.abs(wr.follow) < 1,
+        'rig sits ' + (wl.follow || 0).toFixed(1) + 'ft / ' +
+        (wr.follow || 0).toFixed(1) + 'ft off the player');
   // Possession changes have to turn the camera around, not leave it backwards.
   check('it swings around on a change of possession', o.flippedBehind > 12,
         'after flipping aim: ' + (o.flippedBehind || 0).toFixed(1) + 'ft behind');
