@@ -502,8 +502,31 @@
     readInput(input) {
       const v = input.moveVector(TMP_MOVE);
       this.sprinting = input.down('sprint') && v.mag > 0.05;
-      this.intentX = v.x;
-      this.intentY = v.y;
+
+      /* Move relative to the CAMERA, not to the court's axes.
+       *
+       * W used to mean "toward court -y" whatever the camera was doing, which
+       * only lines up with the screen for a rig parked on the sideline. Under
+       * the forward rig — looking down the floor, with the court's length
+       * running INTO the screen — W walked the player sideways and A/D pushed
+       * them toward and away from the camera.
+       *
+       * The rig's own basis, flattened onto the floor, is the fix: W drives
+       * away from the camera and D drives to the right of frame, whichever rig
+       * is running and wherever it has swung to. The sideline rigs come out
+       * exactly as they were, because their forward already IS court -y.
+       */
+      const cam = BB.Camera;
+      let fx = cam.fwd[0], fy = cam.fwd[2];      // GL z is court y
+      const fl = Math.hypot(fx, fy) || 1;
+      fx /= fl; fy /= fl;
+      let rx = cam.right[0], ry = cam.right[2];
+      const rl = Math.hypot(rx, ry) || 1;
+      rx /= rl; ry /= rl;
+
+      // moveVector gives +x for right and -y for up the screen.
+      this.intentX = rx * v.x - fx * v.y;
+      this.intentY = ry * v.x - fy * v.y;
       this.intentMag = v.mag;
 
       if (this.hasBall && !this.isBusyShooting) {

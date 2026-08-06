@@ -1145,8 +1145,57 @@ console.log('\n[16] the forward camera looks down the floor');
   check('forward camera raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[17] WASD moves the way the screen looks');
+{
+  const r = runInPage(`
+    var BB = window.BB;
+    function press(dx, dy) {
+      return { moveVector: function (out) { out.x = dx; out.y = dy; out.mag = 1; return out; },
+               down: function () { return false; }, pressed: function () { return false; },
+               released: function () { return false; } };
+    }
+    function run(mode) {
+      BB.Settings.set('cameraMode', mode);
+      BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+      var scene = BB.Engine.scene, pl = scene.player, cam = BB.Camera, hoop = scene.hoop;
+      for (var i = 0; i < 240; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+      pl.placeAt(hoop.x - 25, hoop.y, 0);
+      for (var j = 0; j < 60; j++) { scene.fixedUpdate(1 / 120); if (j % 2 === 0) scene.update(1 / 60, 1 / 60); }
+
+      var keys = { w: [0, -1], s: [0, 1], a: [-1, 0], d: [1, 0] }, out = {};
+      Object.keys(keys).forEach(function (k) {
+        pl.readInput(press(keys[k][0], keys[k][1]));
+        var here = cam.project(pl.x, pl.y, 3, null);
+        var step = cam.project(pl.x + pl.intentX * 5, pl.y + pl.intentY * 5, 3, null);
+        out[k] = { sx: step.x - here.x, sy: step.y - here.y,
+                   toHoop: Math.hypot(hoop.x - (pl.x + pl.intentX * 5), hoop.y - (pl.y + pl.intentY * 5))
+                         - Math.hypot(hoop.x - pl.x, hoop.y - pl.y) };
+      });
+      return out;
+    }
+    return { forward: run('forward'), broadcast: run('broadcast'), pageErr: window.__pageErr || null };
+  `, 'wasd');
+  if (r.err) check('wasd probe ran', false, r.err);
+  const o = r.out || {};
+  /* Every rig has to agree with the screen: W up, S down, A left, D right.
+   * The court's axes are not the screen's, and the forward rig runs the
+   * court's length INTO the screen — bound to world axes, W walked sideways. */
+  ['forward', 'broadcast'].forEach((mode) => {
+    const m = o[mode] || {}, w = m.w || {}, s2 = m.s || {}, a = m.a || {}, d = m.d || {};
+    check(mode + ': W goes up the screen, S goes down', w.sy < -4 && s2.sy > 4,
+          'W ' + (w.sy || 0).toFixed(0) + 'px, S ' + (s2.sy || 0).toFixed(0) + 'px');
+    check(mode + ': A goes left, D goes right', a.sx < -10 && d.sx > 10,
+          'A ' + (a.sx || 0).toFixed(0) + 'px, D ' + (d.sx || 0).toFixed(0) + 'px');
+  });
+  // Under the forward rig, up the screen is also toward the basket.
+  const fw = (o.forward || {}).w || {};
+  check('forward: W drives toward the basket', fw.toHoop < -3,
+        'W closes ' + (-(fw.toHoop || 0)).toFixed(1) + 'ft');
+  check('wasd probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[17] screenshots');
+  console.log('\n[18] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],
