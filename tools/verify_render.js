@@ -1194,8 +1194,58 @@ console.log('\n[17] WASD moves the way the screen looks');
   check('wasd probe raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[18] shooting works while moving');
+{
+  const r = runInPage(`
+    var BB = window.BB;
+    function trial(withSprint) {
+      BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+      var scene = BB.Engine.scene, pl = scene.player, hoop = scene.hoop;
+      for (var i = 0; i < 400; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+      scene.ai.x = -80; scene.ai.y = -80;
+      pl.placeAt(hoop.x - 14, hoop.y, 0);
+      pl.giveBall(scene.ball);
+      var att0 = pl.stats.att;
+
+      // Stand in for the keyboard: run forward the whole time, tap shoot.
+      var held = {}, pressedNow = {}, releasedNow = {}, real = BB.Input;
+      BB.Input = Object.create(real);
+      BB.Input.down = function (a) { return !!held[a]; };
+      BB.Input.pressed = function (a) { return !!pressedNow[a]; };
+      BB.Input.released = function (a) { return !!releasedNow[a]; };
+      BB.Input.moveVector = function (out) {
+        out = out || { x: 0, y: 0, mag: 0 };
+        out.x = 0; out.y = held.up ? -1 : 0; out.mag = held.up ? 1 : 0; return out;
+      };
+      held.up = true; held.sprint = !!withSprint;
+
+      var sawMeter = false;
+      for (var f = 0; f < 400; f++) {
+        pressedNow = {}; releasedNow = {};
+        if (f === 120) { pressedNow.shoot = true; held.shoot = true; }
+        if (f === 160) { held.shoot = false; releasedNow.shoot = true; }
+        scene.fixedUpdate(1 / 120);
+        if (f % 2 === 0) scene.update(1 / 60, 1 / 60);
+        if (pl.action === BB.Player.ACTION.METER) sawMeter = true;
+      }
+      BB.Input = real;
+      return { attempts: pl.stats.att - att0, sawMeter: sawMeter };
+    }
+    return { running: trial(false), sprinting: trial(true), pageErr: window.__pageErr || null };
+  `, 'moveshoot');
+  if (r.err) check('move-and-shoot probe ran', false, r.err);
+  const o = r.out || {}, run = o.running || {}, spr = o.sprinting || {};
+  /* Movement intent used to overwrite the shot action every tick, so a shot
+   * begun while running was cancelled before the meter ticked once. */
+  check('a shot taken while running actually fires',
+        run.attempts === 1 && run.sawMeter, 'attempts=' + run.attempts);
+  check('holding sprint does not cancel the shot',
+        spr.attempts === 1 && spr.sawMeter, 'attempts=' + spr.attempts);
+  check('move-and-shoot probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[18] screenshots');
+  console.log('\n[19] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],

@@ -51,7 +51,7 @@
     forward:   { dist: 21, height: 9.0, look: 4.6, across: 0, ahead: 11 }
   };
 
-  const FOV_Y = 40 * Math.PI / 180;
+  const FOV_Y = 44 * Math.PI / 180;
   const NEAR = 0.6;
   const FAR = 420;
 

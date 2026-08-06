@@ -728,7 +728,20 @@
         this.stamina = Math.min(1, this.stamina + 0.045 * dt);
       }
 
-      this.action = mag > 0.05 ? ACTION.MOVE : (this.isBusyShooting ? this.action : ACTION.IDLE);
+      /* Moving does NOT overwrite a shot.
+       *
+       * This line used to force ACTION.MOVE on any tick with movement intent,
+       * which clobbered GATHER and METER the frame after they were set. Press
+       * shoot while running and the shot began, was overwritten before the
+       * meter could tick once, and nothing happened — no attempt, no release,
+       * the ball still in hand. Holding sprint made it look like sprint was
+       * the culprit; standing still was the only way to shoot at all.
+       *
+       * A finish already returns before reaching here (see the top of this
+       * method); this covers the wind-up and the follow-through. */
+      if (!this.isBusyShooting && this.action !== ACTION.RELEASE) {
+        this.action = mag > 0.05 ? ACTION.MOVE : ACTION.IDLE;
+      }
     }
 
     /**
