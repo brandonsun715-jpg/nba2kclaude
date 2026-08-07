@@ -464,6 +464,23 @@
       return out;
     }
 
+    /**
+     * Where the shot meter hangs: the spot on the floor this player is over.
+     *
+     * Not the hand. The hand is where the ball leaves from, which is calibrated
+     * against the true-scale ten-foot rim and sits around nine feet up — and it
+     * climbs for the whole rise, and again for the jump. Hanging the bar off it
+     * put the bar up level with the backboard and slid it upward while the
+     * player was trying to time it. The floor under the shooter is the one
+     * point that holds still for the length of a shot, and it is where the
+     * shooter is looking anyway.
+     */
+    meterAnchor(out) {
+      out = out || { x: 0, y: 0, z: 0 };
+      out.x = this.x; out.y = this.y; out.z = 0;
+      return out;
+    }
+
     /** Ball height across one bounce: floor at the bottom, palm at the top. */
     _dribbleZ(handZ) {
       const low = C.BALL_RADIUS + 0.02;
@@ -1031,7 +1048,7 @@
           // the way under the rim.
           if (this.shotType === 'layup') this._startJump(this.driving ? 0.88 : 0.7);
           if (this.shotType === 'dunk') this._startJump(1.0);
-          const p = this.handPosition(TMP_V);
+          const p = this.meterAnchor(TMP_V);
           const baseProfile = this._profileFor(this.shotType);
           const dist = this.targetHoop ? U.dist(this.x, this.y, this.targetHoop.x, this.targetHoop.y) : 0;
           const contestNow = this.shotType === 'freethrow' ? 0 : this._computeContest();
@@ -1059,8 +1076,7 @@
         return;
       }
 
-      const p = this.handPosition(TMP_V);
-      this.meter.setAnchor(p);
+      this.meter.setAnchor(this.meterAnchor(TMP_V));
       const auto = this.meter.update(dt);
       if (auto) { this._commitShot(auto); return; }
 

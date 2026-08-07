@@ -123,17 +123,31 @@
     draw(ctx, cam) {
       if (!this.active && this.flash <= 0.01) return;
 
-      const anchor = cam.project(this.anchor.x, this.anchor.y, this.anchor.z + 6.6, TMP);
+      /* Where the bar hangs.
+       *
+       * ANCHOR_Z is the height the circle's CENTRE is pinned to, and the green
+       * window sits about R*0.75 above that — so what the eye actually tracks
+       * ends up roughly a foot higher again. At 6.6ft that put the green a full
+       * half a body-length above the shooter's head, with the whole bar
+       * floating clear of them: you had to look away from the player to read
+       * the one thing you are timing. Pinned at shoulder height instead, the
+       * green lands just over their head and the bar hangs down their side.
+       *
+       * The circle centre also moved in toward the anchor. The crescent bows
+       * only to the LEFT of that centre, so pushing the centre well right used
+       * to hold the bow out over the shooter — fine when the whole thing was
+       * above them, but once it comes down to head height it would be drawn
+       * across their chest. Near the anchor, the bow clears the shoulder and
+       * the bar runs down beside the figure rather than over it. */
+      const ANCHOR_Z = 4.6;
+      const anchor = cam.project(this.anchor.x, this.anchor.y, this.anchor.z + ANCHOR_Z, TMP);
       const R = 58 * cam.fit;
       const HALF_SPAN = 0.95; // radians either side of due-left — a tall, gently-bowed crescent
       const A0 = Math.PI - HALF_SPAN; // bottom
       const A1 = Math.PI + HALF_SPAN; // top
       const span = A1 - A0;
       const prof = this.profile;
-      // Circle centre sits to the right of the anchor so the leftward bow of
-      // the crescent lands roughly over/beside the shooter instead of well
-      // off to their side.
-      let cx = anchor.x + R * 0.62, cy = anchor.y;
+      let cx = anchor.x + R * 0.12, cy = anchor.y;
 
       /* Keep the whole crescent in the clear.
        *

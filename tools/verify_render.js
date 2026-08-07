@@ -675,7 +675,7 @@ console.log('\n[10] player creator preview');
         'span=' + (o.spanFrac || 0).toFixed(2));
 }
 
-console.log('\n[11] the shot meter clears the scorebug');
+console.log('\n[11] the shot meter hangs on the shooter, and clears the scorebug');
 {
   const r = runInPage(`
     var BB = window.BB;
@@ -691,6 +691,13 @@ console.log('\n[11] the shot meter clears the scorebug');
      * the other way round. */
     var ctx = BB.Renderer.ctx, realArc = ctx.arc, realStroke = ctx.stroke;
     var minY = 1e9, maxY = -1e9, minX = 1e9, maxX = -1e9, pending = null;
+    /* The green window specifically, picked out by the colour it is painted in
+     * — it is the one part of the bar the player is actually timing against,
+     * and the only one whose position on screen matters to them. */
+    // Canvas normalises a colour string when it is read back ("rgba(34, 228,
+    // 160, 0.55)"), so compare with the spaces taken out of both.
+    var mint = BB.U.rgba(BB.C.PAL.mint, 0.55).split(' ').join('');
+    var green = null;
     ctx.arc = function (x, y, r, a0, a1) {
       pending = { x: x, y: y, r: r, a0: a0, a1: a1 };
       return realArc.apply(this, arguments);
@@ -698,12 +705,15 @@ console.log('\n[11] the shot meter clears the scorebug');
     ctx.stroke = function () {
       if (pending) {
         var half = (this.lineWidth || 1) / 2;
+        var gy0 = 1e9, gy1 = -1e9;
         for (var a = pending.a0; a <= pending.a1 + 1e-6; a += 0.02) {
           var px = pending.x + Math.cos(a) * pending.r;
           var py = pending.y + Math.sin(a) * pending.r;
           minY = Math.min(minY, py - half); maxY = Math.max(maxY, py + half);
           minX = Math.min(minX, px - half); maxX = Math.max(maxX, px + half);
+          gy0 = Math.min(gy0, py); gy1 = Math.max(gy1, py);
         }
+        if (String(this.strokeStyle).split(' ').join('') === mint) green = (gy0 + gy1) * 0.5;
         pending = null;
       }
       return realStroke.apply(this, arguments);
@@ -724,8 +734,54 @@ console.log('\n[11] the shot meter clears the scorebug');
     pl.meter.draw(ctx, cam);
     var low = { minY: minY, maxY: maxY, minX: minX, maxX: maxX };
 
+    /* And now an ordinary shot from an ordinary spot, which is what the player
+     * spends the whole game looking at. Measured against the figure itself:
+     * where the green window sits relative to the head, and whether the bar
+     * runs down beside the body or straight across it. */
+    pl.meter.cancel();
+    scene.ai.x = -90; scene.ai.y = -90;          // nobody to shove the shooter
+    pl.placeAt(scene.hoop.x - 18, 25, 0);
+    pl.vx = pl.vy = 0;
+    // Let the rig settle onto them first: the bar is placed by projecting a
+    // point in the world, so it is only where the player sees it once the
+    // camera is actually looking at the player.
+    for (var s = 0; s < 240; s++) {
+      scene.fixedUpdate(1 / 120);
+      if (s % 2 === 0) scene.update(1 / 60, 1 / 60);
+    }
+    /* A real shot, taken the way the game takes one — so this measures where
+     * the shot code ANCHORS the bar as well as where draw() puts it. Setting
+     * an anchor by hand here would pass just as happily with the bar strung
+     * off the shooting hand nine feet in the air. */
+    pl.giveBall(scene.ball);
+    pl._beginShot();
+    for (var m = 0; m < 60 && pl.action !== BB.Player.ACTION.METER; m++) {
+      scene.fixedUpdate(1 / 120);
+      if (m % 2 === 0) scene.update(1 / 60, 1 / 60);
+    }
+    for (var m2 = 0; m2 < 24; m2++) {
+      scene.fixedUpdate(1 / 120);
+      if (m2 % 2 === 0) scene.update(1 / 60, 1 / 60);
+    }
+    minY = 1e9; maxY = -1e9; minX = 1e9; maxX = -1e9; green = null;
+    pl.meter.draw(ctx, cam);
+    var live = { minY: minY, maxY: maxY, minX: minX, maxX: maxX, green: green,
+                 action: pl.action };
+
+    var crownZ = pl.z + (-pl.pose.headY + BB.Player.BONE.headR) * pl.bodyScale;
+    var head = cam.project(pl.x, pl.y, crownZ, null);
+    var feet = cam.project(pl.x, pl.y, pl.z, null);
+    // Half the figure's on-screen width, taken at chest height off the same
+    // radius the physics uses, so "beside them" is measured, not eyeballed.
+    var chest = cam.project(pl.x, pl.y, crownZ * 0.55, null);
+    var side = cam.project(pl.x, pl.y + pl.radius, crownZ * 0.55, null);
+
     ctx.arc = realArc; ctx.stroke = realStroke;
-    return { safe: safe, dpr: dpr, vw: cam.vw, vh: cam.vh, high: high, low: low };
+    return {
+      safe: safe, dpr: dpr, vw: cam.vw, vh: cam.vh, high: high, low: low,
+      live: live, headY: head.y, headX: head.x, feetY: feet.y,
+      halfW: Math.abs(side.x - chest.x)
+    };
   `, 'probe');
   if (r.err) check('meter probe ran', false, r.err);
   const o = r.out || {};
@@ -740,6 +796,25 @@ console.log('\n[11] the shot meter clears the scorebug');
         Math.round((o.safe || 0) * (o.dpr || 1)) + 'px');
   check('meter stays on screen at the near baseline', lo.maxY <= o.vh,
         'meter bottom at ' + Math.round(lo.maxY) + 'px of ' + o.vh);
+  /* Where the bar hangs on an ordinary shot. The bar is screen-space, the
+   * player is not, so everything here is in units of the figure's own
+   * on-screen height — that holds at any resolution and any camera distance. */
+  const live = o.live || {};
+  const bodyPx = (o.feetY || 0) - (o.headY || 0);
+  const aboveHead = ((o.headY || 0) - (live.green || 0)) / Math.max(1, bodyPx);
+  check('the meter is up for a real shot', live.action === 'meter',
+        'shooter was in action "' + live.action + '"');
+  check('the green window sits at the shooter, not floating above them',
+        live.green != null && aboveHead > -0.35 && aboveHead < 0.25,
+        'green window is ' + (aboveHead * 100).toFixed(0) +
+        '% of a body-height above the head');
+  // Brought down to head height, a bar centred over the shooter would be drawn
+  // across their chest for the whole shot.
+  check('the bar hangs beside the shooter, not across them',
+        (o.headX || 0) - live.maxX > o.halfW * 0.5,
+        'bar ends ' + ((o.headX || 0) - live.maxX).toFixed(0) +
+        'px clear of a figure ' + (o.halfW || 0).toFixed(0) + 'px half-wide');
+
   check('meter stays inside the frame sideways',
         hi.minX >= 0 && hi.maxX <= o.vw,
         'meter spans ' + Math.round(hi.minX) + '..' + Math.round(hi.maxX) + ' of ' + o.vw);
