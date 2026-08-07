@@ -303,6 +303,7 @@
       this.progSky = GLX.program(SKY_VS, SKY_FS);
 
       const box = Geo.box(), sph = Geo.sphere(16, 12), seg = Geo.segment(12, 12);
+      const ballSph = Geo.sphere(30, 20);
       const cyl = Geo.cylinder(18), tor = Geo.torus(0.20, 30, 9);
       const quad = Geo.quad(), panel = Geo.panel();
 
@@ -313,6 +314,9 @@
         boxT: GLX.mesh(box, 200),
         sphere: GLX.mesh(sph, 400),
         sphereT: GLX.mesh(sph, 200),
+        // The basketball gets its own, much finer lathe. There is one of it,
+        // it is round by definition, and the camera never looks away from it.
+        ball: GLX.mesh(ballSph, 4),
         seg: GLX.mesh(seg, 900),
         segT: GLX.mesh(seg, 400),
         cyl: GLX.mesh(cyl, 300),
@@ -455,6 +459,12 @@
                 gloss, emissive, blend ? color[3] : 1);
     },
 
+    /** The basketball. Same shape as sphere(), drawn from the finer mesh. */
+    ballBody(x, y, z, radius, color, gloss) {
+      M4.fromBox(this._m, x, z, y, radius * 2, radius * 2, radius * 2);
+      this.push(this.meshes.ball, this._m, color, gloss, 0, 1);
+    },
+
     /**
      * Yaw-rotated ellipsoid — same signature as box(), different primitive.
      * A head is taller than it is deep and deeper than it is wide, so a plain
@@ -567,6 +577,7 @@
       GLX.drawMesh(m.crowd);
       this._setShape(this.progSolid, 0);
       GLX.drawMesh(m.sphere);
+      GLX.drawMesh(m.ball);
       this._setShape(this.progSolid, 2);   // limb taper
       GLX.drawMesh(m.seg);
       this._setShape(this.progSolid, 0);

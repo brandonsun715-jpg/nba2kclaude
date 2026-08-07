@@ -482,6 +482,11 @@
       ball.hold(this);
       this.hasBall = true;
       this._dribbleLive = true;
+      // Hands come down to take it. Taking possession is never the follow
+      // through of a shot, and the decay in updatePostShot would otherwise
+      // leave the ball floating at the release point for a moment first —
+      // which on a made basket is the exact moment the player is looking.
+      this.armRaise = 0;
       this._pivotX = null;
       this._pivotY = null;
       this._traveled = false;
@@ -1181,6 +1186,21 @@
       } else if (this.action === ACTION.STEAL) {
         this.actionT += dt;
         if (this.actionT > 0.26) this.action = ACTION.IDLE;
+      } else if (this.armRaise > 0) {
+        /* Nothing is driving the arms any more, so put them down.
+         *
+         * Left alone, armRaise simply stopped wherever the release animation
+         * abandoned it — about 0.135 every time, because RELEASE hands over to
+         * IDLE on a half-second timer rather than on the arm reaching the
+         * bottom, and no other branch touches it again until the NEXT shot
+         * starts. handPosition() reads anything above 0.05 as "still shooting"
+         * and answers with the release point, which is calibrated against the
+         * true-scale ten-foot rim rather than against the figure. So from the
+         * first jump shot onward the ball hung two and a half feet above that
+         * player's head and never bounced again — loudest on a make, where the
+         * ball comes straight back to the scorer for the check. */
+        this.armRaise = U.approach(this.armRaise, 0, 7, dt);
+        if (this.armRaise < 0.004) this.armRaise = 0;
       }
     }
 

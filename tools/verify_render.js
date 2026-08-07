@@ -1555,8 +1555,153 @@ console.log('\n[20] the court is outdoors, in a park, in daylight');
   check('park raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[21] the ball is the right size and comes back to the hand');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, C = BB.C;
+    BB.Engine.setState('shootaround'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene, pl = scene.player, ball = scene.ball, hoop = scene.hoop;
+    for (var i = 0; i < 120; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+
+    /* ---- what the renderer actually submits -------------------------- */
+    pl.placeAt(hoop.x - 14, hoop.y, 0); pl.vx = pl.vy = 0;
+    pl.giveBall(ball);
+    scene.update(1 / 60, 1 / 60);
+    scene.render(0);
+    /* Find the ball in the submitted instance data by its position rather than
+     * by asking any particular mesh for it — the point of this section is to
+     * measure what the renderer was told to draw, whichever primitive it chose
+     * to draw it with. Instance layout is 16 matrix floats first: [0] is the
+     * scale across, and the translation is at [12..14] in GL order (court x,
+     * height, court y). */
+    var S3 = BB.S3;
+    var drawnR = -1, ballMesh = null, ballVerts = 0;
+    var sphereVerts = S3.meshes.sphere.indexCount;
+    var names = ['ball', 'sphere'];
+    for (var mi = 0; mi < names.length; mi++) {
+      var mesh = S3.meshes[names[mi]];
+      if (!mesh) continue;
+      for (var k = 0; k < mesh.n; k++) {
+        var b = k * 24;
+        if (Math.abs(mesh.data[b + 12] - ball.x) < 0.01 &&
+            Math.abs(mesh.data[b + 13] - ball.z) < 0.01 &&
+            Math.abs(mesh.data[b + 14] - ball.y) < 0.01) {
+          drawnR = mesh.data[b] / 2;
+          ballMesh = names[mi];
+          ballVerts = mesh.indexCount;
+        }
+      }
+    }
+
+    // Against the figure carrying it, both measured at the same spot so the
+    // perspective cancels and this is purely a statement about proportion.
+    var crown = (-pl.pose.headY + BB.Player.BONE.headR) * pl.bodyScale;
+    var vsPlayer = (drawnR * 2) / crown;
+
+    /* ---- take a shot, make it, and watch what comes back ------------- */
+    var scored = false;
+    ball.events.on('score', function () { scored = true; });
+    var stateAtScore = null;
+    var wasScored = false;
+    pl._beginShot();
+    var fired = false, armDuringFlight = [];
+    for (var f = 0; f < 1400; f++) {
+      scene.fixedUpdate(1 / 120);
+      if (f % 2 === 0) scene.update(1 / 60, 1 / 60);
+      if (!fired && pl.action === BB.Player.ACTION.METER && pl.meter.value > 0.9) {
+        pl._releaseShot(); fired = true;
+      }
+      if (scored && !wasScored) { stateAtScore = ball.state; wasScored = true; }
+      if (fired) armDuringFlight.push(pl.armRaise);
+      if (wasScored && pl.hasBall) break;
+    }
+
+    var armAfter = pl.armRaise;
+    var headZ = -pl.pose.headY * pl.bodyScale;
+
+    /* One full dribble cycle, once the ball is back. */
+    var lo = 1e9, hi = -1e9, hand = { x: 0, y: 0, z: 0 };
+    for (var q = 0; q < 140; q++) {
+      scene.fixedUpdate(1 / 120);
+      if (q % 2 === 0) scene.update(1 / 60, 1 / 60);
+      if (ball.owner === pl) { lo = Math.min(lo, ball.z); hi = Math.max(hi, ball.z); }
+    }
+    pl.handAt(hand);
+
+    /* And the bottom of a bounce measured straight off the carry, with the
+     * arms forced down. Asked this way it is a statement about the drawn ball
+     * alone, and cannot be answered by a ball that is not being dribbled. */
+    var bottom = 1e9;
+    pl.armRaise = 0;
+    for (var s = 0; s <= 40; s++) {
+      pl.dribblePhase = s / 40;
+      pl._updatePose(1 / 60);
+      bottom = Math.min(bottom, pl.handPosition(null).z);
+    }
+
+    return {
+      drawnR: drawnR, trueR: C.BALL_RADIUS, rimR: C.RIM_RADIUS,
+      ballMesh: ballMesh, ballVerts: ballVerts, sphereVerts: sphereVerts,
+      vsPlayer: vsPlayer, crown: crown,
+      scored: scored, stateAtScore: stateAtScore,
+      armAfter: armAfter, held: ball.owner === pl,
+      ballZ: ball.z, headZ: headZ, drawnHandZ: hand.z,
+      dribbleLo: lo, dribbleHi: hi, bottom: bottom,
+      pageErr: window.__pageErr || null
+    };
+  `, 'ball');
+  if (r.err) check('ball probe ran', false, r.err);
+  const o = r.out || {};
+
+  /* --- size ---------------------------------------------------------- */
+  check('the ball is drawn at its true physical size',
+        Math.abs(o.drawnR - o.trueR) < 0.005,
+        'drawn radius ' + (o.drawnR || 0).toFixed(3) + 'ft against a real ' +
+        (o.trueR || 0).toFixed(3) + 'ft');
+  // A size 7 ball is about 9.4in across and the ring is 18in: over four inches
+  // of clearance all the way round. Inflate the ball and it starts to look
+  // like it could not physically go in.
+  check('it clears the ring the way a real ball does',
+        o.rimR - o.drawnR > 0.30 && o.rimR - o.drawnR < 0.42,
+        ((o.rimR - o.drawnR) * 12).toFixed(1) + 'in of clearance each side');
+  // And against the man holding it. A real ball is about an eighth of a
+  // player's height; the figure here is deliberately compressed, so a sixth is
+  // right and a quarter is a beach ball.
+  check('the ball is a ball next to the player, not a beach ball',
+        o.vsPlayer > 0.10 && o.vsPlayer < 0.20,
+        'ball is ' + ((o.vsPlayer || 0) * 100).toFixed(0) + '% of a ' +
+        (o.crown || 0).toFixed(1) + 'ft figure');
+  // Held at the bottom of the bounce the ball touches the floor; drawn any
+  // bigger it goes straight through it.
+  check('the ball never sinks through the floor at the bounce',
+        o.bottom - o.drawnR > -0.02,
+        'lowest point ' + ((o.bottom - o.drawnR) * 12).toFixed(1) + 'in above the floor');
+  check('the ball has a mesh of its own, and a finer one',
+        o.ballMesh === 'ball' && o.ballVerts > o.sphereVerts * 2,
+        'drawn from "' + o.ballMesh + '" at ' + o.ballVerts +
+        ' indices, against the shared sphere at ' + o.sphereVerts);
+
+  /* --- coming back after a make -------------------------------------- */
+  check('the shot went in', o.scored === true);
+  // The one that used to strand the ball over the shooter's head forever.
+  check('the arm comes all the way down after a shot', o.armAfter === 0,
+        'armRaise settled at ' + (o.armAfter || 0).toFixed(4));
+  check('the ball is back in the hand, not floating over the head',
+        o.held === true && o.ballZ < o.headZ,
+        'ball at ' + (o.ballZ || 0).toFixed(2) + 'ft, head at ' + (o.headZ || 0).toFixed(2) + 'ft');
+  check('and it is being dribbled, not carried',
+        o.dribbleHi - o.dribbleLo > 1.2 && o.dribbleLo < 0.9,
+        'travels ' + (o.dribbleHi - o.dribbleLo).toFixed(2) + 'ft, down to ' +
+        (o.dribbleLo || 0).toFixed(2) + 'ft');
+  // Through the net it is a live ball; it used to stay "in flight" for the
+  // whole time it spent bouncing afterwards, which no rebound could touch.
+  check('a made basket leaves a live ball, not a shot in flight',
+        o.stateAtScore === 'loose', 'ball state on the score was ' + o.stateAtScore);
+  check('ball probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[21] screenshots');
+  console.log('\n[22] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],

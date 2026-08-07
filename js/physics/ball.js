@@ -13,10 +13,6 @@
   const BB = global.BB || (global.BB = {});
   const U = BB.U, C = BB.C, PAL = C.PAL;
 
-  // See draw()/drawShadow() — cosmetic-only size multiplier so the ball
-  // stays trackable against the court and players; never touches physics.
-  const VISUAL_BOOST = 1.55;
-
   const STATE = {
     HELD: 'held',       // in a player's hands
     LOOSE: 'loose',     // live, nobody owns it
@@ -341,6 +337,19 @@
       this.vz *= C.NET_DAMPING;
       this.vx *= 0.42;
       this.vy *= 0.42;
+
+      /* Out the bottom of the net, this is a live loose ball, not a shot still
+       * on its way to a rim. Nothing used to say so: the state stayed SHOT
+       * through every bounce afterwards, because the only place that cleared
+       * it also emitted a miss and so was skipped once the shot had scored.
+       * A made basket therefore left a ball nobody could rebound for the five
+       * or six seconds it took to stop bouncing.
+       *
+       * Set BEFORE the event goes out. A scene may hand the ball straight to a
+       * player inside that handler — a check-ball restart does exactly that —
+       * and writing the state afterwards would overwrite the hold. */
+      this.state = STATE.LOOSE;
+
       this.events.emit('score', {
         hoop,
         clean: !this.touchedRim,
@@ -372,21 +381,25 @@
     drawShadow() {
       const h = U.clamp01(this.z / C.SHADOW_MAX_H);
       const a = (1 - h) * 0.45 + 0.05;
-      const r = C.BALL_RADIUS * VISUAL_BOOST * (1 + h * 1.9);
-      BB.S3.shadow(this.x, this.y, r * 1.5, a);
+      const r = C.BALL_RADIUS * (1 + h * 1.9);
+      BB.S3.shadow(this.x, this.y, r * 1.25, a);
     }
 
     /**
      * The ball, its seams and its motion trail.
      *
-     * VISUAL_BOOST renders the ball larger than its true physical size — a
-     * real 9.5in ball is otherwise nearly impossible to track at broadcast
-     * camera distance. Collision and physics elsewhere always use
-     * C.BALL_RADIUS directly, so this is purely cosmetic.
+     * Drawn at its true physical size — C.BALL_RADIUS, the same figure the
+     * physics collides with. It used to be inflated by 55% on the theory that
+     * a real 9.5in ball is hard to track at broadcast distance, and the cost
+     * of that was everywhere once you knew to look: a ball 14.7in across
+     * barely fitting through an 18in rim, sinking two inches through the floor
+     * at the bottom of every dribble, and hiding half the shooter's chest. The
+     * default camera is behind the play now rather than out on the sideline,
+     * so there is nothing left to buy with it.
      */
     draw() {
       const S3 = BB.S3;
-      const r = C.BALL_RADIUS * VISUAL_BOOST;
+      const r = C.BALL_RADIUS;
 
       /* Motion trail: a run of shrinking, fading spheres along the recorded
        * path. Cheap, and unlike a 2D polyline it survives any camera angle. */
@@ -396,18 +409,23 @@
           const k = i / (steps - 1);
           const o = i * 3;
           S3.sphere(this.trail[o], this.trail[o + 1], this.trail[o + 2],
-                    r * (0.30 + k * 0.45), trailCol(0.05 + k * 0.16), 0, 0.25, true);
+                    r * (0.34 + k * 0.50), trailCol(0.05 + k * 0.16), 0, 0.25, true);
         }
       }
 
-      /* Body. */
-      S3.sphere(this.x, this.y, this.z, r, BALL_COL, 0.28, 0.05);
+      /* Body. Its own finer mesh — the shared sphere primitive is a 16x12
+       * lathe, fine for a head or a tree crown but visibly faceted on the one
+       * object in the game that is round by definition and that the camera is
+       * pointed at the whole time. Matt: a basketball is pebbled leather, and
+       * the plastic highlight it used to carry was the other half of why it
+       * read as a beach ball. */
+      S3.ballBody(this.x, this.y, this.z, r, BALL_COL, 0.16);
 
-      /* Seams: four bands of dark tube laid over the sphere, rotating with the
-       * ball. Two are great circles through the poles and two are the classic
-       * offset curves, which together are what make a basketball read as a
-       * basketball rather than an orange dot. */
-      const sr = r * 1.005;
+      /* Seams, rotating with the ball: one great circle round the middle and
+       * three through the poles, evenly spaced. They sit half proud of the
+       * surface, the way a moulded seam actually does, and they are most of
+       * what separates a basketball from an orange dot. */
+      const sr = r * 0.995;
       const rot = this.rot;
       for (let s = 0; s < SEAMS.length; s++) {
         const seam = SEAMS[s];
@@ -425,7 +443,7 @@
           const rz = uy * srot + uz * cr;
           const wx = this.x + ux * sr, wy = this.y + ry * sr, wz = this.z + rz * sr;
           if (have) {
-            S3.limb(px, py, pz, wx, wy, wz, r * 0.055, SEAM_COL, 0.1);
+            S3.limb(px, py, pz, wx, wy, wz, r * 0.075, SEAM_COL, 0.06);
           }
           px = wx; py = wy; pz = wz; have = true;
         }
@@ -435,18 +453,24 @@
 
   /* ------------------------------------------------------------ appearance
    * Seam planes, each given as two orthogonal unit vectors spanning the plane
-   * the seam circle lies in. Two great circles plus two tilted ones is the
-   * standard eight-panel basketball layout.
+   * the seam circle lies in: one round the middle, then three through the
+   * poles at 0, 60 and 120 degrees. Evenly spaced — the three polar circles
+   * used to sit at 0, 45 and 135, which leaves one lopsided gap twice the
+   * width of the others and is the sort of thing the eye catches without ever
+   * working out what it is looking at.
    */
   const SEAM_SEGS = 22;
+  const S60 = Math.sin(Math.PI / 3);          // 0.8660
   const SEAMS = [
     [1, 0, 0, 0, 1, 0],
     [1, 0, 0, 0, 0, 1],
-    [0.707, 0.707, 0, 0, 0, 1],
-    [0.707, -0.707, 0, 0, 0, 1]
+    [0.5, S60, 0, 0, 0, 1],
+    [-0.5, S60, 0, 0, 0, 1]
   ];
-  const BALL_COL = [0.824, 0.376, 0.118, 1];
-  const SEAM_COL = [0.10, 0.055, 0.02, 1];
+  /* Pebbled leather, a shade deeper than the old flat orange so the seams and
+   * the white lines of the court both have something to sit against. */
+  const BALL_COL = [0.788, 0.337, 0.106, 1];
+  const SEAM_COL = [0.13, 0.065, 0.03, 1];
   const TRAIL_COL = [0.824, 0.376, 0.118, 0.2];
   function trailCol(a) { TRAIL_COL[3] = a; return TRAIL_COL; }
 
