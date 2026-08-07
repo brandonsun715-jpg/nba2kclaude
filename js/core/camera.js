@@ -197,6 +197,29 @@
     /** Points the FORWARD rig at a basket. No effect in any other mode. */
     setAim(x, y) { this.aimX = x; this.aimY = y; },
 
+    /* --------------------------------------------------------- cinematic
+     * A hand-flown override for the instant replay. While it is on, every rig
+     * preset, the follow spring and the shake are all bypassed and the eye and
+     * aim are whatever was last handed in — in COURT feet, like everything
+     * else a caller ever passes this module. */
+    cine: false,
+    _cineEye: new Float32Array(3),
+    _cineTarget: new Float32Array(3),
+
+    flyTo(ex, ey, ez, tx, ty, tz) {
+      this.cine = true;
+      this._cineEye[0] = ex; this._cineEye[1] = ey; this._cineEye[2] = ez;
+      this._cineTarget[0] = tx; this._cineTarget[1] = ty; this._cineTarget[2] = tz;
+      this._rebuild();
+    },
+
+    /** Hands the frame back to the rig the settings asked for. */
+    endFly() {
+      if (!this.cine) return;
+      this.cine = false;
+      this._rebuild();
+    },
+
     /* ----------------------------------------------------------------- shake */
     /** @param {number} amount 0..1 — added to trauma, clamped. */
     addTrauma(amount) {
@@ -320,7 +343,17 @@
       const sx = this.shakeX * 0.9;
       const sy = this.shakeY * 0.5;
 
-      if (this.mode === MODES.FORWARD) {
+      if (this.cine) {
+        // Flown by hand. No rig, no follow, no shake: a replay camera is a
+        // camera that was never on the floor, and everything about where it
+        // is comes from whoever is flying it.
+        this.eye[0] = this._cineEye[0];
+        this.eye[1] = this._cineEye[2];
+        this.eye[2] = this._cineEye[1];
+        this.target[0] = this._cineTarget[0];
+        this.target[1] = this._cineTarget[2];
+        this.target[2] = this._cineTarget[1];
+      } else if (this.mode === MODES.FORWARD) {
         // Behind the play, on the line to the basket, looking down the floor.
         const ahead = rig.ahead || 10;
         this.eye[0] = this._x - this._dx * dist + sx;

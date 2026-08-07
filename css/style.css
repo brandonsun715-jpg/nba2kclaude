@@ -141,6 +141,9 @@ kbd {
   transition: opacity 0.4s var(--ease), transform 0.4s var(--ease);
 }
 .hud.is-live { opacity: 1; transform: translateY(0); }
+/* The scorebug is DOM over the canvas, so a replay cannot letterbox over it
+   — it has to be taken away for the length of the cut. */
+.hud.is-replay { opacity: 0; transform: translateY(-10px); }
 
 .hud-bug {
   display: grid;

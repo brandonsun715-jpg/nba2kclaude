@@ -301,7 +301,18 @@
       this.hype = U.clamp01(this.hype + 0.16 + Math.min(0.24, p.stats.streak * 0.03));
       this._updatePracticeHud();
       this._scheduleRetrieve();
+
+      const worth = BB.Replay.rateShot(e, p);
+      if (worth) {
+        BB.Replay.highlight({
+          weight: worth.weight, label: worth.label,
+          x: p.x, y: p.y, hoopX: e.hoop.x, hoopY: e.hoop.y
+        });
+      }
     },
+
+    /** What a replay needs to redraw this scene. */
+    replayCast() { return { ball: this.ball, players: [this.player] }; },
 
     _onMiss(e) {
       this.player.onMiss();
@@ -495,7 +506,6 @@
 
     exit() {
       BB.HUD.hide();
-      clearTimeout(this._slowmoT);
       BB.Engine.setTimeScale(1, true);
     },
 
@@ -569,8 +579,19 @@
         this._awardFreeThrows(scorer, defender, 1);
         return;
       }
+      const worth = BB.Replay.rateShot(e, scorer);
+      if (worth) {
+        BB.Replay.highlight({
+          weight: worth.weight, label: worth.label,
+          x: scorer.x, y: scorer.y, hoopX: e.hoop.x, hoopY: e.hoop.y
+        });
+      }
+
       this._startCheck(scorer, defender);
     },
+
+    /** What a replay needs to redraw this scene. */
+    replayCast() { return { ball: this.ball, players: [this.player, this.ai] }; },
 
     _onMiss(e) {
       if (this.phase === 'over') return;
@@ -624,11 +645,13 @@
       BB.FX.popup({ x: e.by.x, y: e.by.y, z: 9.5, text: 'BLOCKED!', colour: PAL.mint, size: 1.35, life: 1.3 });
       BB.Camera.addTrauma(0.24 * (BB.Settings.get('screenShake') || 1));
 
-      // A brief, highlight-reel slow-motion beat — real wall-clock timing so
-      // it lasts the same perceived length regardless of the slowdown itself.
-      clearTimeout(this._slowmoT);
-      BB.Engine.setTimeScale(0.28, false);
-      this._slowmoT = setTimeout(() => BB.Engine.setTimeScale(1, false), 380);
+      // A block is a highlight in its own right, and it has the one thing a
+      // slow-motion beat on the live moment needs: nothing about it restarts
+      // the possession on the same frame.
+      BB.Replay.highlight({
+        weight: 0.9, label: 'DENIED',
+        x: e.by.x, y: e.by.y, hoopX: this.hoop.x, hoopY: this.hoop.y
+      });
     },
 
     _onViolation(e) {

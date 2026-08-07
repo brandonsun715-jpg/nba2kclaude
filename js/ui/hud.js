@@ -57,6 +57,9 @@
     show() { this.visible = true; this._safe = null; this.root.classList.add('is-live'); },
     hide() { this.visible = false; this.root.classList.remove('is-live'); },
 
+    /** Takes the scorebug away while an instant replay is on screen. */
+    setReplay(on) { this.root.classList.toggle('is-replay', !!on); },
+
     /**
      * Where the scorebug ends, in CSS pixels down from the top of the window.
      *

@@ -591,10 +591,21 @@
         return;
       }
 
+      const worth = BB.Replay.rateShot(e, scorer);
+      if (worth) {
+        BB.Replay.highlight({
+          weight: worth.weight, label: worth.label,
+          x: scorer.x, y: scorer.y, hoopX: e.hoop.x, hoopY: e.hoop.y
+        });
+      }
+
       this.phase = 'check';
       this.checkTimer = 0.9;
       this._formUp(scorer.team === this.teamA ? this.teamB : this.teamA);
     },
+
+    /** What a replay needs to redraw this scene. */
+    replayCast() { return { ball: this.ball, players: this.all }; },
 
     _onMiss(e) {
       if (this.phase === 'freethrow') { this._resolveFreeThrow(false, e); return; }

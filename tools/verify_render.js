@@ -1775,8 +1775,218 @@ console.log('\n[21] the ball is the right size and comes back to the hand');
   check('ball probe raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[22] a highlight gets a slow-motion replay');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, C = BB.C;
+    if (!BB.Replay) return { missing: true };
+
+    BB.Settings.set('cameraMode', 'forward');
+    BB.Settings.set('instantReplay', true);
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene, pl = scene.player, hoop = scene.hoop, R = BB.Replay;
+    // A pure shooter, so a perfect release reliably swishes and this section is
+    // about the replay rather than about the shot solver's error term.
+    pl.ratings.threePoint = 99; pl.ratings.midRange = 99;
+
+    var DT = 1 / 60;
+    /* The engine's own frame, by hand: the replay hooks into it, so a probe
+     * that called fixedUpdate directly would never exercise the freeze.
+     *
+     * The defender is held off the floor only while the shot is being set up.
+     * Left held there it would keep being shoved back between the snapshot of
+     * the live world and the frame the replay parks it on, and the hand-back
+     * check would be measuring the probe rather than the replay. */
+    var parkAI = true;
+    function frame() {
+      if (parkAI) { scene.ai.x = -95; scene.ai.y = -95; scene.ai.hasBall = false; }
+      BB.Input.beginFrame();
+      var frozen = R.beginFrame(DT, scene);
+      if (!frozen) {
+        scene.fixedUpdate(1 / 120); scene.fixedUpdate(1 / 120);
+        scene.update(DT, DT);
+      }
+      BB.Input.endFrame();
+      return frozen;
+    }
+
+    for (var i = 0; i < 120; i++) frame();
+
+    /** Shoots until one drops clean from behind the arc. */
+    var scored = false, seen = null;
+    scene.ball.events.on('score', function (e) { scored = true; seen = { three: e.three, clean: e.clean }; });
+    function cleanThree() {
+      for (var tries = 0; tries < 20; tries++) {
+        scored = false; seen = null;
+        R.reset();
+        scene.phase = 'live'; scene.score.you = 0; scene.score.cpu = 0;
+        pl.placeAt(hoop.x - 27, hoop.y - 1, 0);
+        pl.vx = pl.vy = 0; pl.z = 0; pl.jumping = false; pl.action = null;
+        pl.giveBall(scene.ball);
+        for (var w = 0; w < 220; w++) frame();
+        pl._beginShot();
+        var fired = false;
+        for (var f = 0; f < 500 && !scored; f++) {
+          frame();
+          if (!fired && pl.action === BB.Player.ACTION.METER &&
+              pl.meter.profile && pl.meter.value >= pl.meter.profile.target) {
+            pl._releaseShot(); fired = true;
+          }
+        }
+        if (seen && seen.three && seen.clean) return true;
+      }
+      return false;
+    }
+
+    var got = cleanThree();
+    var armed = R.phase;
+
+    /* Everything about the live world at the moment of the cut. This is what
+     * has to come back untouched. */
+    function snap() {
+      return [pl.x, pl.y, pl.z, pl.facing, pl.pose.hipY, pl.pose.handR.x,
+              scene.ai.x, scene.ai.y, scene.ai.pose.hipY,
+              scene.ball.x, scene.ball.y, scene.ball.z];
+    }
+    parkAI = false;
+    var live = snap();
+    var scoreAtCut = scene.score.you;
+    var camMode = BB.Camera.mode;
+
+    frame();                                     // armed -> playing
+    var playing = R.playing, cine = BB.Camera.cine;
+    var atStart = snap();
+    var eye0 = [BB.Camera.eye[0], BB.Camera.eye[1], BB.Camera.eye[2]];
+
+    var frames = 1, steps = [], zeros = 0, eyeTravel = 0, moved = 0;
+    var prevZ = scene.ball.z, prevEye = eye0.slice();
+    var restored = null, scoreAfter = scene.score.you;
+    /* The engine's frame, opened up: the state has to be read the instant the
+     * replay hands back and BEFORE the simulation gets a tick, or what is
+     * measured is one frame of live play rather than the hand-back. */
+    while (frames < 3000) {
+      BB.Input.beginFrame();
+      var frozen = R.beginFrame(DT, scene);
+      if (!frozen) { restored = snap(); scoreAfter = scene.score.you; BB.Input.endFrame(); break; }
+      var d = Math.abs(scene.ball.z - prevZ);
+      // Only while the ball is actually travelling: the tail is a deliberate
+      // freeze-frame and would read as a stall.
+      if (R._playT < R.PRE_ROLL * 0.9) { steps.push(d); if (d < 1e-5) zeros++; }
+      prevZ = scene.ball.z;
+      eyeTravel += Math.hypot(BB.Camera.eye[0] - prevEye[0], BB.Camera.eye[2] - prevEye[2]);
+      prevEye = [BB.Camera.eye[0], BB.Camera.eye[1], BB.Camera.eye[2]];
+      moved = Math.max(moved, Math.abs(pl.x - live[0]));
+      BB.Input.endFrame();
+      frames++;
+    }
+    var realSeconds = frames * DT;
+    if (!restored) restored = snap();
+    for (var k = 0; k < 30; k++) frame();        // and back to live play
+
+    var worstDrift = 0;
+    for (var s = 0; s < live.length; s++) worstDrift = Math.max(worstDrift, Math.abs(live[s] - restored[s]));
+
+    var maxStep = 0, sum = 0;
+    for (var q = 0; q < steps.length; q++) { maxStep = Math.max(maxStep, steps[q]); sum += steps[q]; }
+    var meanStep = steps.length ? sum / steps.length : 0;
+    var zeroFrac = steps.length ? zeros / steps.length : 1;
+
+    /* Rating, without needing a shot to land: a three that rattles in is a
+     * good shot and not a picture worth stopping the game for. */
+    var rateClean = R.rateShot({ three: true, clean: true }, pl);
+    var rateRattle = R.rateShot({ three: true, clean: false }, { stats: { streak: 0 } });
+    var rateTwo = R.rateShot({ three: false, clean: true }, { stats: { streak: 0 } });
+
+    /* And with the setting off, nothing fires at all. */
+    R.reset();
+    BB.Settings.set('instantReplay', false);
+    for (var z = 0; z < 200; z++) frame();
+    var offTook = R.highlight({ weight: 1, label: 'X', x: pl.x, y: pl.y, hoopX: hoop.x, hoopY: hoop.y });
+    BB.Settings.set('instantReplay', true);
+
+    return {
+      got: got, seen: seen, armed: armed, playing: playing, cine: cine,
+      label: R.label, frames: frames, realSeconds: realSeconds,
+      span: R.PRE_ROLL + R.HOLD_TAIL, playRate: R.PLAY_RATE,
+      rewindBall: Math.hypot(atStart[9] - live[9], atStart[11] - live[11]),
+      rewindPlayer: Math.hypot(atStart[0] - live[0], atStart[1] - live[1]),
+      playersMoved: moved,
+      eyeTravel: eyeTravel,
+      worstDrift: worstDrift,
+      scoreAtCut: scoreAtCut, scoreAfter: scoreAfter,
+      maxStep: maxStep, meanStep: meanStep, stepCount: steps.length, zeroFrac: zeroFrac,
+      cineAfter: BB.Camera.cine, phaseAfter: R.phase, playingAfter: R.playing,
+      camMode: camMode, camModeAfter: BB.Camera.mode,
+      rateClean: rateClean, rateRattle: rateRattle, rateTwo: rateTwo,
+      threshold: R.THRESHOLD,
+      offTook: offTook,
+      bufferFloats: R._buf.length,
+      pageErr: window.__pageErr || null
+    };
+  `, 'replay');
+  if (r.err) check('replay probe ran', false, r.err);
+  const o = r.out || {};
+  if (o.missing) check('the replay system exists', false, 'BB.Replay is not defined');
+
+  check('a clean three from deep triggers a replay',
+        o.got === true && o.playing === true && o.label === 'SWISH FROM DEEP',
+        'phase after the make was "' + o.armed + '", label "' + o.label + '"');
+  // Not every bucket. A three that rattles in is a good shot and an ugly
+  // picture, and stopping the game for one would wear out fast.
+  check('a rattled three and a plain two do not',
+        (o.rateRattle || {}).weight < o.threshold && !o.rateTwo,
+        'rattled three rates ' + JSON.stringify(o.rateRattle) +
+        ' against a threshold of ' + o.threshold);
+
+  check('it rewinds to before the shot',
+        o.rewindBall > 6 && o.rewindPlayer > 6,
+        'ball jumped back ' + (o.rewindBall || 0).toFixed(1) + 'ft and the shooter ' +
+        (o.rewindPlayer || 0).toFixed(1) + 'ft');
+  // The whole point: it is SLOW. The footage is played over noticeably more
+  // real time than it was recorded in.
+  check('it plays in slow motion',
+        o.realSeconds > o.span * 1.4 &&
+        Math.abs(o.realSeconds - o.span / o.playRate) < 0.6,
+        (o.span || 0).toFixed(2) + 's of play took ' + (o.realSeconds || 0).toFixed(2) + 's to watch');
+  check('the players are replayed too, not only the ball',
+        o.playersMoved > 6,
+        'the shooter was drawn up to ' + (o.playersMoved || 0).toFixed(1) +
+        'ft from where the live game had him');
+  /* Sampled BETWEEN recorded frames rather than snapped to the nearest one.
+   * Played at 0.55x, a sampler that snapped would hold each captured frame for
+   * getting on for two real ones, so about half the frames on screen would be
+   * identical to the one before — which is what a replay looks like when it
+   * reads as a flip-book rather than as slow motion. */
+  check('it is smooth, not a slideshow',
+        o.stepCount > 40 && o.zeroFrac < 0.12,
+        ((o.zeroFrac || 0) * 100).toFixed(0) + '% of ' + o.stepCount +
+        ' frames were identical to the one before');
+  check('the camera flies a path of its own',
+        o.cine === true && o.eyeTravel > 15,
+        'rig travelled ' + (o.eyeTravel || 0).toFixed(1) + 'ft, cinematic=' + o.cine);
+
+  /* The replay scrubs recorded state over the live entities, so the one thing
+   * it must never do is leave any of it behind. */
+  check('the game does not move while a replay runs',
+        o.scoreAtCut === o.scoreAfter,
+        'score went ' + o.scoreAtCut + ' -> ' + o.scoreAfter);
+  check('it hands the live world back exactly as it found it',
+        o.worstDrift < 1e-4,
+        'worst field drifted by ' + (o.worstDrift || 0).toExponential(2));
+  check('and hands the camera back',
+        o.cineAfter === false && o.camModeAfter === o.camMode && o.playingAfter === false,
+        'cinematic=' + o.cineAfter + ', mode ' + o.camMode + ' -> ' + o.camModeAfter);
+
+  check('turning it off in settings turns it off', o.offTook === false);
+  // Preallocated once: a recorder that grows is a recorder that stutters.
+  check('the recording buffer is fixed size',
+        o.bufferFloats === 60 * 6 * (6 + 10 * 40),
+        'buffer is ' + o.bufferFloats + ' floats');
+  check('replay probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[22] screenshots');
+  console.log('\n[23] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],

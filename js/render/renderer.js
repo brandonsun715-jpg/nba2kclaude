@@ -144,8 +144,10 @@
         scene.ball.draw();
       }
 
-      /* 5 — particles */
-      if (scene.fx) scene.fx.draw();
+      /* 5 — particles. Not during a replay: the simulation is frozen, so every
+       * particle would hang motionless in the air for the whole cut. */
+      const replaying = !!(BB.Replay && BB.Replay.playing);
+      if (scene.fx && !replaying) scene.fx.draw();
 
       /* 6 — glass and nets, blended, drawn after everything they sit over */
       for (let i = 0; i < hoops.length; i++) hoops[i].drawFront();
@@ -163,11 +165,12 @@
         ctx.fillStyle = U.rgba('#03050A', scene.dimmed * 0.72);
         ctx.fillRect(0, 0, this.w, this.h);
       }
-      if (scene.fx) {
+      if (scene.fx && !replaying) {
         scene.fx.drawPopups(ctx, cam);
         scene.fx.drawFlash(ctx, this.w, this.h);
       }
       this.vignette(ctx);
+      if (BB.Replay) BB.Replay.drawOverlay(ctx, this.w, this.h, this.dpr);
       if (this.showDebug) this.debug(ctx, scene);
 
       // Left in screen space on purpose: scenes draw their shot meters onto

@@ -363,6 +363,7 @@
                   [['broadcast', 'Broadcast'], ['wide', 'Wide'], ['tight', 'Tight'],
                    ['forward', 'Forward']])}
                 ${slider('screenShake', 'Screen shake', S.get('screenShake'))}
+                ${toggle('instantReplay', 'Slow-motion replays', S.get('instantReplay'))}
                 ${toggle('showDebug', 'Show performance readout', S.get('showDebug'))}
               </section>
               <section class="group">

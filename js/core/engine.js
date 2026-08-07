@@ -69,6 +69,8 @@
       this.pendingState = null;
       this.pendingParams = null;
 
+      // A replay is scrubbing over entities that are about to be thrown away.
+      if (BB.Replay) BB.Replay.reset();
       if (this.scene && this.scene.exit) this.scene.exit();
       const prev = this.state;
       this.scene = next;
@@ -136,21 +138,30 @@
         /* Unscaled hook for UI, transitions and camera-independent timers. */
         if (scene.updateRealtime) scene.updateRealtime(raw);
 
-        if (scene.fixedUpdate) {
-          this._accum += raw * this.timeScale;
-          let steps = 0;
-          while (this._accum >= C.FIXED_DT && steps < 8) {
-            scene.fixedUpdate(C.FIXED_DT);
-            this._accum -= C.FIXED_DT;
-            this.simTime += C.FIXED_DT;
-            steps++;
+        /* The replay records off the live world and, while it is showing that
+         * recording back, writes over it — so the simulation has to sit those
+         * frames out entirely. It says so here rather than every scene having
+         * to remember to ask. */
+        const frozen = BB.Replay ? BB.Replay.beginFrame(raw, scene) : false;
+
+        if (!frozen) {
+          if (scene.fixedUpdate) {
+            this._accum += raw * this.timeScale;
+            let steps = 0;
+            while (this._accum >= C.FIXED_DT && steps < 8) {
+              scene.fixedUpdate(C.FIXED_DT);
+              this._accum -= C.FIXED_DT;
+              this.simTime += C.FIXED_DT;
+              steps++;
+            }
+            // Runaway protection: never let the backlog grow unbounded.
+            if (steps >= 8) this._accum = 0;
           }
-          // Runaway protection: never let the backlog grow unbounded.
-          if (steps >= 8) this._accum = 0;
+
+          if (scene.update) scene.update(raw * this.timeScale, raw);
         }
 
-        if (scene.update) scene.update(raw * this.timeScale, raw);
-        if (scene.render) scene.render(this._accum / C.FIXED_DT);
+        if (scene.render) scene.render(frozen ? 0 : this._accum / C.FIXED_DT);
       }
 
       BB.Input.endFrame();
