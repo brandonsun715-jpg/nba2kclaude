@@ -21,19 +21,23 @@
   /* Palette, resolved once into GL float colours. */
   const COL = {};
 
+  /* Park hardware, not arena hardware: galvanised pole, painted frame, a
+   * concrete footing instead of a wheeled base with padding on it. The dark
+   * charcoal these used to be was built to disappear into an unlit bowl, and
+   * out in the sun it reads as a hole cut in the frame. */
   function colors() {
     if (COL.rim) return COL;
     const g = BB.GLX;
     COL.rim = g.color(PAL.rim);
     COL.rimHot = g.color('#FFD08A');
-    COL.frame = g.color('#2A3442');
+    COL.frame = g.color('#4A5866');
     COL.pad = g.color(PAL.orangeDim);
-    COL.steel = g.color('#39465A');
-    COL.steelDark = g.color('#222C3A');
+    COL.steel = g.color('#9BA6AE');
+    COL.steelDark = g.color('#79858E');
     COL.glass = g.color(PAL.glass);
     COL.chalk = g.color(PAL.chalk);
     COL.net = g.color(PAL.net);
-    COL.base = g.color('#151C27');
+    COL.base = g.color('#8E8C86');
     return COL;
   }
 

@@ -26,6 +26,10 @@ const CHROME = process.env.CHROME_BIN ||
 const ROOT = path.resolve(__dirname, '..');
 const OUT = path.resolve(__dirname, 'shots');
 
+/* Court dimensions, mirrored from js/core/constants.js so checks can talk
+ * about "past the baseline" without booting a page to ask. */
+const C_LEN = 94, C_WID = 50;
+
 let pass = 0, fail = 0;
 function check(name, ok, detail) {
   if (ok) { pass++; console.log('  ok   ' + name); }
@@ -225,7 +229,8 @@ console.log('\n[2] 1v1 scene renders real geometry');
         o.meshVerts > 1000 && o.bones >= 12,
         'verts=' + o.meshVerts + ' bones=' + o.bones);
   check('both players submitted a skinned pose', o.skinned === 2, 'poses=' + o.skinned);
-  check('crowd submitted', (o.counts && o.counts.crowd) > 500, 'crowd=' + (o.counts && o.counts.crowd));
+  // A park draws a crowd in the dozens, not an arena bowl in the thousands.
+  check('crowd submitted', (o.counts && o.counts.crowd) > 120, 'crowd=' + (o.counts && o.counts.crowd));
   check('floor submitted', (o.counts && o.counts.floor) === 1, 'floor=' + (o.counts && o.counts.floor));
   check('net/glass submitted', (o.counts && (o.counts.segT + o.counts.panelT)) > 50,
         'segT=' + (o.counts && o.counts.segT) + ' panelT=' + (o.counts && o.counts.panelT));
@@ -449,7 +454,7 @@ console.log('\n[7] the dribbled ball sits in the drawn hand');
         'gap=' + (o.topGap || 0).toFixed(3) + 'ft');
 }
 
-console.log('\n[8] the floor does not fight the arena deck');
+console.log('\n[8] the court does not fight the ground under it');
 {
   const r = runInPage(`
     var BB = window.BB;
@@ -459,9 +464,11 @@ console.log('\n[8] the floor does not fight the arena deck');
 
     // Nudge the rig by inches and re-render. Two coplanar surfaces cannot be
     // separated by the depth buffer at broadcast distance, so which one wins
-    // flips with sub-pixel camera movement — whole stretches of hardwood turn
-    // into dark deck and back, which is what reads on screen as the court
-    // glitching. A scene with real depth separation barely moves at all.
+    // flips with sub-pixel camera movement — whole stretches of court turn
+    // into the ground underneath and back, which is what reads on screen as
+    // the court glitching. A scene with real depth separation barely moves at
+    // all. There are three stacked surfaces to keep apart now (grass, then
+    // the blacktop pad, then the painted court), not two.
     var W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
     var buf = new Uint8Array(W * H * 4), nudge = 0;
     cam._rebuild = function () {
@@ -475,12 +482,16 @@ console.log('\n[8] the floor does not fight the arena deck');
     for (var i = 0; i < 16; i++) {
       nudge = i; cam._rebuild(); sc.render(0);
       gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-      var warm = 0, n = 0;
+      /* Count the painted surface specifically. Teal acrylic is the only thing
+       * in the park that is this far green-of-red: the grass past the fence is
+       * darker and much less blue, and the sky is barely green-biased at all,
+       * so neither can stand in for the court if the court stops drawing. */
+      var court = 0, n = 0;
       for (var o = 0; o < buf.length; o += 4) {
-        if (buf[o] - buf[o + 2] > 30 && buf[o] > 70) warm++;
+        if (buf[o + 1] - buf[o] > 80 && buf[o + 1] > 90) court++;
         n++;
       }
-      cov.push(warm / n);
+      cov.push(court / n);
     }
     var mn = Math.min.apply(null, cov), mx = Math.max.apply(null, cov);
     // The mip chain is capped so the smallest level the hardware may fall back
@@ -492,9 +503,9 @@ console.log('\n[8] the floor does not fight the arena deck');
   `, 'probe');
   if (r.err) check('floor probe ran', false, r.err);
   const o = r.out || {};
-  check('court floor is visible at broadcast distance', o.min > 0.2,
+  check('the painted court is visible at broadcast distance', o.min > 0.2,
         'min coverage=' + ((o.min || 0) * 100).toFixed(1) + '%');
-  check('floor does not flicker as the camera moves', o.spread < 0.03,
+  check('court does not flicker as the camera moves', o.spread < 0.03,
         'spread=' + ((o.spread || 0) * 100).toFixed(1) + ' points');
   check('court mip chain is capped on every GPU', o.maxLevel > 0 && o.maxLevel <= 6,
         'TEXTURE_MAX_LEVEL=' + o.maxLevel);
@@ -1432,8 +1443,120 @@ console.log('\n[19] the camera is pinned to the player, and glides');
   check('follow probe raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[20] the court is outdoors, in a park, in daylight');
+{
+  const r = runInPage(`
+    var BB = window.BB;
+    BB.Settings.set('cameraMode', 'forward');
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene, gl = BB.GLX.gl, cam = BB.Camera;
+    for (var i = 0; i < 300; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+    scene.render(0);
+
+    var W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
+    var buf = new Uint8Array(W * H * 4);
+    gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+
+    /* readPixels puts row 0 at the BOTTOM of the image. Sample the top band
+     * of the frame — the part that used to be arena roof and black void, and
+     * out here has to be open sky. */
+    var lum = 0, dark = 0, court = 0, n = 0;
+    var skyR = 0, skyG = 0, skyB = 0, skyN = 0;
+    for (var y = 0; y < H; y++) {
+      for (var x = 0; x < W; x++) {
+        var o = (y * W + x) * 4;
+        var l = (buf[o] + buf[o + 1] + buf[o + 2]) / 3;
+        lum += l;
+        if (l < 30) dark++;
+        if (buf[o + 1] - buf[o] > 80 && buf[o + 1] > 90) court++;
+        if (y > H * 0.86) { skyR += buf[o]; skyG += buf[o + 1]; skyB += buf[o + 2]; skyN++; }
+        n++;
+      }
+    }
+
+    /* Where the crowd actually is. Instance layout is 16 matrix floats then
+     * colour then params; matrix column 3 is the translation, and in GL space
+     * its second component is height. A seated bowl puts fans twenty feet up
+     * the back of a stand; a park puts them on the ground at the fence. */
+    /* Guarded, so that a build with no Park in it still reports what it put on
+     * the screen instead of throwing and taking the pixel checks with it. */
+    var P = BB.Park || { _crowd: [], _crowdCount: 0, _structure: [], _structureCount: 0,
+                         _foliageCount: 0 };
+    var hi = -1e9, lo = 1e9;
+    for (var c = 0; c < P._crowdCount; c++) {
+      var t = P._crowd[c * 24 + 13];
+      if (t > hi) hi = t;
+      if (t < lo) lo = t;
+    }
+
+    /* And how far out the fence stands from the court on each side. The blocks
+     * are laid out as 16 matrix floats first: [0] is the footprint along court
+     * x, [5] the height, [10] the footprint along court y, and [12]/[14] the
+     * position. A fence post is the only thing in the park with a footprint
+     * under half a foot square and more than ten feet of height. */
+    var bounds = { x0: 1e9, x1: -1e9, y0: 1e9, y1: -1e9, posts: 0 };
+    for (var s = 0; s < P._structureCount; s++) {
+      var b = s * 24;
+      if (P._structure[b] > 0.5 || P._structure[b + 10] > 0.5) continue;
+      var sz = P._structure[b + 5];
+      if (sz < 10 || sz > 25) continue;
+      var px = P._structure[b + 12], py = P._structure[b + 14];
+      bounds.x0 = Math.min(bounds.x0, px); bounds.x1 = Math.max(bounds.x1, px);
+      bounds.y0 = Math.min(bounds.y0, py); bounds.y1 = Math.max(bounds.y1, py);
+      bounds.posts++;
+    }
+
+    return {
+      meanLum: lum / n, darkFrac: dark / n, courtFrac: court / n,
+      sky: [Math.round(skyR / skyN), Math.round(skyG / skyN), Math.round(skyB / skyN)],
+      crowdHi: hi, crowdLo: lo,
+      crowd: P._crowdCount, foliage: P._foliageCount, structure: P._structureCount,
+      fence: bounds,
+      hasArena: typeof BB.Arena !== 'undefined',
+      hasSky: !!BB.S3.progSky,
+      glError: gl.getError(),
+      pageErr: window.__pageErr || null
+    };
+  `, 'park');
+  if (r.err) check('park probe ran', false, r.err);
+  const o = r.out || {};
+  const sky = o.sky || [0, 0, 0];
+
+  check('the arena is gone', o.hasArena === false);
+  // The single loudest signal that there is no building: you can see the sky.
+  check('open sky over the top of the frame',
+        sky[2] > 150 && sky[2] > sky[0] + 25 && sky[2] >= sky[1],
+        'top band reads rgb(' + sky.join(',') + ')');
+  check('the sky is drawn as its own pass', o.hasSky === true);
+  // "Court at Night" put a bright island of floor inside a black room. In the
+  // park nothing falls away: the whole frame is lit.
+  check('the frame is bright edge to edge', o.meanLum > 95,
+        'mean luminance ' + (o.meanLum || 0).toFixed(0) + ' of 255');
+  check('almost nothing in frame falls to black', o.darkFrac < 0.16,
+        ((o.darkFrac || 0) * 100).toFixed(1) + '% of the frame is near-black');
+  check('the court is painted acrylic, not hardwood', o.courtFrac > 0.2,
+        'painted surface covers ' + ((o.courtFrac || 0) * 100).toFixed(1) + '% of frame');
+
+  /* The crowd stands on the ground behind a fence. In the bowl they were
+   * stacked up fifteen rows of risers, the top row twenty-odd feet in the
+   * air — which is the one thing a park can never have. */
+  check('the crowd stands on the ground, not up a stand',
+        o.crowd > 60 && o.crowdHi < 8 && o.crowdLo > -3,
+        o.crowd + ' instances between ' + (o.crowdLo || 0).toFixed(1) +
+        'ft and ' + (o.crowdHi || 0).toFixed(1) + 'ft up');
+  const f = o.fence || {};
+  check('a fence rings the court, well clear of the floor',
+        f.posts > 30 &&
+        f.x0 < -30 && f.x1 > C_LEN + 30 && f.y0 < -20 && f.y1 > C_WID + 40,
+        f.posts + ' posts spanning x ' + Math.round(f.x0) + '..' + Math.round(f.x1) +
+        ', y ' + Math.round(f.y0) + '..' + Math.round(f.y1));
+  check('there are trees', o.foliage >= 30, 'foliage instances=' + o.foliage);
+  check('gl clean in the park', o.glError === 0, 'code=' + o.glError);
+  check('park raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[20] screenshots');
+  console.log('\n[21] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],

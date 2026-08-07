@@ -113,7 +113,7 @@
 
     /* A focus that moves further than this between updates did not run there:
      * it is an inbound, a new quarter, a switch to another defender. Gliding
-     * across one sends the rig sailing through the arena for a second, so a
+     * across one sends the rig sailing across the park for a second, so a
      * jump that big is taken as a cut and the rig is simply already there. */
     cutDistance: 16,
     _focusX: 0,
@@ -247,7 +247,7 @@
          *
          * Aiming the rig at the basket from wherever the player happened to
          * be standing swung it left and right all game: drift to the wing and
-         * the whole arena rotated under you, so "forward" was a different
+         * the whole park rotated under you, so "forward" was a different
          * direction every second. Snapping to the axis keeps the far basket
          * dead ahead and the sidelines square no matter where on the floor
          * the play is. The rig still dollies to follow — it just never yaws.
@@ -298,7 +298,7 @@
     },
 
     /**
-     * Keeps the rig from dollying past the ends of the arena. Hitting the stop
+     * Keeps the rig from dollying past the ends of the park. Hitting the stop
      * kills the spring's velocity on that axis: left running, it winds up
      * against the wall and the rig lurches when the play turns back.
      */

@@ -119,8 +119,14 @@
   ];
 
   /* ------------------------------------------------------------------ theme
-   * "Court at Night": ink arena, warm maple floor, signal orange for broadcast
-   * furniture, mint reserved exclusively for perfect releases and made shots.
+   * "Summer Run": an outdoor park court in the middle of the afternoon. Teal
+   * acrylic inside the lines, a terracotta surround, weathered blacktop past
+   * that, and a hard blue sky over all of it. Mint stays reserved exclusively
+   * for perfect releases and made shots.
+   *
+   * The ink/slate family is kept: it is the interface's palette (menus, HUD,
+   * scorebug), and dark chrome over a bright court is exactly the contrast
+   * those want. It just no longer paints the world.
    */
   C.PAL = {
     ink: '#080B11',
@@ -130,10 +136,30 @@
     chalk: '#F3F0E7',
     chalkDim: 'rgba(243,240,231,0.62)',
 
-    maple: '#C08A4E',
-    mapleLight: '#D8A369',
-    mapleDark: '#9A6733',
-    mapleGrain: 'rgba(88,52,18,0.20)',
+    /* ---- the park ---- */
+    sky: '#4FA8E8',            // zenith
+    skyHaze: '#BBDFF4',        // horizon, and the colour distance fades into
+    sun: '#FFF4D6',
+
+    asphalt: '#5D6670',        // the pad the court is painted on
+    asphaltLight: '#6E7883',
+    asphaltDark: '#464E57',
+    asphaltGrain: 'rgba(24,28,34,0.22)',
+
+    acrylic: '#1E9C86',        // inside the lines
+    acrylicLight: '#2CB89E',
+    acrylicDark: '#177A69',
+    clay: '#C4623A',           // the surround outside the lines
+    clayLight: '#D97848',
+
+    grass: '#5FA33C',
+    grassDark: '#417329',
+    leaf: '#4E8F32',
+    leafLight: '#77B84A',
+    bark: '#6B4E32',
+
+    fence: '#9AA6AE',          // galvanised chain link
+    fencePost: '#7A868F',
 
     paint: '#1D4E8F',
     paintDeep: '#153A6C',

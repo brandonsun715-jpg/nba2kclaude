@@ -24,19 +24,19 @@
    * are built once and shared rather than rebuilt on every menu <-> game
    * transition.
    */
-  const World = { ready: false, court: null, arena: null, hoops: null, team: null };
+  const World = { ready: false, court: null, park: null, hoops: null, team: null };
 
   function ensureWorld(team) {
     team = team || { name: 'Hardwood', abbr: 'HWD', primary: PAL.paint, secondary: PAL.orange };
     if (!World.ready) {
       World.court = BB.Court.init();
       World.court.setTeam(team);
-      World.arena = BB.Arena.init(team);
+      World.park = BB.Park.init(team);
       World.hoops = C.HOOPS.map((h) => new BB.Hoop(h));
       World.ready = true;
     } else if (team !== World.team) {
       World.court.setTeam(team);
-      World.arena.setTeam(team);
+      World.park.setTeam(team);
     }
     World.team = team;
     return World;
@@ -192,12 +192,12 @@
       const fx = (h ? h.x : C.HALF_L) - this.offset() + sway;
       const fy = (h ? h.y : C.HALF_W) + Math.cos(this._t * 0.11) * 1.0;
       BB.Camera.update(dt, { x: fx, y: fy }, null);
-      World.arena.update(dt, 0.08);
+      World.park.update(dt, 0.08);
     },
 
     render() {
       BB.Renderer.render({
-        camera: BB.Camera, court: World.court, arena: World.arena,
+        camera: BB.Camera, court: World.court, park: World.park,
         hoops: World.hoops, ball: this.hero && this.hero.hasBall ? this.ball : null,
         entities: this.hero ? [this.hero] : [], fx: BB.FX, dimmed: 0
       });
@@ -360,7 +360,7 @@
       BB.Camera.setAim(this.hoop.x, this.hoop.y);
       BB.Camera.update(dt, { x: focus.x, y: focus.y }, { x: focus.vx, y: focus.vy });
 
-      World.arena.update(dt, this.hype);
+      World.park.update(dt, this.hype);
       BB.Audio.setCrowdIntensity(0.12 + this.hype * 0.75);
 
       this._updatePracticeHud();
@@ -368,7 +368,7 @@
 
     render() {
       BB.Renderer.render({
-        camera: BB.Camera, court: World.court, arena: World.arena,
+        camera: BB.Camera, court: World.court, park: World.park,
         hoops: World.hoops, ball: this.ball, entities: [this.player],
         fx: BB.FX, dimmed: this.dim
       });
@@ -957,7 +957,7 @@
       BB.Camera.update(dt, { x: focus.x, y: focus.y }, { x: focus.vx || 0, y: focus.vy || 0 });
 
       const spread = Math.abs(this.score.you - this.score.cpu);
-      World.arena.update(dt, spread < 3 ? 0.32 : 0.18);
+      World.park.update(dt, spread < 3 ? 0.32 : 0.18);
       BB.Audio.setCrowdIntensity(0.12 + (spread < 3 ? 0.3 : 0.15));
 
       this._updateHud();
@@ -965,7 +965,7 @@
 
     render() {
       BB.Renderer.render({
-        camera: BB.Camera, court: World.court, arena: World.arena,
+        camera: BB.Camera, court: World.court, park: World.park,
         hoops: World.hoops, ball: this.ball, entities: [this.player, this.ai],
         fx: BB.FX, dimmed: this.dim
       });

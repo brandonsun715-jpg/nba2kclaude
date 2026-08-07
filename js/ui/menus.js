@@ -499,7 +499,7 @@
      * every change straight onto it: skin, hair, kit, height. The old flat
      * canvas portrait beside the form could only ever be an impression of the
      * player, and a badly cropped one; this is the article itself, turning on
-     * the spot under the arena lights.
+     * the spot in the middle of the court.
      *
      * The form sits in a column down the left with the floor showing through
      * beside it, so the layout matches the front page it was opened from and

@@ -966,7 +966,7 @@
 
       const spread = Math.abs(this.score.away - this.score.home);
       const late = this.quarter >= QUARTERS && this.gameClock < 45;
-      BB.World.arena.update(dt, late && spread < 8 ? 0.5 : (spread < 8 ? 0.3 : 0.18));
+      BB.World.park.update(dt, late && spread < 8 ? 0.5 : (spread < 8 ? 0.3 : 0.18));
       BB.Audio.setCrowdIntensity(0.14 + (spread < 8 ? 0.28 : 0.12));
 
       this._updateHud();
@@ -974,7 +974,7 @@
 
     render() {
       BB.Renderer.render({
-        camera: BB.Camera, court: BB.World.court, arena: BB.World.arena,
+        camera: BB.Camera, court: BB.World.court, park: BB.World.park,
         hoops: BB.World.hoops, ball: this.ball, entities: this.all,
         fx: BB.FX, dimmed: this.dim
       });

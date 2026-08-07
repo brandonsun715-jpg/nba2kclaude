@@ -4,7 +4,7 @@
  * A Player owns three things: RATINGS (25-99 attributes that never change
  * during a game), STATE (position, velocity, action) and PRESENTATION (a small
  * vector figure drawn fresh every frame — there is no sprite art in this
- * project, so the body is built from primitives the same way arena.js draws
+ * project, so the body is built from primitives the same way park.js draws
  * its bench and crowd figures).
  *
  * Input is optional. A Player with `human = true` reads BB.Input each frame;

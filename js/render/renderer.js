@@ -8,8 +8,8 @@
  * through a perspective transform.
  *
  * Draw order per frame:
- *   1  arena bowl, crowd, furniture, lights
- *   2  hardwood floor (baked 2D artwork, mapped onto the real floor plane)
+ *   1  sky, park ground, fence, trees, onlookers
+ *   2  painted court (baked 2D artwork, mapped onto the real floor plane)
  *   3  hoop assemblies (opaque parts)
  *   4  entities — players, then the ball
  *   5  particles
@@ -57,7 +57,7 @@
       this.gl = BB.GLX.gl;
       BB.S3.init();
       // The skinned player mesh reuses the scene's solid lighting verbatim so a
-      // character lights identically to the arena around it.
+      // character lights identically to the park around it.
       BB.Skin.init(BB.S3.SOLID_FS);
 
       this.overlay = global.document.getElementById('overlay-canvas');
@@ -100,7 +100,7 @@
     /* ------------------------------------------------------------------ draw */
     /**
      * @param {object} scene {
-     *   camera, court, arena, hoops, ball, entities[], fx, dimmed
+     *   camera, court, park, hoops, ball, entities[], fx, dimmed
      * }
      */
     render(scene) {
@@ -112,13 +112,16 @@
       const S3 = BB.S3;
 
       gl.viewport(0, 0, this.w, this.h);
-      gl.clearColor(0.020, 0.028, 0.043, 1);
+      // The sky quad repaints every pixel anyway; this only matters for the
+      // frame before the first flush, so it may as well be the sky.
+      const sky = S3.SKY_COLOR;
+      gl.clearColor(sky[0], sky[1], sky[2], 1);
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
       S3.beginFrame(cam, (now() - this._t0) * 0.001);
 
-      /* 1 — the building */
-      if (scene.arena) scene.arena.drawBack();
+      /* 1 — the park */
+      if (scene.park) scene.park.drawBack();
 
       /* 2 — the floor */
       if (scene.court) scene.court.draw();
@@ -146,7 +149,7 @@
 
       /* 6 — glass and nets, blended, drawn after everything they sit over */
       for (let i = 0; i < hoops.length; i++) hoops[i].drawFront();
-      if (scene.arena) scene.arena.drawFront();
+      if (scene.park) scene.park.drawFront();
 
       /* 7 — resolve the whole frame */
       S3.flush();
@@ -180,7 +183,7 @@
           this.w * 0.5, this.h * 0.5, Math.max(this.w, this.h) * 0.80
         );
         g.addColorStop(0, 'rgba(0,0,0,0)');
-        g.addColorStop(1, 'rgba(0,0,0,0.40)');
+        g.addColorStop(1, 'rgba(0,0,0,0.16)');
         this._vg = g; this._vgW = this.w; this._vgH = this.h;
       }
       ctx.fillStyle = this._vg;
