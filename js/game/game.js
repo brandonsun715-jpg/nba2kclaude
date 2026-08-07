@@ -353,8 +353,9 @@
       this.dim = U.approach(this.dim, menuOpen ? 0.55 : 0, 6, rawDt);
       this.hype = Math.max(0, this.hype - rawDt * 0.10);
 
-      const ball = this.ball;
-      const focus = ball.inFlight ? ball : this.player;
+      // The rig stays on the player, including while the shot is in the air:
+      // you watch your own jumper from where you took it.
+      const focus = this.player;
       // Which way is downcourt, for the forward rig. Ignored by the others.
       BB.Camera.setAim(this.hoop.x, this.hoop.y);
       BB.Camera.update(dt, { x: focus.x, y: focus.y }, { x: focus.vx, y: focus.vy });
@@ -949,8 +950,9 @@
 
       this.dim = U.approach(this.dim, menuOpen ? 0.55 : 0, 6, rawDt);
 
-      const ball = this.ball;
-      const focus = ball.inFlight ? ball : (ball.owner || this.player);
+      // Your man, always — a loose ball or a shot in the air does not take the
+      // camera off the player you are steering.
+      const focus = this.player;
       BB.Camera.setAim(this.hoop.x, this.hoop.y);
       BB.Camera.update(dt, { x: focus.x, y: focus.y }, { x: focus.vx || 0, y: focus.vy || 0 });
 

@@ -1283,8 +1283,157 @@ console.log('\n[18] shooting works while moving');
   check('move-and-shoot probe raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[19] the camera is pinned to the player, and glides');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U;
+    BB.Settings.set('cameraMode', 'forward');
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene, cam = BB.Camera, pl = scene.player;
+    var hoop = scene.hoop, ball = scene.ball, dt = 1 / 60;
+    scene.ai.x = -90; scene.ai.y = -90; scene.ai.hasBall = false;
+
+    /* ---- A. a real shot, watched from where it was taken ----------------
+     * The rig used to switch its focus to the ball the moment it left the
+     * hand, which flies the frame down to the rim and leaves the player — the
+     * thing the user is steering — somewhere off behind the shot. */
+    pl.placeAt(hoop.x - 26, hoop.y, 0);
+    pl.vx = pl.vy = 0;
+    cam.reset(pl.x, pl.y, 1);
+    for (var i = 0; i < 180; i++) scene.update(dt, dt);
+    pl.giveBall(ball);
+    pl._beginShot();
+    var fired = false, flightFrames = 0, offPlayer = 0, ballRan = 0;
+    for (var f = 0; f < 500; f++) {
+      scene.fixedUpdate(1 / 120);
+      if (f % 2 === 0) scene.update(dt, dt);
+      if (!fired && pl.action === BB.Player.ACTION.METER && pl.meter.value > 0.9) {
+        pl._releaseShot(); fired = true;
+      }
+      if (fired && ball.inFlight) {
+        flightFrames++;
+        offPlayer = Math.max(offPlayer, Math.hypot(cam.x - pl.x, cam.y - pl.y));
+        ballRan = Math.max(ballRan, Math.hypot(ball.x - pl.x, ball.y - pl.y));
+      } else if (fired) break;
+    }
+    var shot = { off: offPlayer, ballRan: ballRan, frames: flightFrames };
+
+    /* ---- B. the other guy has the ball ---------------------------------- */
+    ball.owner = null; pl.hasBall = false;
+    pl.placeAt(hoop.x - 26, hoop.y, 0); pl.vx = pl.vy = 0;
+    cam.reset(pl.x, pl.y, 1);
+    for (var b = 0; b < 60; b++) scene.update(dt, dt);
+    scene.ai.placeAt(hoop.x - 6, hoop.y + 20, 0);
+    scene.ai.giveBall(ball);
+    for (var b2 = 0; b2 < 90; b2++) scene.update(dt, dt);
+    var theirs = { off: Math.hypot(cam.x - pl.x, cam.y - pl.y),
+                   away: Math.hypot(scene.ai.x - pl.x, scene.ai.y - pl.y) };
+    ball.owner = null; scene.ai.hasBall = false;
+    scene.ai.x = -90; scene.ai.y = -90;
+
+    /* ---- C. how the rig moves over a sprint, a hold and a hard stop -----
+     * Driven straight at the camera on the player's own acceleration curve,
+     * so the numbers describe the rig and nothing else. */
+    var top = pl.phys.maxSprint, accel = pl.phys.accel, decel = pl.phys.decel;
+    pl.placeAt(hoop.x - 60, hoop.y, 0); pl.vx = pl.vy = 0;
+    cam.reset(pl.x, pl.y, 1);
+    for (var s = 0; s < 240; s++) cam.update(dt, { x: pl.x, y: pl.y }, { x: 0, y: 0 });
+
+    var es = [], px = [], v = 0;
+    for (var k = 0; k < 300; k++) {
+      var want = (k * dt < 2.2) ? top : 0;
+      v = U.moveToward(v, want, (want > v ? accel : decel) * dt);
+      pl.x += v * dt;
+      cam.update(dt, { x: pl.x, y: pl.y }, { x: v, y: 0 });
+      es.push(cam.eye[0]); px.push(pl.x);
+    }
+    var vs = [], as = [];
+    for (var q = 1; q < es.length; q++) vs.push((es[q] - es[q - 1]) / dt);
+    for (var w = 1; w < vs.length; w++) as.push((vs[w] - vs[w - 1]) / dt);
+    var maxSpd = 0, back = 0, maxAcc = 0, maxJerk = 0, maxLag = 0;
+    for (var a = 0; a < vs.length; a++) { maxSpd = Math.max(maxSpd, vs[a]); back = Math.min(back, vs[a]); }
+    for (var c = 0; c < as.length; c++) maxAcc = Math.max(maxAcc, Math.abs(as[c]));
+    for (var d = 1; d < as.length; d++) maxJerk = Math.max(maxJerk, Math.abs(as[d] - as[d - 1]) / dt);
+    // Lag is measured against the standoff the rig started at, so it is how
+    // far the player slid through the frame, not where the rig sits.
+    var base = px[0] - es[0];
+    for (var e = 0; e < es.length; e++) maxLag = Math.max(maxLag, Math.abs((px[e] - es[e]) - base));
+    var settled = Math.abs((px[px.length - 1] - es[es.length - 1]) - base);
+
+    /* ---- D. a teleport is an edit, not a move --------------------------- */
+    pl.placeAt(20, 25, 0); pl.vx = pl.vy = 0;
+    cam.reset(pl.x, pl.y, 1);
+    for (var g = 0; g < 120; g++) cam.update(dt, { x: pl.x, y: pl.y }, { x: 0, y: 0 });
+    pl.placeAt(70, 25, 0);
+    cam.update(dt, { x: pl.x, y: pl.y }, { x: 0, y: 0 });
+    var cutErr = Math.hypot(cam._x - pl.x, cam._y - pl.y);
+
+    // And an ordinary stride is still smoothed, not cut — from its own settled
+    // start, so this stands up whatever the line above did.
+    pl.placeAt(20, 25, 0);
+    cam.reset(pl.x, pl.y, 1);
+    for (var g2 = 0; g2 < 120; g2++) cam.update(dt, { x: pl.x, y: pl.y }, { x: 0, y: 0 });
+    pl.placeAt(20.4, 25, 0);
+    cam.update(dt, { x: pl.x, y: pl.y }, { x: 0, y: 0 });
+    var strideErr = Math.hypot(cam._x - pl.x, cam._y - pl.y);
+
+    return {
+      shot: shot, theirs: theirs,
+      top: top, accel: accel, decel: decel,
+      maxSpd: maxSpd, back: back, maxAcc: maxAcc, maxJerk: maxJerk,
+      maxLag: maxLag, settled: settled,
+      cutErr: cutErr, strideErr: strideErr,
+      pageErr: window.__pageErr || null
+    };
+  `, 'follow');
+  if (r.err) check('follow probe ran', false, r.err);
+  const o = r.out || {};
+  const sh = o.shot || {}, th = o.theirs || {};
+
+  check('the rig stays on the player while the shot is in the air',
+        sh.frames > 20 && sh.ballRan > 12 && sh.off < 1.5,
+        'ball ran ' + (sh.ballRan || 0).toFixed(1) + 'ft, rig wandered ' +
+        (sh.off || 0).toFixed(1) + 'ft off the player over ' + sh.frames + ' frames');
+  check('the other guy having the ball does not steal the camera',
+        th.away > 15 && th.off < 1.5,
+        'they are ' + (th.away || 0).toFixed(1) + 'ft away, rig sits ' +
+        (th.off || 0).toFixed(1) + 'ft off the player');
+
+  // A rig that has to outrun its subject to keep up is a rig that is chasing
+  // something else — or throwing itself at a lead it will have to give back.
+  check('the rig never outruns the player it is following',
+        o.maxSpd < o.top * 1.15,
+        'rig peaked at ' + (o.maxSpd || 0).toFixed(1) + 'ft/s, player at ' +
+        (o.top || 0).toFixed(1) + 'ft/s');
+  check('the rig pulls no harder than the player does',
+        o.maxAcc < o.accel * 1.5,
+        'rig ' + (o.maxAcc || 0).toFixed(0) + 'ft/s^2 against a player at ' +
+        (o.accel || 0).toFixed(0));
+  // Jerk is where "not smooth" actually lives: a step in the rig's
+  // acceleration is a frame that visibly snaps.
+  check('the follow has no kinks in it', o.maxJerk < 600,
+        'peak jerk ' + (o.maxJerk || 0).toFixed(0) + 'ft/s^3');
+  check('the frame does not slide backwards when the player pulls up',
+        o.back > -2.5,
+        'rig ran backwards at ' + (-(o.back || 0)).toFixed(1) + 'ft/s');
+  check('the player never slides out of the shot', o.maxLag < 5,
+        'player drifted ' + (o.maxLag || 0).toFixed(1) + 'ft through the frame');
+  check('the rig settles exactly on the player', o.settled < 0.15,
+        'left ' + (o.settled || 0).toFixed(2) + 'ft of error');
+
+  // An inbound, a new quarter, a switch to another defender: the focus moves
+  // further than anyone could run, and smoothing it flies the rig across the
+  // arena with the play already underway at the other end.
+  check('a teleport cuts instead of flying across the floor', o.cutErr < 0.6,
+        'rig was ' + (o.cutErr || 0).toFixed(1) + 'ft out one frame after a 50ft jump');
+  check('an ordinary stride is still smoothed, not cut',
+        o.strideErr > 0.1 && o.strideErr < 0.45,
+        'rig was ' + (o.strideErr || 0).toFixed(2) + 'ft behind after a 0.4ft step');
+  check('follow probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[19] screenshots');
+  console.log('\n[20] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],

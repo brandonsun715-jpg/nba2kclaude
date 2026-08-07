@@ -2,13 +2,20 @@
  * camera.js  —  Broadcast camera (true 3D perspective).
  * -----------------------------------------------------------------------------
  * A real low-side broadcast rig: the camera lives outside the near sideline,
- * dollies along the length of the court to track the ball, and looks slightly
- * across the floor so the far side of the court stays in frame. Zoom is a
- * dolly, not a focal-length change, which keeps the perspective honest.
+ * dollies along the length of the court, and looks slightly across the floor
+ * so the far side of the court stays in frame. Zoom is a dolly, not a
+ * focal-length change, which keeps the perspective honest.
+ *
+ * Every rig is locked to ONE thing: the player the user is steering. Not the
+ * ball, and not whoever happens to be holding it. A rig that changes its mind
+ * about its subject jumps across the floor mid-possession, and it does it at
+ * the worst possible moment — the release of a shot, a change of possession —
+ * leaving the player being driven somewhere off frame. The follow itself is a
+ * critically damped spring, so the rig glides after them rather than snapping.
  *
  * The public API is unchanged from the original 2D build so nothing else had
  * to be rewritten:
- *   update / reset / setMode / addTrauma   camera movement
+ *   update / reset / snap / setMode / addTrauma   camera movement
  *   project / unproject / scale / bounds   world <-> screen for overlay UI
  *   panFor                                 positional audio
  *
@@ -21,7 +28,7 @@
   const U = BB.U, C = BB.C, M4 = BB.M4;
 
   const MODES = {
-    BROADCAST: 'broadcast',   // follows the ball, standard rig height
+    BROADCAST: 'broadcast',   // sideline rig at standard height
     WIDE: 'wide',             // pulled back, most of the court in frame
     TIGHT: 'tight',           // pushed in on the action
     FIXED: 'fixed',           // locked to a target point
@@ -83,10 +90,35 @@
     shakeY: 0,
     _shakeSeed: U.rng.f() * 1000,
 
-    /* Follow tuning. */
-    followRate: 4.2,
-    leadFactor: 0.42,
-    maxLead: 11,
+    /* ------------------------------------------------------------ follow
+     * The rig is pinned to the player and reeled in by a critically damped
+     * spring rather than an exponential ease. A spring carries its own
+     * velocity, so the frame builds up speed and settles instead of changing
+     * pace the instant the thing it follows does; critically damped, it never
+     * overshoots and rocks back afterwards. `followOmega` is its natural
+     * frequency in radians per second — higher is a shorter leash. */
+    followOmega: 6.4,
+    _vx: 0,
+    _vy: 0,
+
+    /* Lead: how far in front of a moving player the rig aims. Deliberately
+     * small and smoothed into place. Aiming a long way ahead of a sprinter
+     * means handing all of it back the moment they pull up, which slides the
+     * whole frame backwards under a player who never moved backwards. */
+    leadFactor: 0.18,
+    maxLead: 4.5,
+    leadRate: 2.6,
+    _leadX: 0,
+    _leadY: 0,
+
+    /* A focus that moves further than this between updates did not run there:
+     * it is an inbound, a new quarter, a switch to another defender. Gliding
+     * across one sends the rig sailing through the arena for a second, so a
+     * jump that big is taken as a cut and the rig is simply already there. */
+    cutDistance: 16,
+    _focusX: 0,
+    _focusY: 0,
+    _tracking: false,
 
     /* Scale factor tying overlay UI sizes to viewport height. */
     fit: 1,
@@ -128,6 +160,27 @@
       this.zoom = this._zoom = this.targetZoom = (zoom == null ? 1 : zoom);
       this.trauma = 0;
       this.shakeX = this.shakeY = 0;
+      this._vx = this._vy = 0;
+      this._leadX = this._leadY = 0;
+      this._tracking = false;
+      this._rebuild();
+    },
+
+    /**
+     * Cuts the rig to whatever it is currently pointed at, with no glide. Used
+     * for the moments that are edits rather than movement, and taken
+     * automatically when the focus jumps further than a player could run.
+     */
+    snap() {
+      this._x = this.x;
+      this._y = this.y;
+      this._vx = this._vy = 0;
+      this._clampFocus();
+      if (this.mode === MODES.FORWARD) {
+        this._aimA = this.aimX - this._x >= 0 ? 0 : Math.PI;
+        this._dx = Math.cos(this._aimA);
+        this._dy = Math.sin(this._aimA);
+      }
       this._rebuild();
     },
 
@@ -153,19 +206,38 @@
     /* ---------------------------------------------------------------- update */
     /**
      * @param {number} dt seconds
-     * @param {object} focus { x, y } world point of interest (usually the ball)
+     * @param {object} focus { x, y } world point of interest — the player the
+     *   user is holding, not the ball
      * @param {object} [vel] { x, y } world velocity used for camera lead
      */
     update(dt, focus, vel) {
+      let cut = false;
       if (focus) {
-        let tx = focus.x, ty = focus.y;
+        cut = this._tracking &&
+          U.dist2(this._focusX, this._focusY, focus.x, focus.y) >
+            this.cutDistance * this.cutDistance;
+        this._focusX = focus.x; this._focusY = focus.y;
+        this._tracking = true;
+
+        /* The lead eases in and out instead of being read straight off the
+         * player's velocity: velocity changes in steps when they push off or
+         * pull up, and the rig should not. */
+        let lx = 0, ly = 0;
         if (vel && this.mode !== MODES.FIXED) {
-          tx += U.clamp(vel.x * this.leadFactor, -this.maxLead, this.maxLead);
-          ty += U.clamp(vel.y * this.leadFactor * 0.5, -this.maxLead * 0.4, this.maxLead * 0.4);
+          lx = U.clamp(vel.x * this.leadFactor, -this.maxLead, this.maxLead);
+          ly = U.clamp(vel.y * this.leadFactor * 0.5, -this.maxLead * 0.4, this.maxLead * 0.4);
         }
-        this.x = tx;
-        this.y = ty;
+        if (cut) { this._leadX = lx; this._leadY = ly; }
+        else {
+          this._leadX = U.approach(this._leadX, lx, this.leadRate, dt);
+          this._leadY = U.approach(this._leadY, ly, this.leadRate, dt);
+        }
+
+        this.x = focus.x + this._leadX;
+        this.y = focus.y + this._leadY;
       }
+
+      if (cut) this.snap();
 
       if (this.mode === MODES.FORWARD) {
         /* Aim down the floor. Held steady while the focus is right on top of
@@ -191,9 +263,21 @@
         }
       }
 
-      const rate = this.mode === MODES.FIXED ? 2.0 : this.followRate;
-      this._x = U.approach(this._x, this.x, rate, dt);
-      this._y = U.approach(this._y, this.y, rate * 0.85, dt);
+      /* Critically damped spring, integrated implicitly so it stays stable at
+       * any frame time — solve for the new velocity first, then step the
+       * position with it:  v' = (v + h*w^2*(target - x)) / (1 + h*w)^2.
+       * Across the width the spring is softer, so a jab step sideways drifts
+       * the frame rather than shoving it. */
+      if (!cut) {
+        const wx = this.mode === MODES.FIXED ? this.followOmega * 0.45 : this.followOmega;
+        const wy = wx * 0.85;
+        const dx = (1 + wx * dt) * (1 + wx * dt);
+        const dy = (1 + wy * dt) * (1 + wy * dt);
+        this._vx = (this._vx + wx * wx * (this.x - this._x) * dt) / dx;
+        this._vy = (this._vy + wy * wy * (this.y - this._y) * dt) / dy;
+        this._x += this._vx * dt;
+        this._y += this._vy * dt;
+      }
       this._zoom = U.approach(this._zoom, this.targetZoom, 3.0, dt);
 
       this._clampFocus();
@@ -213,10 +297,16 @@
       this._rebuild();
     },
 
-    /** Keeps the rig from dollying past the ends of the arena. */
+    /**
+     * Keeps the rig from dollying past the ends of the arena. Hitting the stop
+     * kills the spring's velocity on that axis: left running, it winds up
+     * against the wall and the rig lurches when the play turns back.
+     */
     _clampFocus() {
-      this._x = U.clamp(this._x, -C.APRON, C.COURT_L + C.APRON);
-      this._y = U.clamp(this._y, -C.APRON, C.COURT_W + C.APRON);
+      const x = U.clamp(this._x, -C.APRON, C.COURT_L + C.APRON);
+      const y = U.clamp(this._y, -C.APRON, C.COURT_W + C.APRON);
+      if (x !== this._x) { this._x = x; this._vx = 0; }
+      if (y !== this._y) { this._y = y; this._vy = 0; }
     },
 
     /* --------------------------------------------------- matrix construction */

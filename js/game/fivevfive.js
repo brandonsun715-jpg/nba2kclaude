@@ -955,7 +955,9 @@
       this.dim = U.approach(this.dim, menuOpen ? 0.55 : 0, 6, rawDt);
 
       const ball = this.ball;
-      const focus = ball.inFlight ? ball : (ball.owner || this.controlled);
+      // Whoever the user is holding, wherever the ball is. Switching defenders
+      // moves the focus far enough that the rig cuts rather than glides.
+      const focus = this.controlled;
       // Downcourt is whichever basket the team in possession is attacking, so
       // the forward rig turns around with the ball on a change of possession.
       const aim = this._hoopFor(ball.owner || this.controlled);
