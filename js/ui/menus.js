@@ -373,6 +373,7 @@
                 ${toggle('shotMeter', 'Show shot meter', S.get('shotMeter'))}
               </section>
               <div class="panel__actions">
+                <button class="btn btn--danger" data-nav data-act="wipe">Reset all progress</button>
                 <button class="btn btn--danger" data-nav data-act="reset">Reset to defaults</button>
               </div>
             </div>
@@ -394,6 +395,8 @@
           if (!b) return;
           if (b.dataset.act === 'back') M.pop();
           if (b.dataset.act === 'reset') { S.reset(); M.pop(); M.push('settings'); }
+          // Erasing a career is not something to do on one click, so it asks.
+          if (b.dataset.act === 'wipe') M.push('resetProgress');
         });
         el.addEventListener('input', (e) => {
           const r = e.target.closest('input[type=range]');
@@ -407,6 +410,98 @@
         el.addEventListener('change', (e) => {
           const c = e.target.closest('input[type=checkbox]');
           if (c) { S.set(c.dataset.key, c.checked); A.play('uiMove'); }
+        });
+      },
+      onCancel() { M.pop(); }
+    });
+
+    /* --------------------------------------------------- reset all progress
+     * Its own screen rather than a second click on the button. This is the one
+     * action in the game that cannot be undone, so it says exactly what it is
+     * about to destroy — in the player's own numbers — and what it is going to
+     * leave alone, and it puts the way out first.
+     */
+    function resetConfirmView() {
+      const rec = BB.Career.record();
+      const saved = BB.PlayerProfile.load();
+      const rows = [
+        ['Player', saved
+          ? (saved.name || 'YOU') + '  ·  #' + (saved.number == null ? 23 : saved.number) +
+            '  ·  ' + (saved.position || 'SF')
+          : 'none saved yet'],
+        ['Career level', rec.level + (rec.points
+          ? '   (' + rec.points + ' unspent point' + (rec.points === 1 ? '' : 's') + ')' : '')],
+        ['Record', rec.gamesPlayed
+          ? rec.wins + ' won, ' + rec.losses + ' lost   ·   ' + rec.ppg.toFixed(1) + ' ppg'
+          : 'no games played'],
+        ['Best streak', rec.bestStreak ? rec.bestStreak + ' in a row' : '—']
+      ];
+
+      return `
+        <div class="panel">
+          <header class="panel__head">
+            <h2>Reset all progress?</h2>
+            <button class="btn btn--ghost" data-nav data-act="back">Back</button>
+          </header>
+          <div class="panel__body">
+            <p class="note">This erases your created player and everything your
+              career has earned. It cannot be undone.</p>
+            <section class="group">
+              <h3>What goes</h3>
+              ${rows.map(([k, v]) => `
+                <div class="row row--seg">
+                  <span class="row__k">${k}</span>
+                  <span class="row__val">${v}</span>
+                </div>`).join('')}
+            </section>
+            <p class="note">Settings, audio levels and your key bindings are not
+              progress and are left alone — use “Reset to defaults” for those.</p>
+            <div class="panel__actions">
+              <button class="btn btn--ghost" data-nav data-act="back">Keep it</button>
+              <button class="btn btn--danger" data-nav data-act="erase">Erase everything</button>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    function resetDoneView() {
+      return `
+        <div class="panel">
+          <header class="panel__head"><h2>Progress erased</h2></header>
+          <div class="panel__body">
+            <p class="note">Your player and your career are back to a fresh
+              start. Settings and controls were left as they were.</p>
+            <div class="panel__actions">
+              <button class="btn" data-nav data-act="done">Done</button>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    M.define({
+      id: 'resetProgress',
+      build() { return resetConfirmView(); },
+      mount(el) {
+        el.addEventListener('click', (e) => {
+          const b = e.target.closest('[data-act]');
+          if (!b) return;
+          if (b.dataset.act === 'back' || b.dataset.act === 'done') { M.pop(); return; }
+          if (b.dataset.act !== 'erase') return;
+
+          BB.Career.reset();
+          BB.PlayerProfile.clear();
+          // The front page is standing there showing a player who no longer
+          // exists; rebuild the figure from what is saved now, which is nothing.
+          const scene = BB.Engine && BB.Engine.scene;
+          if (scene && scene.refreshHero) scene.refreshHero();
+
+          /* Swapped in place rather than pushed or replaced. replace() unwinds
+           * the WHOLE stack, so the acknowledgement would be the only screen
+           * left and dismissing it would drop the player on a front page that
+           * had been thrown away. The click handler is delegated off this
+           * element, so it goes on working across the swap. */
+          el.innerHTML = resetDoneView();
+          focusFirst(el);
         });
       },
       onCancel() { M.pop(); }

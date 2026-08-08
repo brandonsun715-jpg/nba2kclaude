@@ -80,6 +80,22 @@
        * sits just outside the sideline, so a figure out at mid-width is
        * thirty feet away and reads as a doll. Close in, he fills the right of
        * the frame and the court and stands fall away behind him. */
+      this.ball = new BB.Ball(World.hoops);
+      const h = this._buildHero();
+      this._t = 0;
+
+      BB.Camera.setMode(BB.Camera.MODES.PORTRAIT);
+      BB.Camera.reset(h.x - this.offset(), h.y, 1);
+      BB.Camera.update(0, { x: h.x - this.offset(), y: h.y }, null);
+
+      BB.Menus.replace('main');
+      BB.Audio.setCrowdIntensity(0.06, 2);
+    },
+
+    exit() { this.hero = null; this.ball = null; },
+
+    /** Builds the standby figure from whatever player is saved right now. */
+    _buildHero() {
       const hx = C.HALF_L + 7, hy = C.COURT_W - 4.5;
       const draft = BB.PlayerProfile.load() || BB.PlayerProfile.newDraft();
       this.hero = new BB.Player(BB.PlayerProfile.toPlayerConfig(draft, { x: hx, y: hy }));
@@ -88,19 +104,22 @@
       // three-quarters rather than as a flat cutout.
       this.hero.placeAt(hx, hy, this.FACING);
       this.hero.human = false;   // no selection ring under a menu portrait
-      this.ball = new BB.Ball(World.hoops);
-      this.hero.giveBall(this.ball);
-      this._t = 0;
-
-      BB.Camera.setMode(BB.Camera.MODES.PORTRAIT);
-      BB.Camera.reset(hx - this.offset(), hy, 1);
-      BB.Camera.update(0, { x: hx - this.offset(), y: hy }, null);
-
-      BB.Menus.replace('main');
-      BB.Audio.setCrowdIntensity(0.06, 2);
+      if (this.ball) this.hero.giveBall(this.ball);
+      return this.hero;
     },
 
-    exit() { this.hero = null; this.ball = null; },
+    /**
+     * Rebuilds the figure after the saved player has changed underneath it.
+     * Erasing progress from the settings screen leaves the front page showing
+     * a player who no longer exists, right up until the next time the menu is
+     * entered — which for anyone who then presses Play is never.
+     */
+    refreshHero() {
+      if (!this.hero) return;
+      this.preview = false;
+      this.pose = 'idle';
+      this._buildHero();
+    },
 
     /** Called by the menu as the selection moves along the mode row. */
     spotlight(pose) { if (!this.preview) this.pose = pose || 'idle'; },

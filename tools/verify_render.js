@@ -2111,8 +2111,132 @@ console.log('\n[23] a ball out of bounds comes straight back');
   check('out-of-bounds probe raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[24] settings can wipe your progress, and asks first');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U;
+    BB.Engine.setState('menu'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene;
+    for (var i = 0; i < 40; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+
+    /* Build up a career and a player worth losing. */
+    BB.Career.reset(); BB.PlayerProfile.clear();
+    var c = BB.Career.load();
+    c.level = 7; c.points = 12; c.xp = 400;
+    c.gamesPlayed = 9; c.wins = 6; c.losses = 3; c.totalPoints = 84;
+    c.fgMade = 30; c.fgAtt = 60; c.bestStreak = 5;
+    BB.Career.save(c);
+    var draft = BB.PlayerProfile.newDraft();
+    draft.name = 'RAINMAKER'; draft.number = 7; draft.position = 'PG'; draft.height = 74;
+    draft.jerseyMain = BB.PlayerProfile.JERSEY_COLORS[4];
+    BB.PlayerProfile.save(draft);
+    // Guarded so a build without any of this still reports what it HAS got
+    // rather than dying on the first line and taking every check with it.
+    if (scene.refreshHero) scene.refreshHero();
+
+    // Preferences, which are not progress and must survive.
+    BB.Settings.set('cameraMode', 'tight');
+    U.store.set('bindings', { probe: 'kept' });
+
+    var heroBefore = { h: scene.hero.heightIn, j: scene.hero.jerseyMain };
+    var before = BB.Career.record();
+
+    /* Walk the real interface, click by click. */
+    BB.Menus.replace('main');
+    document.querySelector('[data-tab="settings"]').click();
+    document.querySelector('.menu-hero [data-go]').click();
+    var settingsEl = document.querySelector('.screen--settings');
+    var wipe = settingsEl && settingsEl.querySelector('[data-act="wipe"]');
+    var label = wipe ? wipe.textContent.trim() : null;
+    if (!wipe) return { label: label, missing: true, pageErr: window.__pageErr || null };
+
+    wipe.click();
+    var confirmEl = document.querySelector('.screen--resetProgress');
+    if (!confirmEl) return { label: label, noConfirm: true, pageErr: window.__pageErr || null };
+    var text = confirmEl ? confirmEl.textContent.replace(/\\s+/g, ' ').trim() : '';
+    var erasedOnOpening = BB.PlayerProfile.load() == null;
+
+    // Back out. Nothing may have moved.
+    confirmEl.querySelector('[data-act="back"]').click();
+    var afterCancel = BB.Career.record();
+    var draftAfterCancel = BB.PlayerProfile.load();
+
+    // And now go through with it.
+    document.querySelector('.screen--settings [data-act="wipe"]').click();
+    document.querySelector('.screen--resetProgress [data-act="erase"]').click();
+
+    var doneEl = document.querySelector('.screen--resetProgress');
+    var doneText = doneEl ? doneEl.textContent.replace(/\\s+/g, ' ').trim() : '';
+    doneEl.querySelector('[data-act="done"]').click();
+
+    var after = BB.Career.record();
+    for (var j = 0; j < 20; j++) { scene.fixedUpdate(1 / 120); if (j % 2 === 0) scene.update(1 / 60, 1 / 60); }
+
+    return {
+      label: label,
+      says: {
+        name: text.indexOf('RAINMAKER') >= 0,
+        level: text.indexOf('7') >= 0,
+        record: text.indexOf('6 won, 3 lost') >= 0,
+        undo: text.toLowerCase().indexOf('cannot be undone') >= 0
+      },
+      erasedOnOpening: erasedOnOpening,
+      cancelLevel: afterCancel.level,
+      cancelName: draftAfterCancel && draftAfterCancel.name,
+      before: before, after: after,
+      draftAfter: BB.PlayerProfile.load(),
+      doneShown: doneText.indexOf('Progress erased') >= 0,
+      backOnSettings: !!document.querySelector('.screen--settings'),
+      frontPageAlive: !!document.querySelector('.screen--main'),
+      cameraKept: BB.Settings.get('cameraMode'),
+      bindingsKept: U.store.get('bindings', null),
+      heroBefore: heroBefore,
+      heroAfter: { h: scene.hero.heightIn, j: scene.hero.jerseyMain },
+      fresh: BB.PlayerProfile.newDraft(),
+      pageErr: window.__pageErr || null
+    };
+  `, 'reset');
+  if (r.err) check('reset probe ran', false, r.err);
+  const o = r.out || {}, says = o.says || {}, before = o.before || {}, after = o.after || {};
+
+  check('settings carries a reset-all-progress button',
+        o.label === 'Reset all progress', 'button reads "' + o.label + '"');
+  // One click cannot erase a career.
+  check('it asks before it erases anything',
+        o.erasedOnOpening === false && says.undo === true,
+        'confirmation warns it cannot be undone: ' + says.undo);
+  check('the confirmation says what is about to be lost',
+        says.name && says.level && says.record,
+        'names the player: ' + says.name + ', the level: ' + says.level +
+        ', the record: ' + says.record);
+  check('backing out changes nothing',
+        o.cancelLevel === 7 && o.cancelName === 'RAINMAKER',
+        'after cancelling: level ' + o.cancelLevel + ', player ' + o.cancelName);
+
+  check('erasing clears the career',
+        after.level === 1 && after.points === 0 && after.gamesPlayed === 0 &&
+        after.wins === 0 && after.bestStreak === 0,
+        'level ' + before.level + '->' + after.level + ', ' +
+        before.gamesPlayed + ' games -> ' + after.gamesPlayed);
+  check('and the created player', o.draftAfter == null);
+  // Preferences are not progress, and there is a separate button for those.
+  check('but leaves settings and key bindings alone',
+        o.cameraKept === 'tight' && o.bindingsKept && o.bindingsKept.probe === 'kept',
+        'camera stayed "' + o.cameraKept + '", bindings ' + JSON.stringify(o.bindingsKept));
+
+  const hb = o.heroBefore || {}, ha = o.heroAfter || {}, fresh = o.fresh || {};
+  check('the front page stops showing a player who no longer exists',
+        hb.h !== ha.h && ha.h === fresh.height,
+        'standby figure went from ' + hb.h + '" to ' + ha.h + '"');
+  check('it says so, and leaves a menu to come back to',
+        o.doneShown === true && o.backOnSettings === true && o.frontPageAlive === true,
+        'acknowledged=' + o.doneShown + ', settings=' + o.backOnSettings +
+        ', front page=' + o.frontPageAlive);
+  check('reset probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[24] screenshots');
+  console.log('\n[25] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],

@@ -502,7 +502,7 @@ kbd {
 }
 .panel__head h2 { margin: 0; font: var(--display); font-size: 22px; color: var(--chalk); letter-spacing: 0.02em; }
 .panel__body { padding: 18px 22px 24px; overflow-y: auto; }
-.panel__actions { margin-top: 18px; display: flex; justify-content: flex-end; }
+.panel__actions { margin-top: 18px; display: flex; justify-content: flex-end; gap: 10px; }
 
 .group { margin-bottom: 22px; }
 .group h3 {
