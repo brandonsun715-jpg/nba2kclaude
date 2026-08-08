@@ -1985,8 +1985,134 @@ console.log('\n[22] a highlight gets a slow-motion replay');
   check('replay probe raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[23] a ball out of bounds comes straight back');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, C = BB.C;
+
+    /* --- when a ball counts as out ------------------------------------- */
+    var probe = new BB.Ball([]);
+    // High over the sideline and still climbing: over the line is not out.
+    probe.place(C.HALF_L, C.COURT_W + 6, 9);
+    probe.launch(0, 4, 6, BB.Ball.STATE.LOOSE);
+    for (var a = 0; a < 6; a++) probe.update(1 / 120);
+    var flyingOver = probe.outOfPlay;
+    // Now let it come down out there.
+    for (var b = 0; b < 400 && !probe.outOfPlay; b++) probe.update(1 / 120);
+    var landedOut = probe.outOfPlay;
+    var speedWhenCalled = probe.speed;
+    // And a ball rolling around inside the lines is never out.
+    var inside = new BB.Ball([]);
+    inside.place(C.HALF_L, C.HALF_W, 3);
+    inside.launch(6, 0, 0, BB.Ball.STATE.LOOSE);
+    for (var c = 0; c < 600; c++) inside.update(1 / 120);
+    var falsePositive = inside.outOfPlay;
+
+    /* --- the shootaround ------------------------------------------------ */
+    BB.Engine.setState('shootaround'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene, pl = scene.player, ball = scene.ball;
+    for (var i = 0; i < 120; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+
+    pl.placeAt(C.HALF_L, C.HALF_W, 0); pl.vx = pl.vy = 0;
+    pl.giveBall(ball); pl.hasBall = false;
+    ball.place(C.HALF_L, C.COURT_W - 3, 5);
+    ball.launch(2, 26, 5, BB.Ball.STATE.LOOSE);
+
+    /* The landing is caught from inside the physics: by the time the scene's
+     * fixedUpdate has returned, a fast hand-back has already put the ball in a
+     * hand and there is nothing left outside the lines to measure. */
+    var landedAt = -1, heldAt = -1, landSpeed = -1, t = 0;
+    ball.events.on('bounce', function () {
+      if (landedAt < 0 && ball.isOutOfBounds()) { landedAt = t; landSpeed = ball.speed; }
+    });
+    for (var k = 0; k < 4000; k++) {
+      t++;
+      scene.fixedUpdate(1 / 120);
+      if (landedAt >= 0 && heldAt < 0 && ball.owner === pl) { heldAt = t; break; }
+      if (k % 2 === 0) scene.update(1 / 60, 1 / 60);
+    }
+    var hand = pl.handPosition(null);
+    var shoot = {
+      ticks: heldAt >= 0 ? heldAt - landedAt : -1,
+      landSpeed: landSpeed,
+      inHand: ball.owner === pl && pl.hasBall,
+      offHand: U.dist3(ball.x, ball.y, ball.z, hand.x, hand.y, hand.z)
+    };
+
+    /* --- 1v1 ------------------------------------------------------------- */
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var g = BB.Engine.scene, p2 = g.player, b2 = g.ball;
+    for (var j = 0; j < 240; j++) { g.fixedUpdate(1 / 120); if (j % 2 === 0) g.update(1 / 60, 1 / 60); }
+    g.phase = 'live'; g.score.you = 0; g.score.cpu = 0;
+    p2.hasBall = false; b2.owner = null;
+    b2.place(g.hoop.x - 10, C.COURT_W - 3, 5);
+    b2.lastToucher = p2;
+    b2.launch(4, 24, 5, BB.Ball.STATE.LOOSE);
+
+    var land2 = -1, called2 = -1, t2 = 0;
+    b2.events.on('bounce', function () {
+      if (land2 < 0 && b2.isOutOfBounds()) land2 = t2;
+    });
+    for (var m = 0; m < 4000; m++) {
+      t2++;
+      g.fixedUpdate(1 / 120);
+      if (land2 >= 0 && called2 < 0 && g.phase === 'check') { called2 = t2; break; }
+      if (m % 2 === 0) g.update(1 / 60, 1 / 60);
+    }
+
+    /* Carrying it over the line is still a turnover, and still instant. */
+    for (var n = 0; n < 200; n++) { g.fixedUpdate(1 / 120); if (n % 2 === 0) g.update(1 / 60, 1 / 60); }
+    g.phase = 'live';
+    p2.giveBall(b2);
+    p2.placeAt(g.hoop.x - 10, C.COURT_W + 2, 0);
+    p2._updatePose(1 / 120);
+    var carriedTicks = -1;
+    for (var q = 0; q < 400; q++) {
+      g.fixedUpdate(1 / 120);
+      g.update(1 / 60, 1 / 60);
+      if (g.phase === 'check') { carriedTicks = q; break; }
+    }
+
+    return {
+      flyingOver: flyingOver, landedOut: landedOut, falsePositive: falsePositive,
+      speedWhenCalled: speedWhenCalled,
+      shoot: shoot,
+      oneVone: { ticks: called2 >= 0 ? called2 - land2 : -1 },
+      carriedTicks: carriedTicks,
+      pageErr: window.__pageErr || null
+    };
+  `, 'oob');
+  if (r.err) check('out-of-bounds probe ran', false, r.err);
+  const o = r.out || {}, sa = o.shoot || {}, ov = o.oneVone || {};
+
+  check('a ball is out the moment it lands outside the lines', o.landedOut === true);
+  // Real rule, and it matters: a rebound that arcs over the baseline and comes
+  // back down in bounds is still live.
+  check('but not while it is merely flying over one', o.flyingOver === false);
+  check('and a ball rolling around inside them never is', o.falsePositive === false);
+  // The old rule waited for the ball to decay to under 0.2 ft/s first.
+  check('the call does not wait for it to stop rolling',
+        o.landedOut === true && o.speedWhenCalled > 5,
+        'called while still travelling at ' + (o.speedWhenCalled || 0).toFixed(1) + 'ft/s');
+
+  check('the shootaround puts it straight back in the hand',
+        sa.ticks === 0 && sa.inHand === true,
+        'took ' + (sa.ticks / 120).toFixed(2) + 's, in hand=' + sa.inHand);
+  check('and it is IN the hand, not dropped on the floor nearby',
+        sa.offHand < 0.01,
+        'ball sits ' + (sa.offHand || 0).toFixed(2) + 'ft from the hand');
+
+  check('1v1 whistles it the moment it lands',
+        ov.ticks >= 0 && ov.ticks <= 2,
+        'took ' + (ov.ticks / 120).toFixed(2) + 's from the touch-down');
+  check('carrying it over the line is still a turnover',
+        o.carriedTicks >= 0 && o.carriedTicks <= 2,
+        'took ' + o.carriedTicks + ' ticks');
+  check('out-of-bounds probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[23] screenshots');
+  console.log('\n[24] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],

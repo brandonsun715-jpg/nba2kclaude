@@ -346,10 +346,16 @@
         }
       }
 
-      /* Ball-boy: nudge a dead, out-of-bounds ball back into play. */
-      if (ball.state === BB.Ball.STATE.LOOSE && ball.speed < 0.2 && ball.isOutOfBounds()) {
-        ball.place(this.hoop.x - 12, C.HALF_W, 3);
-        ball.vx = ball.vy = 0; ball.vz = 0;
+      /* Ball-boy. There is nobody to inbound it in a practice session, so the
+       * moment it lands outside the lines it is back in the shooter's hands.
+       *
+       * It used to wait for `speed < 0.2` and then drop the ball on the floor
+       * near the top of the key for them to walk over and collect. Both halves
+       * of that cost real time: a ball that clears the baseline bounces off
+       * the blacktop and rolls for whole seconds before it is slow enough to
+       * count, and then there is the walk. Nothing about either was practice. */
+      if (ball.outOfPlay && ball.owner == null) {
+        player.giveBall(ball);
       }
     },
 
@@ -916,7 +922,11 @@
        * carrier steps/dribbles across it while still holding the ball —
        * both are a live-ball turnover to whoever didn't cause it. */
       const carrier = ball.owner;
-      const looseOut = ball.state === BB.Ball.STATE.LOOSE && ball.speed < 0.2 && ball.isOutOfBounds();
+      // Out on the touch-down, not once the ball has finished rolling: the old
+      // `speed < 0.2` gate meant a shot that cleared the baseline bounced and
+      // trundled for several seconds with both players stood watching it
+      // before the whistle everybody could already see coming.
+      const looseOut = ball.outOfPlay;
       const heldOut = carrier != null && !carrier.isBusyShooting && ball.isOutOfBounds();
       if ((looseOut || heldOut) && this.phase === 'live') {
         const loser = heldOut ? carrier : (ball.lastToucher === this.ai ? this.ai : this.player);

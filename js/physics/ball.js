@@ -49,6 +49,12 @@
       this.airTime = 0;
       this.scoredThisFlight = false;
       this.touchedRim = false;
+      /* Set the moment a live ball touches down outside the lines, and cleared
+       * the moment anybody takes hold of it again. Scenes read this instead of
+       * asking whether the ball happens to be past a line right now: a ball is
+       * not out because it flew over the baseline, it is out because it landed
+       * there. */
+      this.outOfPlay = false;
       this._rimContactTicks = 0; // consecutive ticks of rim contact - see _rim()
       this.events = new U.Emitter();
     }
@@ -62,6 +68,7 @@
       this.trail.length = 0;
       this.scoredThisFlight = false;
       this.touchedRim = false;
+      this.outOfPlay = false;
     }
 
     /** Place the ball without altering ownership (used while dribbling). */
@@ -73,6 +80,7 @@
       this.airTime = 0;
       this.scoredThisFlight = false;
       this.touchedRim = false;
+      this.outOfPlay = false;
     }
 
     /**
@@ -184,6 +192,14 @@
       if (this.z > r) return;
 
       this.z = r;
+
+      /* Out of bounds is decided HERE, on contact, because that is when it
+       * actually happens: a ball is not out for passing over a line in the
+       * air, it is out for touching down past one. This runs on every tick a
+       * ball is resting or rolling on the floor as well, so a ball that trundles
+       * over a sideline is called on the tick it crosses. */
+      if (!this.outOfPlay && this.isOutOfBounds()) this.outOfPlay = true;
+
       if (this.vz < -C.REST_SPEED) {
         const impact = -this.vz;
         this.vz = impact * C.FLOOR_RESTITUTION;
