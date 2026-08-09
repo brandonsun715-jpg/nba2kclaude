@@ -372,7 +372,7 @@
        * nothing here allocates per frame. */
       this._animClock = U.rng.f(0, 6.28); // phase-offset so idle players don't sync
       this.pose = {
-        hipY: 0, shoulderY: 0, headY: 0, torsoLean: 0, hipLean: 0, armRoll: 0,
+        hipY: 0, shoulderY: 0, headY: 0, torsoLean: 0, hipLean: 0, armRoll: 0, armTuck: 0,
         footL: { x: 0, y: 0, pitch: 0 }, footR: { x: 0, y: 0, pitch: 0 },
         handL: { x: 0, y: 0 }, handR: { x: 0, y: 0 },
         kneeL: { jx: 0, jy: 0, ex: 0, ey: 0 }, kneeR: { jx: 0, jy: 0, ex: 0, ey: 0 },
@@ -420,12 +420,16 @@
      * computed from a player's real 6'7" lands about two feet above the head of
      * the 5-foot figure that gets drawn.
      */
-    handAt(out) {
+    handAt(out, side) {
       out = out || { x: 0, y: 0, z: 0 };
       const p = this.pose, f = this._frame();
+      const s = side < 0 ? -1 : 1;           // the shooting hand by default
+      const el = s < 0 ? p.elbowL : p.elbowR;
+      const w = s * BONE.shoulderW;
       const lean = p.torsoLean * 0.45 + this.lean * 0.16;
-      posePoint(TMP_P0, f, p.elbowR.ex, p.elbowR.ey, BONE.shoulderW,
-                BONE.shoulderW * SPLAY.wrist, lean, p.armRoll, -p.shoulderY * f.stretch);
+      posePoint(TMP_P0, f, el.ex, el.ey, w,
+                w * SPLAY.wrist * (1 - p.armTuck), lean,
+                s * p.armRoll, -p.shoulderY * f.stretch);
       out.x = TMP_P0[0]; out.y = TMP_P0[1]; out.z = TMP_P0[2];
       return out;
     }
@@ -1412,9 +1416,14 @@
         const w = arm.side * BONE.shoulderW;
         const roll = arm.side * p.armRoll;
         const pivot = -p.shoulderY * f.stretch;
+        // The elbows come in about half as far as the hands do, which is what
+        // a real player does carrying a ball in two hands: wrists together,
+        // elbows still out either side of it.
+        const tuckW = 1 - p.armTuck;
+        const tuckE = 1 - p.armTuck * 0.45;
         posePoint(A, f, 0, p.shoulderY, 0, w, torsoLean);
-        posePoint(B, f, el.jx, el.jy, w, w * SPLAY.elbow, torsoLean, roll, pivot);
-        posePoint(D, f, el.ex, el.ey, w, w * SPLAY.wrist, torsoLean, roll, pivot);
+        posePoint(B, f, el.jx, el.jy, w, w * SPLAY.elbow * tuckE, torsoLean, roll, pivot);
+        posePoint(D, f, el.ex, el.ey, w, w * SPLAY.wrist * tuckW, torsoLean, roll, pivot);
 
         // The solver stops at the wrist; the hand carries on the way the
         // forearm was already pointing.
@@ -1693,6 +1702,16 @@
       const guardTarget = (this.isGuarding && !this.jumping && !this.hasBall && !this.isBusyShooting) ? 1 : 0;
       this._guardBlend = U.approach(this._guardBlend, guardTarget, 7, dt);
       let armRoll = 0;
+      /* How far the arms are drawn in toward the body's centreline, 0..1.
+       *
+       * The pose solver works in ONE flat plane per limb pair and the lateral
+       * offset is a constant applied at draw time, so left and right hands are
+       * always a shoulder-width apart however the plane is posed. That is fine
+       * for everything except the one thing a basketball player does most: put
+       * both hands on the same ball. armRoll cannot close it either — it is a
+       * rotation about shoulder height, so it barely moves a hand that is AT
+       * shoulder height and it shortens the ones that are not. */
+      let armTuck = 0;
       if (this._guardBlend > 0.001) {
         const g = this._guardBlend;
         // Lower centre of gravity. The whole upper body sinks — hips, shoulders
@@ -1801,14 +1820,17 @@
       if (this.action === A.GATHER) {
         const k = U.clamp01(this.actionT / 0.10);
         // A real gather sinks the hips and pulls the ball in tight to the
-        // chest, with a slight backward counter-lean before the drive up.
+        // chest, with a slight backward counter-lean before the drive up. Both
+        // hands are on it from here until the release.
         flY = U.lerp(flY, -0.05, k); frY = U.lerp(frY, -0.05, k);
         flX = U.lerp(flX, -BONE.hipW * 0.7, k); frX = U.lerp(frX, BONE.hipW * 0.7, k);
-        hlX = U.lerp(hlX, shL + 0.13, k); hlY = U.lerp(hlY, reachY(shoulderY, 0.62), k);
-        hrX = U.lerp(hrX, shR + 0.13, k); hrY = U.lerp(hrY, reachY(shoulderY, 0.62), k);
+        hlX = U.lerp(hlX, shL + 0.13, k); hlY = U.lerp(hlY, reachY(shoulderY, 0.60), k);
+        hrX = U.lerp(hrX, shR + 0.15, k); hrY = U.lerp(hrY, reachY(shoulderY, 0.60), k);
+        armTuck = 0.55 * k;
+        armRoll = 0.10 * k;
         hipY += 0.07 * k;
         shoulderY += 0.07 * k;
-        torsoLean = -0.03 * k;
+        torsoLean = 0.04 * k;
 
       } else if (this.action === A.METER && this.shotType === 'layup') {
         /* The rise on a layup, held on the meter.
@@ -1843,43 +1865,88 @@
         shoulderY -= 0.05 * rise;         // stretch up through the finish
 
       } else if (this.action === A.METER) {
+        /* The jump shot, in the two beats a jump shot actually has.
+         *
+         * It used to be one straight sweep from the waist to full extension
+         * with the guide hand trailing a third of an arm's length below the
+         * shooting hand the entire way. Two hands on one ball cannot be a foot
+         * and a half apart, and a figure holding them that way reads as
+         * somebody whose shoulder has come out of its socket.
+         *
+         * SET: both hands carry the ball up together to a real set point —
+         * wrist just above the shoulder, ball out in front of the forehead,
+         * shooting elbow bent under it and the guide hand on its side.
+         * EXTEND: only then does the shooting arm drive up, and the guide hand
+         * comes off the ball and stays where it was rather than following.
+         *
+         * The offsets are the two arm bones, not taste: with a 1.45HU upper arm
+         * and a 1.30HU forearm, a wrist 0.24 in front of the shoulder and 0.16
+         * above it puts the elbow 0.31 forward and 0.14 down — under the ball,
+         * forearm all but vertical, which is the whole shape. Nothing here
+         * passes the arm's reach; a target the IK has to clamp comes out as a
+         * locked, poker-straight arm. */
         const v = U.clamp01(this.meter.value);
-        // Higher release point, arm driven closer to full lockout, a
-        // visible forward head/shoulder reach at the top of the motion.
-        // The shooting hand climbs to nearly full extension over the head; the
-        // guide hand stays a good deal lower and tucked in beside the ball. Two
-        // hands thrown up to the same height reads as a touchdown signal, not a
-        // jumper. Neither target passes the arm's actual reach — a target the
-        // IK has to clamp comes out as a locked, poker-straight arm.
-        hrX = shR + U.lerp(0.03, 0.10, v);
-        hrY = U.lerp(reachY(shoulderY, 0.64), shoulderY - 0.56, v);
-        hlX = shL + U.lerp(0.05, 0.15, v);
-        hlY = U.lerp(reachY(shoulderY, 0.64), shoulderY - 0.22, v);
-        // Both hands work in toward the ball as they come up. Same roll the
-        // defensive stance uses, and above the shoulder it draws the arms
-        // together instead of apart — without it the two arms rise on rails a
-        // shoulder-width apart and the shot reads as a touchdown signal.
-        armRoll = v * 0.34;
+        const set = U.ease.outCubic(U.clamp01(v / 0.55));
+        const ext = U.ease.inOutSine(U.clamp01((v - 0.55) / 0.45));
+
+        const setRX = U.lerp(0.13, 0.24, set);
+        const setRY = U.lerp(reachY(shoulderY, 0.60), shoulderY - 0.16, set);
+        const setLX = U.lerp(0.13, 0.21, set);
+        const setLY = U.lerp(reachY(shoulderY, 0.60), shoulderY - 0.13, set);
+
+        hrX = shR + U.lerp(setRX, 0.15, ext);
+        hrY = U.lerp(setRY, shoulderY - 0.52, ext);
+        hlX = shL + U.lerp(setLX, 0.17, ext);
+        hlY = U.lerp(setLY, shoulderY - 0.20, ext);
+
+        // Hands together on the ball through the set, then opening back out a
+        // little as the shooting arm goes up over the shooting-side eye rather
+        // than over the middle of the head.
+        armTuck = U.lerp(0.35, 0.62, set) * (1 - ext * 0.36);
+        armRoll = U.lerp(0.08, 0.16, set);
+
         if (this.jumping) {
           flX = -BONE.hipW + 0.02; frX = BONE.hipW + 0.02;
           flY = frY = U.lerp(-0.12, 0.06, v);
         }
-        torsoLean = U.lerp(0.02, -0.07, v);
+        // Close to upright. The old backward lean at the top of every shot was
+        // a fadeaway, and a fadeaway is not the default jump shot.
+        torsoLean = U.lerp(0.04, -0.02, v);
 
       } else if (this.action === A.RELEASE) {
+        /* The follow-through, and it HOLDS.
+         *
+         * The old one curled the whole hand back down a third of the way to
+         * the shoulder as it finished, which is an arm collapsing, not a
+         * follow-through. A shooter's arm stays where the ball left it and
+         * reaches out after it; what comes down is the wrist alone.
+         *
+         * There is no wrist joint in this skeleton — the hand carries on in
+         * whatever direction the forearm was already pointing — so the snap is
+         * drawn by pushing the wrist forward at height, which tips the whole
+         * forearm out over the shot. That is as close to fingers-in-the-cookie
+         * -jar as a two-bone arm gets, and it is the right shape from every
+         * angle the camera ever sees it from. */
         const k = U.clamp01(this.actionT / 0.30);
-        // Bigger wrist-snap: the hand keeps climbing past the peak, then
-        // curls forward/down through the follow-through instead of just
-        // holding still — the signature "cookie jar" finish.
-        const snap = k < 0.35 ? U.ease.outCubic(k / 0.35) : 1;
-        const curl = k > 0.35 ? U.ease.inOutSine((k - 0.35) / 0.65) : 0;
-        hrX = shR + U.lerp(0.10, 0.05, curl); hrY = shoulderY - 0.56 - snap * 0.03 + curl * 0.12;
-        hlX = shL + 0.14; hlY = shoulderY - 0.24;
-        armRoll = 0.34 * (1 - curl * 0.5);   // hands stay in over the ball, then relax
+        const snap = U.ease.outCubic(U.clamp01(k / 0.30));
+        const relax = k > 0.45 ? U.ease.inOutSine((k - 0.45) / 0.55) : 0;
+
+        /* Every one of these is inside the arm's reach on purpose. The rig
+         * clamps a target it cannot get to, and a clamped arm comes out
+         * locked poker-straight with the elbow gone — which is exactly the
+         * thing this whole change is about. Full extension here is nine
+         * tenths of the way out, not ten. */
+        hrX = shR + U.lerp(0.15, 0.24, snap) - relax * 0.03;
+        hrY = shoulderY - U.lerp(0.52, 0.49, snap) - relax * 0.02;
+        // The guide hand is left up around where the ball was, not dropped.
+        hlX = shL + U.lerp(0.17, 0.21, relax);
+        hlY = shoulderY - U.lerp(0.20, 0.15, relax);
+        armTuck = 0.40 * (1 - relax * 0.35);
+        armRoll = 0.16;
         // Toe point — the plant foot stretches down through extension.
         flX = -BONE.hipW; frX = BONE.hipW;
         flY = frY = this.jumping ? -0.09 - snap * 0.03 : U.lerp(-0.05, 0.01, k);
-        torsoLean = -0.07 - snap * 0.03;
+        torsoLean = -0.02 - snap * 0.02;
 
       } else if (this.action === A.LAYUP) {
         /* The finish, from the instant the meter is let go.
@@ -2031,6 +2098,7 @@
       p.hipY = hipY;
       p.shoulderY = shoulderY;
       p.armRoll = armRoll;
+      p.armTuck = armTuck;
       p.headY = shoulderY - BONE.neck - this.armRaise * 0.05;
       p.torsoLean = torsoLean;
       p.hipLean = hipLean == null ? torsoLean : hipLean;

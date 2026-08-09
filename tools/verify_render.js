@@ -2235,8 +2235,142 @@ console.log('\n[24] settings can wipe your progress, and asks first');
   check('reset probe raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[25] the jump shot is a jump shot');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, C = BB.C;
+    var BONE = BB.Player.BONE, A = BB.Player.ACTION;
+    var pl = new BB.Player({ height: 79 });
+    pl.placeAt(20, 25, 0);
+    pl.facing = pl.moveFacing = 0;
+    pl.vx = pl.vy = 0;
+    pl.hasBall = true;
+
+    var REACH = BONE.upperArm + BONE.forearm;
+    var BALL = C.BALL_RADIUS * 2;
+
+    /* Where a wrist ends up in the world, worked out here rather than asked
+     * of the player, so this measures the same way on a build that has no
+     * notion of drawing the two hands together. Mirrors what draw() does: the
+     * pose plane gives forward and up, the lateral offset is a constant per
+     * side, and the roll turns the pair about shoulder height. */
+    function wristOf(p, side) {
+      var w = side * BONE.shoulderW;
+      var el = side < 0 ? p.elbowL : p.elbowR;
+      var width = w * 1.02 * (1 - (p.armTuck || 0));
+      var roll = side * (p.armRoll || 0);
+      var rollUp = -p.shoulderY;
+      var dUp = -el.ey - rollUp;
+      var up = rollUp + dUp * Math.cos(roll);
+      var lat = width - dUp * Math.sin(roll);
+      var fwd = (el.ex - w) + up * (p.torsoLean * 0.45);
+      var s = pl.bodyScale;
+      return { fwd: fwd * s, lat: lat * s, up: up * s };
+    }
+
+    function sample() {
+      var p = pl.pose;
+      var a = wristOf(p, 1), b = wristOf(p, -1);
+      return {
+        elbowFwd: p.elbowR.jx - BONE.shoulderW,
+        elbowUp: -(p.elbowR.jy - p.shoulderY),
+        wristFwd: p.elbowR.ex - BONE.shoulderW,
+        wristUp: -(p.elbowR.ey - p.shoulderY),
+        clamp: Math.max(Math.hypot(p.elbowR.ex - p.handR.x, p.elbowR.ey - p.handR.y),
+                        Math.hypot(p.elbowL.ex - p.handL.x, p.elbowL.ey - p.handL.y)),
+        gap: Math.hypot(a.fwd - b.fwd, a.lat - b.lat, a.up - b.up),
+        wristZ: -p.elbowR.ey * pl.bodyScale,
+        crown: (-p.headY + BONE.headR) * pl.bodyScale
+      };
+    }
+
+    var gather = [], meter = [], release = [];
+    pl.action = A.GATHER;
+    for (var g = 0; g <= 6; g++) { pl.actionT = g / 6 * 0.10; pl._updatePose(1 / 60); gather.push(sample()); }
+
+    pl.action = A.METER; pl.shotType = 'jumper';
+    pl.meter.start({ riseTime: 0.4, target: 0.94, greenWindow: 0.2, name: 'x' }, { x: pl.x, y: pl.y, z: 0 });
+    for (var m = 0; m <= 20; m++) { pl.meter.value = m / 20; pl._updatePose(1 / 60); meter.push(sample()); }
+
+    pl.action = A.RELEASE;
+    for (var k = 0; k <= 12; k++) { pl.actionT = k / 12 * 0.30; pl._updatePose(1 / 60); release.push(sample()); }
+
+    var shot = meter.concat(release);
+    function worst(list, f) { return list.reduce(function (w, s) { return Math.max(w, f(s)); }, -1e9); }
+    function best(list, f) { return list.reduce(function (w, s) { return Math.min(w, f(s)); }, 1e9); }
+
+    var set = meter[11];                       // meter value 0.55
+    var top = meter[meter.length - 1];
+
+    /* Is there a set point at all, or does the ball just travel in a straight
+     * line from the waist to the release? Compare the biggest step the wrist
+     * takes in a twentieth of the motion against the smallest. */
+    var steps = [];
+    for (var i = 5; i < 19; i++) steps.push(meter[i + 1].wristUp - meter[i].wristUp);
+    var stepHi = Math.max.apply(null, steps), stepLo = Math.min.apply(null, steps);
+
+    return {
+      ball: BALL, reach: REACH,
+      gapThroughSet: worst(meter.slice(5, 14), function (s) { return s.gap; }),
+      setElbowBelowWrist: set.wristUp - set.elbowUp,
+      setForearmTilt: Math.atan2(Math.abs(set.wristFwd - set.elbowFwd),
+                                 Math.max(1e-6, set.wristUp - set.elbowUp)) * 57.3,
+      elbowNeverBack: best(meter.slice(6).concat(release), function (s) { return s.elbowFwd; }),
+      worstClamp: worst(gather.concat(shot), function (s) { return s.clamp; }),
+      aboveCrown: top.wristZ - top.crown,
+      followDrop: top.wristZ - best(release, function (s) { return s.wristZ; }),
+      followFwd: worst(release, function (s) { return s.wristFwd; }) - top.wristFwd,
+      stepRatio: stepLo > 1e-6 ? stepHi / stepLo : (stepHi > 1e-6 ? 999 : 1),
+      pageErr: window.__pageErr || null
+    };
+  `, 'form');
+  if (r.err) check('form probe ran', false, r.err);
+  const o = r.out || {};
+
+  /* Two hands on one ball. This is the whole complaint: a guide hand left a
+   * foot and a half below the shooting hand for the length of the rise reads
+   * as a shoulder out of its socket, not as a jump shot. */
+  check('both hands stay on the ball through the set',
+        o.gapThroughSet < o.ball * 0.9,
+        'hands were ' + (o.gapThroughSet / o.ball).toFixed(2) + ' ball-widths apart at worst');
+  /* The one thing every coach says: elbow under the ball. In this rig that is
+   * a forearm standing near vertical with the elbow well below the wrist. */
+  check('the shooting elbow is under the ball at the set point',
+        o.setForearmTilt < 35 && o.setElbowBelowWrist > 0.15,
+        'forearm ' + (o.setForearmTilt || 0).toFixed(0) + ' degrees off vertical, elbow ' +
+        (o.setElbowBelowWrist || 0).toFixed(3) + ' below the wrist');
+  check('the elbow never travels behind the shoulder',
+        o.elbowNeverBack > 0,
+        'elbow got to ' + (o.elbowNeverBack || 0).toFixed(3) + ' (negative is behind the body)');
+  // A target past the arm's reach comes back clamped, which draws a locked
+  // poker-straight arm with no elbow in it at all.
+  check('nothing the arms are asked to do is out of reach',
+        o.worstClamp < 0.002,
+        'worst shortfall ' + (o.worstClamp || 0).toFixed(4));
+
+  /* A jump shot has two beats — gather to the set point, then extension. One
+   * even sweep from the waist to full stretch is a wave. */
+  check('there is a set point, not one long sweep',
+        o.stepRatio > 4,
+        'fastest part of the rise is ' + (o.stepRatio || 0).toFixed(1) +
+        'x the slowest; an even sweep is 1x');
+
+  check('the ball is released above the head',
+        o.aboveCrown > 0.3,
+        'wrist finishes ' + (o.aboveCrown || 0).toFixed(2) + 'ft above the crown');
+  // The arm stays where the ball left it. What comes down on a real follow
+  // through is the wrist, not the whole arm.
+  check('the follow-through holds high instead of collapsing',
+        o.followDrop < 0.12,
+        'hand dropped ' + ((o.followDrop || 0) * 12).toFixed(1) + 'in after the release');
+  check('and reaches out over the shot',
+        o.followFwd > 0.04,
+        'wrist pushed ' + (o.followFwd || 0).toFixed(3) + ' forward through the finish');
+  check('form probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[25] screenshots');
+  console.log('\n[26] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],
