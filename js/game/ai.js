@@ -41,6 +41,11 @@
         return;
       }
 
+      /* The stance belongs to the defensive branch and nowhere else. Cleared
+       * up front rather than at the bottom of the other two, so a branch added
+       * later cannot inherit a crouch from the last possession. */
+      bot.isGuarding = false;
+
       if (ball.owner === bot) {
         offense(bot, opp, hoop, dt, diff);
       } else if (ball.owner === opp) {
@@ -176,6 +181,12 @@
     const gap = U.clamp(3.6 - diff * 1.0 - U.remap(distOppHoop, 0, 20, 0.85, 0), 1.3, 4.2);
     const spotX = bot._beliefX + Math.cos(toHoopFromOpp) * gap;
     const spotY = bot._beliefY + Math.sin(toHoopFromOpp) * gap;
+
+    /* Down in a stance, the same one the human gets for holding the key —
+     * but only once it is actually guarding somebody rather than sprinting
+     * back into the play, because a recovery run is not a slide and crouching
+     * through one would only make it slower. */
+    bot.isGuarding = U.dist(bot.x, bot.y, opp.x, opp.y) < 9;
 
     const dx = spotX - bot.x, dy = spotY - bot.y;
     const dist = Math.hypot(dx, dy);

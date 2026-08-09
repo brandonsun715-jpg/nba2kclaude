@@ -168,6 +168,7 @@
         p.events.on('steal', (e) => this._onSteal(e));
         p.events.on('block', (e) => this._onBlock(e));
         p.events.on('fumble', (pl) => this._onFumble(pl));
+        p.events.on('lockdown', (e) => this._onLockdown(e));
         p.events.on('violation', (e) => this._onViolation(e));
         p.events.on('foul', (e) => this._onFoul({ type: e.type, foulOn: e.by, against: e.victim }));
       }
@@ -619,6 +620,15 @@
         shooter.onMiss();
       }
       BB.Commentary.miss(shooter ? shooter.name : '');
+    },
+
+    /* Only the controlled player can raise this — see Player._updateDefense —
+     * so it stays a single call rather than ten defenders announcing
+     * themselves every trip down the floor. */
+    _onLockdown(e) {
+      BB.Commentary.lockdown(e.by.name);
+      BB.FX.ring(e.by.x, e.by.y, PAL.gold, 1.1);
+      BB.FX.popup({ x: e.by.x, y: e.by.y, z: 8.0, text: 'LOCKED UP', colour: PAL.gold, size: 1.0, life: 1.1 });
     },
 
     _onSteal(e) {

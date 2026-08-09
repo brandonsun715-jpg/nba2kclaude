@@ -2611,8 +2611,361 @@ console.log('\n[27] the run cycle is a run, not a scurry');
   check('gait probe raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[28] holding the defence key actually plays defence');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U;
+    var BONE = BB.Player.BONE;
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene, me = scene.player, foe = scene.ai;
+    var ball = scene.ball, hoop = scene.hoop;
+    var S = me.bodyScale;                        // pose units -> world feet
+
+    /** A stick that holds a direction and optionally the defence key. */
+    function stick(hx, hy, guard) {
+      return {
+        moveVector: function (o) {
+          o = o || {}; o.x = hx || 0; o.y = hy || 0;
+          o.mag = Math.hypot(o.x, o.y); return o;
+        },
+        down: function (a) { return a === 'intense' && !!guard; },
+        pressed: function () { return false; },
+        released: function () { return false; }
+      };
+    }
+
+    /**
+     * Puts the handler somewhere relative to the rim and the defender
+     * somewhere relative to the handler, then runs the pair for a while with
+     * the defender's stick held as given. The handler is pinned: this is
+     * about what the DEFENDER does from a known picture.
+     */
+    function situation(o) {
+      o = o || {};
+      foe.placeAt(o.fx == null ? hoop.x - 20 : o.fx, o.fy == null ? hoop.y : o.fy, 0);
+      foe.vx = foe.vy = 0; foe.z = 0; foe.jumping = false; foe.action = null;
+      foe.facing = foe.moveFacing = Math.atan2(hoop.y - foe.y, hoop.x - foe.x);
+      if (o.noBall) { ball.release(); ball.place(foe.x, foe.y - 30, 3); }
+      else foe.giveBall(ball);
+      if (o.ballZ != null) ball.z = o.ballZ;
+
+      me.placeAt(foe.x + (o.dx == null ? 3.2 : o.dx), foe.y + (o.dy || 0), 0);
+      me.vx = me.vy = 0; me.z = 0; me.jumping = false; me.action = null;
+      me.hasBall = !!o.meHasBall;
+      if (o.meHasBall) me.giveBall(ball);
+      me.armRaise = 0; me.sprinting = false;
+      me.defenseQuality = 0; me.lockedT = 0; me._lockShown = 0; me._guardBlend = 0;
+      me.facing = me.moveFacing = o.facing == null
+        ? Math.atan2(foe.y - me.y, foe.x - me.x) : o.facing;
+
+      var sk = stick(o.hx || 0, o.hy || 0, o.guard !== false);
+      var fx = foe.x, fy = foe.y, fz = ball.z;
+      var locks = 0;
+      var onLock = function () { locks++; };
+      me.events.on('lockdown', onLock);
+      var clamp = 0, jab = [], reach = [], best = 0;
+      var secs = o.secs == null ? 1.6 : o.secs;
+      for (var i = 0; i < secs * 120; i++) {
+        // Pin the handler and the ball: the scene's own AI is not running.
+        foe.x = fx; foe.y = fy; foe.vx = foe.vy = 0;
+        if (o.ballZ != null) ball.z = fz;
+        me.readInput(sk);
+        me.update(1 / 120, ball);
+        // The stance turns you to face the man; to grade a defender who is
+        // NOT square, that has to be defeated deliberately.
+        if (o.holdFacing) me.facing = o.facing;
+        var p = me.pose;
+        clamp = Math.max(clamp,
+          Math.hypot(p.elbowL.ex - p.handL.x, p.elbowL.ey - p.handL.y),
+          Math.hypot(p.elbowR.ex - p.handR.x, p.elbowR.ey - p.handR.y),
+          Math.hypot(p.kneeL.ex - p.footL.x, p.kneeL.ey - p.footL.y),
+          Math.hypot(p.kneeR.ex - p.footR.x, p.kneeR.ey - p.footR.y));
+        if (i > secs * 60) {
+          jab.push((p.handR.x - BONE.shoulderW) * S);
+          reach.push(p.handR.y);
+        }
+        best = Math.max(best, me.defenseQuality);
+      }
+      me.events.off('lockdown', onLock);
+      var p2 = me.pose;
+      return {
+        guarding: me.isGuarding, blend: me._guardBlend,
+        quality: me.defenseQuality, best: best, locked: me.lockedT, locks: locks,
+        armRoll: p2.armRoll,
+        // Positive is down: the crouch sinks the hips and the shoulders.
+        hipY: p2.hipY, shoulderY: p2.shoulderY,
+        // How far apart the feet are planted, across the body.
+        base: Math.abs(p2.footR.x - p2.footL.x) * S,
+        // Lead hand: how far in front of its own shoulder, and how high.
+        handOut: (p2.handR.x - BONE.shoulderW) * S,
+        handUp: -(p2.handR.y - p2.shoulderY) * S,
+        jabRange: jab.length ? Math.max.apply(null, jab) - Math.min.apply(null, jab) : 0,
+        // Where the defender ended up pointed, relative to the handler.
+        offMan: Math.abs(U.angleDelta(Math.atan2(foe.y - me.y, foe.x - me.x), me.facing)) * 57.3,
+        clamp: clamp, x: me.x, y: me.y, speed: Math.hypot(me.vx, me.vy)
+      };
+    }
+
+    var idle = situation({ guard: false, dx: 3.2 });
+    var stance = situation({ guard: true, dx: 3.2 });
+    var far = situation({ guard: true, dx: 11.0 });
+    var ballHigh = situation({ guard: true, dx: 3.2, ballZ: 7.0 });
+    var ballLow = situation({ guard: true, dx: 3.2, ballZ: 2.2 });
+    var noHandler = situation({ guard: true, noBall: true });
+    var iHaveIt = situation({ guard: true, meHasBall: true });
+    // Right place, wrong way round: the stance holds but the grade should not.
+    var turned = situation({ guard: true, dx: 3.2, facing: Math.PI * 0.5, holdFacing: true });
+    // Beaten — trailing on the wrong side of the man, off the line to the rim.
+    var beaten = situation({ guard: true, dx: -3.2, secs: 0.4 });
+    // Started with your back to him: the stance has to bring you back round.
+    var recovered = situation({ guard: true, dx: 3.2, facing: Math.PI * 0.9 });
+
+    /* Staying in front is won on the change of direction, not the top end.
+     * Time a full reversal, guarding against not. */
+    function reverse(guard) {
+      foe.placeAt(hoop.x - 20, hoop.y, 0); foe.giveBall(ball);
+      me.placeAt(foe.x + 3.2, foe.y, 0); me.z = 0; me.action = null;
+      me.hasBall = false; me.facing = me.moveFacing = Math.PI;
+      var sk = stick(0, 1, guard), t = 0;
+      for (var i = 0; i < 300; i++) { me.readInput(sk); me.update(1 / 120, ball); }
+      var v0 = me.vy;
+      var back = stick(0, -1, guard);
+      for (var j = 0; j < 600; j++) {
+        me.readInput(back); me.update(1 / 120, ball); t += 1 / 120;
+        if (me.vy <= -Math.abs(v0) * 0.9) break;
+      }
+      return { top: Math.abs(v0), time: t };
+    }
+    var slideRev = reverse(true), runRev = reverse(false);
+
+    /* No sprinting out of a stance. */
+    function topSpeed(guard, sprint) {
+      foe.placeAt(hoop.x - 20, hoop.y, 0); foe.giveBall(ball);
+      me.placeAt(foe.x + 3.2, foe.y, 0); me.z = 0; me.action = null; me.hasBall = false;
+      me.vx = me.vy = 0; me.stamina = 1;
+      var sk = {
+        moveVector: function (o) { o = o || {}; o.x = 0; o.y = 1; o.mag = 1; return o; },
+        down: function (a) { return (a === 'intense' && guard) || (a === 'sprint' && sprint); },
+        pressed: function () { return false; },
+        released: function () { return false; }
+      };
+      for (var i = 0; i < 900; i++) { me.readInput(sk); me.update(1 / 120, ball); }
+      return Math.hypot(me.vx, me.vy);
+    }
+    var openSprint = topSpeed(false, true), stanceSprint = topSpeed(true, true);
+
+    /* What the position is worth when they finally shoot over it. */
+    function contest(q) {
+      foe.placeAt(hoop.x - 20, hoop.y, 0); foe.giveBall(ball);
+      me.placeAt(foe.x + 3.2, foe.y, 0);
+      foe.opponent = me; me.jumping = false; me.defenseQuality = q;
+      return foe._computeContest();
+    }
+    var loose = contest(0), tight = contest(0.9);
+
+    /* And that the readout is actually drawn, in the right colour. */
+    var rings = [];
+    var realRing = BB.S3.ring;
+    BB.S3.ring = function (x, y, z, rr, col, gl, fl) {
+      rings.push({ r: rr, x: x, y: y, col: [col[0], col[1], col[2]] });
+      return realRing.apply(BB.S3, arguments);
+    };
+    /* S3.ring also draws both rims and the selection marker, so the readout
+     * cannot be picked out by draw order — it is the one under the defender's
+     * own feet, and it is the only ring wider than the marker. */
+    function mine() {
+      var found = null;
+      for (var i = 0; i < rings.length; i++) {
+        var g = rings[i];
+        if (g.r > 1.05 && Math.hypot(g.x - me.x, g.y - me.y) < 0.5) found = g;
+      }
+      return found;
+    }
+    var drawn = { none: 0, good: 0, lockedCol: null, goodCol: null, aiRings: 0 };
+    foe.placeAt(hoop.x - 20, hoop.y, 0); foe.giveBall(ball);
+    me.placeAt(foe.x + 3.2, foe.y, 0); me.hasBall = false;
+    me.isGuarding = false; me.defenseQuality = 0; me.lockedT = 0;
+    rings.length = 0; scene.render(0);
+    drawn.none = rings.length;
+    drawn.noneMine = !!mine();
+    me.defenseQuality = 0.85; me.lockedT = 0;
+    rings.length = 0; scene.render(0);
+    drawn.good = rings.length;
+    drawn.goodCol = mine() && mine().col;
+    me.lockedT = 2.0;
+    rings.length = 0; scene.render(0);
+    drawn.lockedCol = mine() && mine().col;
+    // The AI holds a quality too — the contest maths reads it — but must not
+    // paint the floor with it.
+    me.defenseQuality = 0; me.lockedT = 0;
+    foe.defenseQuality = 0.9; foe.lockedT = 2.0;
+    rings.length = 0; scene.render(0);
+    drawn.aiRings = rings.length;
+    BB.S3.ring = realRing;
+    foe.defenseQuality = 0; foe.lockedT = 0;
+
+    /* And the CPU plays it too. The stance was wired to a key the AI does not
+     * press, so left alone the opponent would defend you standing bolt
+     * upright while your own ring lit up under your feet. Run the scene for
+     * real — the AI brain, not a stick — and watch it come up and go away. */
+    var cpu = { onD: 0, onO: 0, dq: 0, held: 0 };
+    scene.phase = 'live';
+    me.giveBall(ball);
+    me.placeAt(hoop.x - 20, hoop.y, 0);
+    foe.placeAt(hoop.x - 16, hoop.y, 0);
+    // The AI brain runs off the scene's variable-rate update, not its fixed
+    // step, so both have to be driven or the opponent just stands there.
+    /* Counted against the ticks you actually had the ball, not against the
+     * clock: the CPU is perfectly entitled to end the possession by taking it
+     * off you, and it does. */
+    for (var s = 0; s < 240; s++) {
+      scene.fixedUpdate(1 / 120);
+      if (s % 2 === 0) scene.update(1 / 60, 1 / 60);
+      if (ball.owner === me) {
+        cpu.held++;
+        if (foe.isGuarding) cpu.onD++;
+        cpu.dq = Math.max(cpu.dq, foe.defenseQuality);
+      }
+    }
+    /* Handing it over must also take it off the other man — see giveBall. A
+     * defender still flagged as holding the ball reads as being on offence
+     * and grades nothing, which is exactly how this was found. */
+    cpu.bothHeld = me.hasBall && foe.hasBall;
+    foe.giveBall(ball);
+    cpu.bothHeld = cpu.bothHeld || (me.hasBall && foe.hasBall);
+    for (var s2 = 0; s2 < 240; s2++) {
+      scene.fixedUpdate(1 / 120);
+      if (s2 % 2 === 0) scene.update(1 / 60, 1 / 60);
+      if (foe.isGuarding) cpu.onO++;
+    }
+
+    return {
+      cpu: cpu,
+      idle: idle, stance: stance, far: far, ballHigh: ballHigh, ballLow: ballLow,
+      noHandler: noHandler, iHaveIt: iHaveIt, turned: turned, beaten: beaten,
+      recovered: recovered, slideRev: slideRev, runRev: runRev,
+      openSprint: openSprint, stanceSprint: stanceSprint,
+      loose: loose, tight: tight, drawn: drawn,
+      pageErr: window.__pageErr || null
+    };
+  `, 'defence');
+  if (r.err) check('defence probe ran', false, r.err);
+  const o = r.out || {};
+  const idle = o.idle || {}, st = o.stance || {}, far = o.far || {};
+  const hi = o.ballHigh || {}, lo = o.ballLow || {};
+  const drawn = o.drawn || {};
+
+  /* The key. It is held, not tapped, and it only means anything when there is
+   * somebody with the ball in front of you. */
+  check('holding the key drops you into a stance',
+        st.guarding === true && st.blend > 0.9,
+        'stance blended to ' + (st.blend || 0).toFixed(2));
+  check('letting go stands you back up',
+        idle.guarding === false && idle.blend < 0.05,
+        'blend ' + (idle.blend || 0).toFixed(3) + ' with the key up');
+  check('there is nothing to guard when nobody has the ball',
+        (o.noHandler || {}).guarding === false,
+        'stance ' + ((o.noHandler || {}).guarding ? 'came up anyway' : 'stayed down'));
+  check('and none when the ball is in your own hands',
+        (o.iHaveIt || {}).guarding === false, 'stance up on offence');
+
+  /* It is a stance, not a pose: hips down, feet apart, arms out of the plane. */
+  check('the stance sinks the hips and widens the base',
+        st.hipY - idle.hipY > 0.08 && st.base > idle.base * 1.15,
+        'hips drop ' + ((st.hipY - idle.hipY) * 2.74).toFixed(2) + 'ft, base ' +
+        (idle.base || 0).toFixed(2) + 'ft -> ' + (st.base || 0).toFixed(2) + 'ft');
+  check('and the arms come out of the pose plane', st.armRoll > 0.3,
+        'armRoll ' + (st.armRoll || 0).toFixed(2));
+
+  /* The hands. This is the half the request was actually about: reaching at
+   * the ball, not standing there with both arms held out like a scarecrow. */
+  check('the lead hand reaches out at the ball',
+        st.handOut > far.handOut + 0.6,
+        'hand out ' + (st.handOut || 0).toFixed(2) + 'ft at close range against ' +
+        (far.handOut || 0).toFixed(2) + 'ft from ten feet away');
+  check('it works at the ball rather than hanging there',
+        st.jabRange > 0.08,
+        'the reach jabs over ' + (st.jabRange || 0).toFixed(2) + 'ft');
+  check('and it follows the ball up and down',
+        hi.handUp > lo.handUp + 0.4,
+        'hand rides ' + (lo.handUp || 0).toFixed(2) + 'ft up to ' +
+        (hi.handUp || 0).toFixed(2) + 'ft as the ball goes from 2ft to 7ft');
+  check('nothing in the stance is out of reach',
+        Math.max(st.clamp || 0, hi.clamp || 0, lo.clamp || 0) < 0.005,
+        'worst shortfall ' + Math.max(st.clamp || 0, hi.clamp || 0, lo.clamp || 0).toFixed(4));
+
+  /* Keeping up with the attacker. */
+  check('a stance never turns its back on the ball handler',
+        (o.recovered || {}).offMan < 12,
+        'ended up ' + ((o.recovered || {}).offMan || 0).toFixed(0) +
+        ' degrees off the man after starting turned away');
+  const sr = o.slideRev || {}, rr = o.runRev || {};
+  check('a slide changes direction quicker than a run',
+        sr.time < rr.time * 0.85,
+        'reversal in ' + (sr.time || 0).toFixed(2) + 's against ' +
+        (rr.time || 0).toFixed(2) + 's upright');
+  check('but you cannot sprint out of one',
+        o.stanceSprint < o.openSprint * 0.95,
+        (o.stanceSprint || 0).toFixed(1) + 'ft/s in a stance against ' +
+        (o.openSprint || 0).toFixed(1) + 'ft/s open');
+
+  /* The grade. Close, on the line, square, in a stance — all four, or it is
+   * not worth anything. */
+  check('good position grades higher than being beaten',
+        st.best > 0.7 && st.best > (o.beaten || {}).best * 2,
+        'graded ' + (st.best || 0).toFixed(2) + ' in front against ' +
+        ((o.beaten || {}).best || 0).toFixed(2) + ' trailing');
+  check('standing off ten feet is worth nothing', far.best < 0.15,
+        'graded ' + (far.best || 0).toFixed(2) + ' from ten feet');
+  check('and watching the ball go by is worth less than staying square',
+        (o.turned || {}).best < st.best * 0.75,
+        'graded ' + ((o.turned || {}).best || 0).toFixed(2) + ' turned around');
+  check('the same spot grades lower standing upright than in a stance',
+        idle.best < st.best * 0.75,
+        'graded ' + (idle.best || 0).toFixed(2) + ' upright against ' +
+        (st.best || 0).toFixed(2) + ' in a stance');
+
+  /* Worth something. A stance that did not make the shot harder would be a
+   * costume rather than defence. */
+  check('real position makes the shot over it harder',
+        o.tight > o.loose + 0.12,
+        'contest ' + (o.loose || 0).toFixed(2) + ' -> ' + (o.tight || 0).toFixed(2));
+
+  /* And it says so. */
+  check('holding it long enough earns the call',
+        st.locked > 1.2 && st.locks === 1,
+        'held for ' + (st.locked || 0).toFixed(2) + 's and called it ' +
+        (st.locks || 0) + ' time(s)');
+  check('being beaten never earns it',
+        (o.beaten || {}).locks === 0 && (o.far || {}).locks === 0,
+        'called ' + (((o.beaten || {}).locks || 0) + ((o.far || {}).locks || 0)) + ' times');
+  check('good defence draws a ring under the defender',
+        drawn.good === drawn.none + 1 && drawn.noneMine === false && !!drawn.goodCol,
+        drawn.none + ' rings at rest, ' + drawn.good + ' while guarding');
+  check('which goes gold once the position has been held',
+        drawn.goodCol && drawn.lockedCol &&
+        drawn.lockedCol[0] > drawn.goodCol[0] && drawn.lockedCol[2] < drawn.goodCol[2],
+        'blue ' + (drawn.goodCol || []).map((c) => c.toFixed(2)).join('/') +
+        ' -> gold ' + (drawn.lockedCol || []).map((c) => c.toFixed(2)).join('/'));
+  check('the AI does not paint the floor with its own',
+        drawn.aiRings === drawn.none,
+        drawn.aiRings + ' rings with the AI locked in against ' + drawn.none + ' at rest');
+
+  /* The opponent defends the same way, off its own brain. */
+  const cpu = o.cpu || {};
+  check('the CPU gets into a stance when you have the ball',
+        cpu.held > 60 && cpu.onD >= cpu.held - 4 && cpu.dq > 0.35,
+        'in a stance for ' + (cpu.onD || 0) + ' of the ' + (cpu.held || 0) +
+        ' ticks you had it, grading up to ' + (cpu.dq || 0).toFixed(2));
+  check('and stands out of it once the ball is theirs',
+        cpu.onO === 0, 'still crouched for ' + (cpu.onO || 0) + ' ticks on offence');
+  check('the ball is never in two pairs of hands at once',
+        cpu.bothHeld === false, 'both players held it at once');
+  check('defence probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[28] screenshots');
+  console.log('\n[29] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],

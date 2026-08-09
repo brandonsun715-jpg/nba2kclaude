@@ -332,6 +332,15 @@
       this.blockCooldown = 0;
       this._blockConnected = false;
       this.boundX = null;        // optional [min, max] world-x play boundary
+      /* Defence. `guardHeld` is the key; `isGuarding` is whether the stance is
+       * actually up (which also needs a man with the ball to guard). Quality is
+       * how good the position is right now, 0..1, and lockedT how long it has
+       * been good for — that pair is what the ring under the feet is drawn
+       * from and what the "LOCKED UP" call is earned with. */
+      this.guardHeld = false;
+      this.defenseQuality = 0;
+      this.lockedT = 0;
+      this._lockShown = 0;
       this.isGuarding = false;   // set by the scene: true while actively defending —
                                   // drives a crouched, arms-wide stance in _updatePose().
                                   // False everywhere nothing sets it (1v1 unaffected).
@@ -508,6 +517,13 @@
     }
 
     giveBall(ball) {
+      /* Two players cannot both be holding it. Every path that changes hands
+       * in the live game — a steal, a block, a rebound — clears the loser's
+       * flag itself, so this has never bitten; it is here because a flag that
+       * contradicts ball.owner silently disables everything downstream that
+       * asks "am I on the ball", including the whole defensive read. */
+      const prev = ball.owner;
+      if (prev && prev !== this) prev.hasBall = false;
       ball.hold(this);
       this.hasBall = true;
       this._dribbleLive = true;
@@ -569,6 +585,9 @@
 
       /* Same physical keys as pass/lob double as steal/block on defense —
        * there is nobody to pass to while you don't have the ball. */
+      // Held, not tapped: the stance is a thing you stay in.
+      this.guardHeld = !!input.down('intense');
+
       if (!this.hasBall && this._ballRef) {
         if (input.pressed('steal')) this.trySteal(this._ballRef);
         if (input.pressed('block')) this.tryBlock(this._ballRef);
@@ -710,11 +729,20 @@
       // Fresh (stamina=1) should run at full speed; gassed (stamina=0) should
       // be noticeably slower - not the other way around.
       const gassed = 0.65 + this.stamina * 0.35;
-      const top = (this.sprinting ? this.phys.maxSprint : this.phys.maxSpeed) * gassed;
+      // No sprinting out of a stance, and a slide is a shade slower than a run.
+      const sprinting = this.sprinting && !this.isGuarding;
+      const top = (sprinting ? this.phys.maxSprint : this.phys.maxSpeed) * gassed *
+                  (this.isGuarding ? 0.92 : 1);
       const targetVx = ix * top;
       const targetVy = iy * top;
 
-      const accel = mag > 0.02 ? this.phys.accel : this.phys.decel;
+      /* A defensive slide is not a run. It gives up a little top-end — you
+       * cannot sprint out of a stance — and buys back quicker changes of
+       * direction, which is what actually keeps you in front of somebody:
+       * staying with a handler is won on the first step after they move, not
+       * on how fast you can go in a straight line. */
+      const slide = this.isGuarding ? 1 : 0;
+      const accel = (mag > 0.02 ? this.phys.accel : this.phys.decel) * (1 + slide * 0.55);
       this.vx = U.moveToward(this.vx, targetVx, accel * dt);
       this.vy = U.moveToward(this.vy, targetVy, accel * dt);
 
@@ -737,6 +765,12 @@
         (this.action === ACTION.GATHER || this.action === ACTION.METER) &&
         (this.shotType === 'jumper' || this.shotType === 'freethrow');
 
+      /* In a stance you stay square to the man. Turning your back on a ball
+       * handler is the one thing defence never does, and it is what the
+       * movement code would otherwise do the moment you slid sideways. */
+      const foe = this.isGuarding ? this._ballRef && this._ballRef.owner : null;
+      const marking = foe && foe !== this ? foe : null;
+
       if (this.moveState === 'spin') {
         const k = U.clamp01(this.moveT / MOVE_DURATION.spin);
         this.facing = U.angleLerp(this._spinFromFacing, this._spinToFacing, U.ease.outCubic(k));
@@ -745,6 +779,10 @@
         this.facing = U.angleLerp(this.facing, aim, U.clamp01(SQUARE_UP * dt));
         // Still track where they are steering, so the run cycle underneath
         // reads the feet correctly the moment the shot is over.
+        if (mag > 0.15) this.moveFacing = Math.atan2(iy, ix);
+      } else if (marking) {
+        const aim = Math.atan2(marking.y - this.y, marking.x - this.x);
+        this.facing = U.angleLerp(this.facing, aim, U.clamp01(this.phys.turnRate * 1.8 * dt));
         if (mag > 0.15) this.moveFacing = Math.atan2(iy, ix);
       } else if (mag > 0.15) {
         this.moveFacing = Math.atan2(iy, ix);
@@ -828,6 +866,79 @@
      * the defender's relevant rating and whether they're airborne with the
      * shooter both nudge it further.
      */
+    /**
+     * How well this player is guarding `foe` right now, 0..1.
+     *
+     * Four things, and they are the four things a coach shouts: be close, be
+     * between them and the basket, be square to them, and be in a stance.
+     * Being ON them is not the same as being close — inside about a yard is a
+     * foul waiting to happen and reads as reaching rather than as position, so
+     * the closeness term falls away again at the bottom.
+     */
+    guardQuality(foe) {
+      if (!foe || foe === this) return 0;
+      const hoop = foe.targetHoop || foe.fixedHoop || U.nearestHoop(foe.x);
+      if (!hoop) return 0;
+
+      const d = U.dist(this.x, this.y, foe.x, foe.y);
+      const near = U.clamp01(U.remap(d, 8.5, 2.8, 0, 1)) *
+                   U.clamp01(U.remap(d, 1.0, 2.1, 0.3, 1));
+      if (near <= 0) return 0;
+
+      // On the line from the ball to the rim they are attacking.
+      const toRim = Math.atan2(hoop.y - foe.y, hoop.x - foe.x);
+      const toMe = Math.atan2(this.y - foe.y, this.x - foe.x);
+      const online = U.clamp01(1 - Math.abs(U.angleDelta(toRim, toMe)) / 1.25);
+
+      // Square to them, not turned around watching the ball go by.
+      const off = Math.abs(U.angleDelta(Math.atan2(foe.y - this.y, foe.x - this.x), this.facing));
+      const square = U.clamp01(1 - off / 1.4);
+
+      const stance = this.isGuarding ? 1 : 0.5;
+      const skill = U.remap(this.ratings.perimeterDefense, 25, 99, 0.82, 1.08);
+      /* Multiplied, not added up.
+       *
+       * Weighted terms summed together gave a defender who had been blown by
+       * completely — trailing on the wrong side of the man, with the whole
+       * floor open in front of him — better than half marks, because the
+       * closeness and the squareness still paid out in full. Being between
+       * your man and the basket is not one contribution among three: if you
+       * are not there you are not guarding anybody, and everything else is
+       * worth a fraction of what it would otherwise be. */
+      return U.clamp01(near * (0.15 + online * 0.85) * (0.55 + square * 0.45) *
+                       stance * skill);
+    }
+
+    /**
+     * Runs every tick for every player. Decides whether the stance is up, how
+     * good the position is, and how long it has been good for.
+     */
+    _updateDefense(dt, ball) {
+      const foe = ball && ball.owner;
+      const onBall = !!(foe && foe !== this && !this.hasBall);
+
+      // A human is only in a stance while they are holding the key for it. The
+      // AI's scene sets isGuarding for itself and is left alone.
+      if (this.human) this.isGuarding = !!(this.guardHeld && onBall);
+
+      const q = onBall ? this.guardQuality(foe) : 0;
+      // Smoothed, because this drives something drawn on the floor and a raw
+      // per-tick number flickers.
+      this.defenseQuality = U.approach(this.defenseQuality, q, 6, dt);
+
+      if (this.defenseQuality > 0.70 && this.isGuarding) this.lockedT += dt;
+      else this.lockedT = Math.max(0, this.lockedT - dt * 2.5);
+      if (this._lockShown > 0) this._lockShown -= dt;
+
+      /* Sustained, not momentary. Standing in the right place for a frame is
+       * luck; holding it for well over a second while they try to get past is
+       * the thing worth saying out loud. */
+      if (this.human && this.lockedT > 1.2 && this._lockShown <= 0) {
+        this._lockShown = 4.0;
+        this.events.emit('lockdown', { by: this, on: foe, quality: this.defenseQuality });
+      }
+    }
+
     _computeContest() {
       const d = this.opponent;
       if (!d) return 0;
@@ -839,7 +950,12 @@
       const skillRating = perimeter ? d.ratings.perimeterDefense : d.ratings.interiorDefense;
       const skill = U.remap(skillRating, 25, 99, 0.55, 1.18);
       const jumpBonus = d.jumping ? 0.16 : 0;
-      return U.clamp01(proximity * skill + jumpBonus);
+      /* Real position is worth something. A defender who is in a stance, on
+       * the line and square gets credit for it here, which is where a contest
+       * turns into a lower percentage — otherwise holding the stance would be
+       * a costume rather than defence. */
+      const stanceBonus = (d.defenseQuality || 0) * 0.22;
+      return U.clamp01(proximity * skill + jumpBonus + stanceBonus);
     }
 
     /**
@@ -1269,6 +1385,7 @@
         }
         if (this.moveT >= MOVE_DURATION[this.moveState]) this.moveState = null;
       }
+      this._updateDefense(dt, ball);
       this.updateShotState(dt, ball);
       this.updateMovement(dt);
       this.updateJump(dt);
@@ -1493,6 +1610,30 @@
         // square marker reads as a decal stuck to the floor at this camera
         // angle, where a ring reads as a marker sitting on it.
         S3.ring(this.x, this.y, 0.05, 0.98, MINT, 0.35, 0.22);
+      }
+
+      /* How the defence is going, drawn on the floor where the player is
+       * already looking — at their own feet and the man in front of them.
+       *
+       * A second ring outside the selection one, which grows and brightens
+       * with the quality of the position and goes gold once it has been held
+       * long enough to count. This is the only readout: no number, no bar off
+       * in a corner, because what it is describing is where the body is
+       * standing and that is the thing being watched.
+       *
+       * Controlled player only. Every player on the floor computes a quality
+       * — the contest maths reads it off the AI too — but ten rings lit up at
+       * once is wallpaper, and this one is feedback on what YOU are doing. */
+      if (this.human && this.defenseQuality > 0.05) {
+        const q = this.defenseQuality;
+        const locked = U.clamp01(this.lockedT / 1.2);
+        const col = lerpCol(GUARD_COL, LOCK_COL, locked);
+        /* S3.ring draws opaque, so the strength of the position has to be
+         * carried by the colour itself: a weak stance sits dark against the
+         * blacktop and a good one burns. */
+        const lift = 0.45 + q * 0.55;
+        col[0] *= lift; col[1] *= lift; col[2] *= lift;
+        S3.ring(this.x, this.y, 0.04, 1.18 + q * 0.42, col, 0.3, 0.20);
       }
     }
 
@@ -1775,6 +1916,50 @@
         // stance actually looks like from the sideline.
         armRoll = g * 0.62;
         torsoLean = (torsoLean || 0) + g * 0.05;   // a touch of alert forward lean
+
+        /* The active hand. A stance with both arms held out symmetrically is a
+         * scarecrow; what defence actually looks like is one hand out wide and
+         * the other reaching in at the ball, jabbing at it and pulling back.
+         *
+         * The lead hand goes FORWARD, which in the pose plane is straight at
+         * whoever is being guarded, because the stance turns the body to face
+         * them. It reaches to the height the ball is actually being carried
+         * at, and how far it commits scales with how close the ball is — you
+         * do not swipe at a ball ten feet away. */
+        const b = this._ballRef;
+        const foe = b && b.owner;
+        if (foe && foe !== this) {
+          const d = U.dist(this.x, this.y, foe.x, foe.y);
+          const commit = g * U.clamp01(U.remap(d, 6.5, 2.0, 0, 1));
+          if (commit > 0.001) {
+            // Ball height, in this figure's own units, off its own shoulder.
+            const ballUp = U.clamp((this.z + 2.6 - b.z) / Math.max(this.bodyScale, 0.01),
+                                   -0.30, 0.55);
+            // A jab: the hand works at the ball rather than hanging there.
+            const jab = 0.055 * Math.sin(this._animClock * 5.2);
+            /* Where the hand wants to be: out in front, at the height the ball
+             * is being carried. Both offsets are measured from the shoulder,
+             * so they can be capped together — an arm cannot reach a long way
+             * forward AND a long way down at the same time, and asking it to
+             * would only get the whole limb clamped straight by the solver. */
+            let fwd = 0.50 + jab;
+            let up = ballUp;
+            const cap = (BONE.upperArm + BONE.forearm) * 0.93;
+            const len = Math.hypot(fwd, up);
+            if (len > cap) { const s = cap / len; fwd *= s; up *= s; }
+            /* Blended by commitment rather than scaled by it. Scaling the
+             * offsets shortened the reach twice over — once here and again
+             * through the blend — and left the hand tucked against the ribs at
+             * exactly the range where the ball is worth reaching for. */
+            hrX = U.lerp(hrX, shR + fwd, commit);
+            hrY = U.lerp(hrY, shoulderY + up, commit);
+            // And the off hand drops out of the way, palm down, walling off
+            // the drive rather than mirroring the reach.
+            hlX = shL + commit * 0.10;
+            hlY = U.lerp(hlY, shoulderY + 0.34, commit * 0.6);
+            armRoll = g * U.lerp(0.62, 0.40, commit);
+          }
+        }
       }
 
       /* ---- airborne base layer: tuck on the way up, reach on the way down */
@@ -2376,6 +2561,22 @@
   const LEGS = [{ side: -1 }, { side: 1 }];
   const ARMS = [{ side: -1 }, { side: 1 }];
   const MINT = [0.133, 0.894, 0.627, 0.85];
+  /* The defensive readout. Cool blue while the position is merely good, gold
+   * once it has been held long enough to be worth calling out — the same two
+   * colours the shot meter already uses for "fine" and "that was the one", so
+   * the language is consistent without a legend. */
+  const GUARD_COL = [0.298, 0.643, 0.980, 1];
+  const LOCK_COL = [1.000, 0.788, 0.239, 1];
+  const COL_TMP = [0, 0, 0, 1];
+
+  /** Blends two colours into scratch storage. Not re-entrant; draw only. */
+  function lerpCol(a, b, t) {
+    COL_TMP[0] = U.lerp(a[0], b[0], t);
+    COL_TMP[1] = U.lerp(a[1], b[1], t);
+    COL_TMP[2] = U.lerp(a[2], b[2], t);
+    COL_TMP[3] = U.lerp(a[3] == null ? 1 : a[3], b[3] == null ? 1 : b[3], t);
+    return COL_TMP;
+  }
 
   Player.ACTION = ACTION;
   /* Exposed so tools/preview_player.js can measure the built figure against

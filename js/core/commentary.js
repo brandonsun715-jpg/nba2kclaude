@@ -97,6 +97,9 @@
     miss(name) { this.say('miss', LINES.miss, { cooldown: 1.3, name }); },
     block(name) { this.say('block', LINES.block, { priority: true, cooldown: 1.0, name }); },
     steal(name) { this.say('steal', LINES.steal, { priority: true, cooldown: 1.0, name }); },
+    /* Not priority: good defence is a state, not an incident, and it should
+     * never talk over a bucket or a whistle that lands in the same second. */
+    lockdown(name) { this.say('lockdown', LINES.lockdown, { cooldown: 8.0, name }); },
     foul(isCharge, name) { this.say('foul', isCharge ? LINES.foulCharge : LINES.foul, { cooldown: 1.0, name }); },
     violation(name) { this.say('violation', LINES.violation, { cooldown: 1.0, name }); },
     andOne(name) { this.say('andOne', LINES.andOne, { priority: true, cooldown: 0.5, name }); },
@@ -160,6 +163,11 @@
     steal: [
       "{name} picks his pocket!", "Strips it clean!", "Great hands, {name} takes it away!",
       "He jumps the lane — stolen!"
+    ],
+    lockdown: [
+      "{name} is all over him!", "Great defensive position by {name}.",
+      "He can't shake him — {name} is glued to his hip!",
+      "Textbook stance from {name}, nowhere to go."
     ],
     foul: [
       "Whistle. That's a foul.", "The ref's got a call there.",

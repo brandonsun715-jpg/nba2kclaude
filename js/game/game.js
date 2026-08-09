@@ -559,6 +559,7 @@
       this.ai.events.on('steal', (e) => this._onSteal(e));
       this.player.events.on('block', (e) => this._onBlock(e));
       this.ai.events.on('block', (e) => this._onBlock(e));
+      this.player.events.on('lockdown', (e) => this._onLockdown(e));
       this.player.events.on('fumble', (p) => this._onFumble(p));
       this.ai.events.on('fumble', (p) => this._onFumble(p));
 
@@ -649,6 +650,19 @@
       BB.FX.burst(e.by.x, e.by.y, 2.5, 10, PAL.chalk, 0.9);
       BB.FX.popup({ x: e.by.x, y: e.by.y, z: 7.5, text: 'STEAL!', colour: PAL.red, size: 1.15, life: 1.2 });
       BB.Camera.addTrauma(0.16 * (BB.Settings.get('screenShake') || 1));
+    },
+
+    /* Good defence, held. Deliberately quieter than a steal or a block: no
+     * screen flash and no trauma, because nothing has actually happened yet —
+     * the possession is still live and shaking the camera over a stance would
+     * read as an event that ended it. A ring and a word, and it gets out of
+     * the way. */
+    _onLockdown(e) {
+      if (this.phase === 'over') return;
+      BB.Commentary.lockdown(e.by.name);
+      BB.Audio.crowdBurst(0.3);
+      BB.FX.ring(e.by.x, e.by.y, PAL.gold, 1.1);
+      BB.FX.popup({ x: e.by.x, y: e.by.y, z: 8.0, text: 'LOCKED UP', colour: PAL.gold, size: 1.0, life: 1.1 });
     },
 
     _onFumble(p) {
