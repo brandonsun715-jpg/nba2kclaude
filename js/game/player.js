@@ -117,6 +117,14 @@
    * arms read as melted into the jersey and tore the deltoid open. Hanging
    * them all but straight down off the joint, converging only slightly, keeps
    * the limb outside the torso with its surface just brushing it. */
+  /* How fast a shooter squares up to the basket, in "fraction closed per
+   * second". Fixed rather than scaled off the player's agility: squaring up
+   * for a jump shot is not an athletic feat, and scaling it would mean the
+   * least agile builds are the ones left shooting sideways. From facing dead
+   * away this is within seven degrees of square by the end of the gather,
+   * which is the earliest a shot can possibly be released. */
+  const SQUARE_UP = 32;
+
   const SPLAY = {
     elbow: 1.06, wrist: 1.02,
     knee: 1.08, ankle: 1.23
@@ -713,9 +721,31 @@
       const speed = Math.hypot(this.vx, this.vy);
       this.lean = U.approach(this.lean, U.clamp01(speed / top) * (mag > 0.02 ? 1 : 0), 6, dt);
 
+      /* Squaring up.
+       *
+       * A jump shot is taken AT the rim. From the moment the gather starts the
+       * shoulders turn to the basket and stay there for the length of the
+       * shot, whatever the feet are doing — the stick still steers where the
+       * player goes, it just stops steering which way they are pointed. Left
+       * to the movement code, holding a direction through the release let a
+       * shot go up sideways or with the shooter's back to the basket.
+       *
+       * Layups and dunks are deliberately not included: a drive finishes at
+       * whatever angle it attacked from, and the euro step and the hop step
+       * ARE angles. */
+      const squaring = this.targetHoop != null &&
+        (this.action === ACTION.GATHER || this.action === ACTION.METER) &&
+        (this.shotType === 'jumper' || this.shotType === 'freethrow');
+
       if (this.moveState === 'spin') {
         const k = U.clamp01(this.moveT / MOVE_DURATION.spin);
         this.facing = U.angleLerp(this._spinFromFacing, this._spinToFacing, U.ease.outCubic(k));
+      } else if (squaring) {
+        const aim = Math.atan2(this.targetHoop.y - this.y, this.targetHoop.x - this.x);
+        this.facing = U.angleLerp(this.facing, aim, U.clamp01(SQUARE_UP * dt));
+        // Still track where they are steering, so the run cycle underneath
+        // reads the feet correctly the moment the shot is over.
+        if (mag > 0.15) this.moveFacing = Math.atan2(iy, ix);
       } else if (mag > 0.15) {
         this.moveFacing = Math.atan2(iy, ix);
         this.facing = U.angleLerp(this.facing, this.moveFacing, U.clamp01(this.phys.turnRate * dt));

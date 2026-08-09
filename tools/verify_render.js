@@ -2369,8 +2369,121 @@ console.log('\n[25] the jump shot is a jump shot');
   check('form probe raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[26] a jump shot squares up to the basket');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, C = BB.C;
+    BB.Settings.set('cameraMode', 'forward');
+    BB.Engine.setState('shootaround'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene, pl = scene.player, hoop = scene.hoop;
+    for (var i = 0; i < 200; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+
+    /**
+     * Takes a shot starting some angle away from the basket while HOLDING a
+     * direction the whole time, which is the case that matters: the stick is
+     * what used to drag the shoulders round.
+     */
+    function trial(off, hx, hy, kind) {
+      pl.placeAt(hoop.x - (kind === 'layup' ? 9 : 20), hoop.y, 0);
+      pl.vx = pl.vy = 0; pl.z = 0; pl.jumping = false;
+      pl.action = null; pl.armRaise = 0; pl.sprinting = (kind === 'layup');
+      pl.giveBall(scene.ball);
+      var toHoop = Math.atan2(hoop.y - pl.y, hoop.x - pl.x);
+      pl.facing = pl.moveFacing = toHoop + off;
+      if (kind === 'layup') { pl.vx = pl.phys.maxSprint * 0.9; pl.vy = 0; }
+
+      var stick = {
+        moveVector: function (o) { o = o || {}; o.x = hx; o.y = hy; o.mag = Math.hypot(hx, hy); return o; },
+        down: function (a) { return a === 'sprint' && kind === 'layup'; },
+        pressed: function () { return false; },
+        released: function () { return false; }
+      };
+
+      pl._beginShot();
+      var type = pl.shotType;
+      var x0 = pl.x, y0 = pl.y, ix = 0, iy = 0;
+      var atMeter = null, atRelease = null, worst = 0;
+      for (var f = 0; f < 400; f++) {
+        pl.readInput(stick);
+        if (f === 0) { ix = pl.intentX; iy = pl.intentY; }
+        pl.update(1 / 120, scene.ball);
+        var err = Math.abs(U.angleDelta(Math.atan2(hoop.y - pl.y, hoop.x - pl.x), pl.facing));
+        // The meter opening is the earliest instant a shot can be let go.
+        if (atMeter == null && pl.action === BB.Player.ACTION.METER) atMeter = err;
+        if (atMeter != null) worst = Math.max(worst, err);
+        if (pl.action === BB.Player.ACTION.METER && pl.meter.profile &&
+            pl.meter.value >= pl.meter.profile.target) {
+          atRelease = err; pl._releaseShot(); break;
+        }
+      }
+      var dx = pl.x - x0, dy = pl.y - y0, dl = Math.hypot(dx, dy), il = Math.hypot(ix, iy);
+      return {
+        type: type,
+        atMeter: atMeter == null ? 999 : atMeter * 57.3,
+        atRelease: atRelease == null ? 999 : atRelease * 57.3,
+        worst: worst * 57.3,
+        moved: dl,
+        // 1 means the body went exactly where the stick pointed.
+        steered: (dl > 0.05 && il > 0.1) ? (dx * ix + dy * iy) / (dl * il) : null
+      };
+    }
+
+    return {
+      // Back to the basket, and still holding away from it.
+      backTurned: trial(Math.PI, 0, 1, 'jumper'),
+      // Side on, holding sideways.
+      sideOn: trial(Math.PI / 2, 1, 0, 'jumper'),
+      // Square to start with, but the stick is pulling away.
+      dragged: trial(0, 0, 1, 'jumper'),
+      // And a drive, which must NOT be squared up.
+      layup: trial(0.7, 1, 0, 'layup'),
+      pageErr: window.__pageErr || null
+    };
+  `, 'square');
+  if (r.err) check('square-up probe ran', false, r.err);
+  const o = r.out || {};
+  const back = o.backTurned || {}, side = o.sideOn || {}, drag = o.dragged || {}, lay = o.layup || {};
+
+  check('a shot taken with your back to the basket turns to face it',
+        back.atRelease < 6,
+        'released ' + (back.atRelease || 0).toFixed(0) + ' degrees off the rim');
+  check('so does one taken side on', side.atRelease < 6,
+        'released ' + (side.atRelease || 0).toFixed(0) + ' degrees off');
+  // The one that actually bit: holding a direction through the whole shot.
+  check('and holding away from the rim cannot drag it back round',
+        drag.atRelease < 6,
+        'released ' + (drag.atRelease || 0).toFixed(0) + ' degrees off while steering away');
+
+  /* The gather is 0.10s and the meter cannot be released before it ends, so
+   * being square by then means there is no way to get a sideways shot off. */
+  check('it is square before the shot can even be let go',
+        back.atMeter < 8 && side.atMeter < 8 && drag.atMeter < 8,
+        'worst at the earliest possible release: ' +
+        Math.max(back.atMeter, side.atMeter, drag.atMeter).toFixed(0) + ' degrees');
+  check('and stays square for the rest of the motion',
+        back.worst < 8 && side.worst < 8 && drag.worst < 8,
+        'worst during the shot: ' +
+        Math.max(back.worst, side.worst, drag.worst).toFixed(0) + ' degrees');
+
+  /* Only the shoulders are taken over. Where the player GOES is still the
+   * stick's business, or a shot would double as a handbrake. */
+  check('the body still travels where the stick points',
+        back.steered > 0.97 && side.steered > 0.97 && drag.steered > 0.97 &&
+        back.moved > 2,
+        'travel matched the stick to ' +
+        Math.min(back.steered, side.steered, drag.steered).toFixed(2) +
+        ' over ' + (back.moved || 0).toFixed(1) + 'ft');
+
+  // A drive finishes at the angle it attacked from; the euro step and the hop
+  // step ARE angles, and squaring them up would delete both.
+  check('a layup still finishes at the angle it drove in at',
+        lay.type === 'layup' && lay.atRelease > 30,
+        'layup released ' + (lay.atRelease || 0).toFixed(0) + ' degrees off the rim');
+  check('square-up probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[26] screenshots');
+  console.log('\n[27] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],
