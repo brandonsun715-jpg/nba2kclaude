@@ -811,7 +811,7 @@
      * carry the body 2 * stride / stance for the contact to hold still.
      */
     _advanceStride(speed, top, dt) {
-      const g = gaitOf(U.clamp01(speed / Math.max(top, 1)));
+      const g = gaitOf(speed);
       const perCycle = Math.max(0.35, (2 * g.stride / g.stance) * this.bodyScale);
       this.stridePhase += (speed * dt / perCycle) * Math.PI * 2;
     }
@@ -1654,14 +1654,18 @@
 
       let flX = -BONE.hipW, flY = 0;
       let frX = BONE.hipW, frY = 0;
-      // Hands hang just inside full extension so the elbows keep a soft bend.
-      let hlX = shL, hlY = reachY(shoulderY, 0.96);
-      let hrX = shR, hrY = reachY(shoulderY, 0.96);
+      /* Hands hang just inside full extension so the elbows keep a soft bend —
+       * and far enough inside it to survive the idle bob. At 0.96 the breathing
+       * sway added below pushed the resting hand past the arm's actual reach
+       * every few seconds, and a target the solver has to clamp draws a locked
+       * straight arm with the elbow gone. */
+      let hlX = shL, hlY = reachY(shoulderY, 0.93);
+      let hrX = shR, hrY = reachY(shoulderY, 0.93);
 
       /* ---- locomotion base layer: run cycle, or idle breathing/sway ------ */
       if (running) {
         const phase = this.stridePhase;
-        const gait = gaitOf(speedFrac);
+        const gait = gaitOf(speed);
 
         /* The body rises through the float and sinks through mid-stance, twice
          * a cycle — and hips and shoulders move together, because a bob
@@ -1696,18 +1700,29 @@
          * cos, not sin: the left arm hits its front stop at the same instant
          * the right foot hits its own, which is what contralateral means. A
          * quarter-cycle out and the figure looks like it is being puppeted. */
-        const armLen = BONE.upperArm + BONE.forearm;
-        const swingAmp = U.lerp(0.34, 0.92, speedFrac);
-        const carry = U.lerp(0.93, 0.74, speedFrac);   // elbows fold tighter at speed
-        const pump = U.lerp(0.05, 0.16, speedFrac);    // the leading arm folds tighter still
+        /* The hand climbs as it comes forward and falls as it goes back —
+         * from past the hip behind to chest height in front, in one monotone
+         * sweep.
+         *
+         * It used to swing the whole arm as a rigid pendulum about the
+         * shoulder, so the hand rode a circular arc: level at both ends and
+         * DIPPING half a foot in the middle. Measured, the hand finished the
+         * forward swing two inches higher than it started the back one, which
+         * is not an arm swing, it is a pair of hands paddling. What the eye
+         * reads as running is the diagonal — low and back, high and forward —
+         * and the elbow folding tight at the front and opening out behind
+         * comes out of that shape for free, because the hand is close to the
+         * shoulder at one end of it and far away at the other. */
         const swL = Math.cos(phase), swR = -swL;
-        const angL = swL * swingAmp, angR = swR * swingAmp;
-        const reachL = armLen * (carry - Math.max(0, swL) * pump);
-        const reachR = armLen * (carry - Math.max(0, swR) * pump);
-        hlX = shL + Math.sin(angL) * reachL;
-        hlY = shoulderY + Math.cos(angL) * reachL;
-        hrX = shR + Math.sin(angR) * reachR;
-        hrY = shoulderY + Math.cos(angR) * reachR;
+        const amp = U.lerp(0.09, 0.30, speedFrac);      // fore and aft, pose units
+        const carry = U.lerp(0.52, 0.47, speedFrac);    // hand height at mid-swing
+        const rise = U.lerp(0.08, 0.27, speedFrac);     // how much higher in front
+        const drop = 0.02;                              // and how much lower behind
+        const high = carry - rise, low = carry + drop;
+        const hL = U.lerp(low, high, U.ease.inOutSine((swL + 1) * 0.5));
+        const hR = U.lerp(low, high, U.ease.inOutSine((swR + 1) * 0.5));
+        hlX = shL + swL * amp; hlY = shoulderY + hL;
+        hrX = shR + swR * amp; hrY = shoulderY + hR;
 
         torsoLean = speedFrac * 0.16;
         hipLean = torsoLean - Math.cos(phase) * 0.04 * speedFrac;
@@ -2241,15 +2256,32 @@
    * allows 0.28 — so the hips also sink as the stride opens up, exactly as a
    * sprinter's do, and that is what buys the longer step.
    */
-  function gaitOf(speedFrac, out) {
+  /* The gait is a function of how fast the body is ACTUALLY travelling, in
+   * feet per second — not of how close the player is to their own top speed.
+   * Read as a fraction, a slow player at full tilt got the same stride as a
+   * fast one, and holding sprint just spun the legs faster over the same
+   * ground: at 18 ft/s the figure was taking seven and a half steps a second
+   * at two and a half feet a step. A basketball player at a full-court sprint
+   * takes about three and a half, at nearer five.
+   *
+   * GAIT_TOP is the speed the top of the curve is anchored to, and the
+   * exponent puts most of the lengthening early, because that is where it
+   * happens: the difference between a walk and a jog is nearly all stride,
+   * and the difference between a jog and a sprint is mostly cadence. */
+  const GAIT_TOP = 18;
+  function gaitOf(speed, out) {
     const g = out || GAIT;
-    g.stride = U.lerp(0.14, 0.34, speedFrac);
+    const e = Math.pow(U.clamp01(speed / GAIT_TOP), 0.6);
+    g.stride = U.lerp(0.16, 0.48, e);
     // Fraction of the cycle each foot spends on the floor. Over a half the
     // feet overlap (a walk's double support); under it they leave a float
     // phase with neither foot down, which is what makes a run a run.
-    g.stance = U.lerp(0.62, 0.38, speedFrac);
-    g.lift = U.lerp(0.05, 0.20, speedFrac);
-    g.crouch = U.lerp(0.005, 0.070, speedFrac);
+    g.stance = U.lerp(0.60, 0.28, e);
+    g.lift = U.lerp(0.05, 0.26, e);
+    // A runner sinks. It is also what buys the room for the longer stride:
+    // the foot can only reach so far forward and still be on the floor, and
+    // that limit is set by how high the hip is carried.
+    g.crouch = U.lerp(0.005, 0.130, e);
     return g;
   }
   const GAIT = { stride: 0, stance: 0, lift: 0, crouch: 0 };

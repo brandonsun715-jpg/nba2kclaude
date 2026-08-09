@@ -1101,6 +1101,11 @@ console.log('\n[15] a sprinting drive finishes with a layup');
      * wearing a different name. */
     function poseOf(type) {
       attempt(9, true, 0.9);
+      // Both of these leave the floor in the real game — a jump shot starts
+      // its jump the instant the meter opens — and the jumper's feet only sit
+      // level while it is airborne. Posed on the ground it picks up the run
+      // cycle underneath instead, and this would be measuring a stride.
+      pl.jumping = true;
       pl.action = BB.Player.ACTION.METER; pl.shotType = type; pl.driving = true;
       pl.meter.start({ riseTime: 0.3, target: 0.94, greenWindow: 0.3, name: 'x' },
                      { x: pl.x, y: pl.y, z: 0 });
@@ -1166,7 +1171,10 @@ console.log('\n[15] a sprinting drive finishes with a layup');
         (o.missedTimings || []).length === 0,
         'these timings did not: ' + JSON.stringify(o.missedTimings));
   const lp = o.layupPose || {}, jp = o.jumperPose || {};
-  check('the layup rise drives a knee up', lp.knee > 0.3 && lp.knee > jp.knee * 3,
+  // An absolute margin, not a ratio: a jump shot holds its feet level, so the
+  // number it is being compared against is around zero and a ratio against it
+  // means nothing.
+  check('the layup rise drives a knee up', lp.knee > 0.3 && lp.knee > jp.knee + 0.25,
         'layup knee ' + (lp.knee || 0).toFixed(2) + ' vs jumper ' + (jp.knee || 0).toFixed(2));
   check('the layup rise is asymmetric, a jump shot is not',
         lp.split > 0.4 && lp.hands > jp.hands,
@@ -1812,30 +1820,40 @@ console.log('\n[22] a highlight gets a slow-motion replay');
 
     for (var i = 0; i < 120; i++) frame();
 
-    /** Shoots until one drops clean from behind the arc. */
+    /**
+     * Drops one through clean from behind the arc.
+     *
+     * Built rather than shot. Taking a real jumper and hoping for a swish
+     * leaves this section at the mercy of the shot solver's error term, which
+     * is seeded fresh every page — it will land one most runs and no runs at
+     * all on some, and a check that fails a fifth of the time is worse than no
+     * check. The ball is put on the exact line a swish takes instead, so the
+     * scene's own scoring path, its rating of the play and the replay it arms
+     * are all still the real ones.
+     */
     var scored = false, seen = null;
     scene.ball.events.on('score', function (e) { scored = true; seen = { three: e.three, clean: e.clean }; });
     function cleanThree() {
-      for (var tries = 0; tries < 20; tries++) {
-        scored = false; seen = null;
-        R.reset();
-        scene.phase = 'live'; scene.score.you = 0; scene.score.cpu = 0;
-        pl.placeAt(hoop.x - 27, hoop.y - 1, 0);
-        pl.vx = pl.vy = 0; pl.z = 0; pl.jumping = false; pl.action = null;
-        pl.giveBall(scene.ball);
-        for (var w = 0; w < 220; w++) frame();
-        pl._beginShot();
-        var fired = false;
-        for (var f = 0; f < 500 && !scored; f++) {
-          frame();
-          if (!fired && pl.action === BB.Player.ACTION.METER &&
-              pl.meter.profile && pl.meter.value >= pl.meter.profile.target) {
-            pl._releaseShot(); fired = true;
-          }
-        }
-        if (seen && seen.three && seen.clean) return true;
-      }
-      return false;
+      scored = false; seen = null;
+      R.reset();
+      scene.phase = 'live'; scene.score.you = 0; scene.score.cpu = 0;
+      pl.placeAt(hoop.x - 27, hoop.y - 1, 0);
+      pl.vx = pl.vy = 0; pl.z = 0; pl.jumping = false; pl.action = null;
+      pl.giveBall(scene.ball);
+      // Enough live frames behind the moment for the replay to have something
+      // to cut back to.
+      for (var w = 0; w < 240; w++) frame();
+
+      var ball = scene.ball;
+      pl.hasBall = false;
+      ball.release(BB.Ball.STATE.SHOT);
+      ball.shooter = pl;
+      ball.shotWasThree = true;
+      ball.touchedRim = false;
+      ball.place(hoop.x, hoop.y, C.RIM_HEIGHT + 0.35);
+      ball.vx = 0; ball.vy = 0; ball.vz = -9;
+      for (var f = 0; f < 60 && !scored; f++) frame();
+      return !!(seen && seen.three && seen.clean);
     }
 
     var got = cleanThree();
@@ -2482,8 +2500,119 @@ console.log('\n[26] a jump shot squares up to the basket');
   check('square-up probe raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[27] the run cycle is a run, not a scurry');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, C = BB.C;
+    var BONE = BB.Player.BONE;
+    var pl = new BB.Player({ height: 79 });
+    pl.placeAt(20, 25, 0);
+    pl.facing = pl.moveFacing = 0;
+    var S = pl.bodyScale;                       // pose units -> world feet
+
+    /** Runs the gait at a real speed and reports it in feet and seconds. */
+    function gait(frac, sprint) {
+      pl.sprinting = !!sprint;
+      var top = sprint ? pl.phys.maxSprint : pl.phys.maxSpeed;
+      var speed = top * frac;
+      pl.vx = speed; pl.vy = 0;
+      pl.stridePhase = 0;
+
+      // Cycle length straight off the same call updateMovement makes, so this
+      // cannot drift from what the feet are actually doing.
+      var dt = 1 / 120, before = pl.stridePhase;
+      pl._advanceStride(speed, top, dt);
+      var perCycle = (speed * dt) / ((pl.stridePhase - before) / (Math.PI * 2));
+
+      var hx = [], hz = [], clamp = 0, elbowMin = 1e9, elbowMax = -1e9, N = 60;
+      for (var i = 0; i < N; i++) {
+        pl.stridePhase = i / N * Math.PI * 2;
+        pl._updatePose(dt);
+        var p = pl.pose;
+        hx.push((p.handR.x - BONE.shoulderW) * S);   // in front of the shoulder
+        hz.push(-(p.handR.y - p.shoulderY) * S);     // above the shoulder
+        // Nothing asked of a leg may be out of its reach; a clamped leg draws
+        // as a locked stilt with no knee in it.
+        clamp = Math.max(clamp,
+          Math.hypot(p.kneeL.ex - p.footL.x, p.kneeL.ey - p.footL.y),
+          Math.hypot(p.kneeR.ex - p.footR.x, p.kneeR.ey - p.footR.y),
+          Math.hypot(p.elbowL.ex - p.handL.x, p.elbowL.ey - p.handL.y),
+          Math.hypot(p.elbowR.ex - p.handR.x, p.elbowR.ey - p.handR.y));
+        var d = Math.hypot(p.elbowR.ex - BONE.shoulderW, p.elbowR.ey - p.shoulderY);
+        var c = U.clamp((BONE.upperArm * BONE.upperArm + BONE.forearm * BONE.forearm - d * d) /
+                        (2 * BONE.upperArm * BONE.forearm), -1, 1);
+        var ang = Math.acos(c) * 57.3;
+        elbowMin = Math.min(elbowMin, ang); elbowMax = Math.max(elbowMax, ang);
+      }
+      var iF = hx.indexOf(Math.max.apply(null, hx));
+      var iB = hx.indexOf(Math.min.apply(null, hx));
+      return {
+        speed: speed,
+        stepFt: perCycle / 2,
+        stepsPerSec: (speed / perCycle) * 2,
+        handTravel: Math.max.apply(null, hx) - Math.min.apply(null, hx),
+        handRise: hz[iF] - hz[iB],
+        backMinusLowest: hz[iB] - Math.min.apply(null, hz),
+        clamp: clamp, elbowMin: elbowMin, elbowMax: elbowMax
+      };
+    }
+
+    return { jog: gait(0.45, false), run: gait(1, false), sprint: gait(1, true),
+             pageErr: window.__pageErr || null };
+  `, 'gait');
+  if (r.err) check('gait probe ran', false, r.err);
+  const o = r.out || {};
+  const jog = o.jog || {}, run = o.run || {}, spr = o.sprint || {};
+
+  /* Real numbers: a player jogging takes about three steps a second at a bit
+   * over two feet, and a full-court sprint is nearer three and a half at five.
+   * This used to be five and a half and seven and a half — the legs churning
+   * under a body that was barely covering ground with each one. */
+  check('a jog is a jog, not a scurry',
+        jog.stepsPerSec < 3.8 && jog.stepFt > 1.7,
+        (jog.stepsPerSec || 0).toFixed(2) + ' steps a second at ' +
+        (jog.stepFt || 0).toFixed(2) + 'ft a step, at ' + (jog.speed || 0).toFixed(1) + 'ft/s');
+  check('and a sprint is a sprint',
+        spr.stepsPerSec < 4.6 && spr.stepFt > 4.0,
+        (spr.stepsPerSec || 0).toFixed(2) + ' steps a second at ' +
+        (spr.stepFt || 0).toFixed(2) + 'ft a step, at ' + (spr.speed || 0).toFixed(1) + 'ft/s');
+  // Holding sprint used to buy nothing but cadence, because the gait was read
+  // off the fraction of top speed rather than off the speed.
+  check('sprinting lengthens the stride, not just the cadence',
+        spr.stepFt > run.stepFt * 1.08,
+        'sprint ' + (spr.stepFt || 0).toFixed(2) + 'ft a step against a run at ' +
+        (run.stepFt || 0).toFixed(2) + 'ft');
+
+  /* The arm swing. It used to be a rigid pendulum about the shoulder, so the
+   * hand traced a circle: level at both ends of the swing and dipping half a
+   * foot through the middle of it. A running arm goes low and back, high and
+   * forward, in one straight diagonal. */
+  check('the hand climbs as it comes forward',
+        run.handRise > 0.5,
+        'hand finishes the forward swing ' + (run.handRise || 0).toFixed(2) +
+        'ft higher than the back of it');
+  check('and its lowest point is behind, not halfway',
+        Math.abs(run.backMinusLowest) < 0.05,
+        'lowest point sits ' + (run.backMinusLowest || 0).toFixed(2) +
+        'ft off the back of the swing');
+  check('the hands stay by the body rather than paddling',
+        run.handTravel > 1.0 && run.handTravel < 2.2,
+        'hands travel ' + (run.handTravel || 0).toFixed(2) + 'ft fore and aft');
+  check('the elbow folds tight in front and opens out behind',
+        run.elbowMin < 80 && run.elbowMax > 118,
+        'elbow works between ' + (run.elbowMin || 0).toFixed(0) + ' and ' +
+        (run.elbowMax || 0).toFixed(0) + ' degrees');
+
+  // Longer strides are bought with a deeper crouch; overspend and the foot
+  // cannot reach the floor and the solver clamps the leg straight.
+  check('no limb is asked to reach further than it can',
+        Math.max(jog.clamp, run.clamp, spr.clamp) < 0.005,
+        'worst shortfall ' + Math.max(jog.clamp, run.clamp, spr.clamp).toFixed(4));
+  check('gait probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[27] screenshots');
+  console.log('\n[28] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],
