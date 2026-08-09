@@ -74,12 +74,30 @@
     const forced = bot.aiPatience <= 0;
     const inCloseRange = distHoop <= 6.2;
 
+    /* How well he is being guarded, off the same number the defender's own
+     * ring is drawn from. This is a read, not just a speed penalty: a handler
+     * with somebody genuinely in front of him does not lower his shoulder and
+     * run into them. He probes, tries to shake them, and backs it out to come
+     * again from a different angle — and the shot clock, not stubbornness, is
+     * what eventually makes him take one anyway.
+     *
+     * Deliberately the defender's POSITION rather than bot.pressure(), which
+     * is the physical version of the same idea and is relative to where the
+     * handler is heading this instant. That is right for the speed penalty —
+     * a man you have already gone past should not still be slowing you down —
+     * and wrong here, because the first sidestep away from the rim would then
+     * read as nobody guarding him and send him straight back into the same
+     * wall, one step at a time, all the way to the basket. */
+    const guarded = opp.defenseQuality || 0;
+
     /* Closely guarded and not yet ready to shoot: occasionally try to shake
      * the defender with a move rather than just driving straight into them.
      * Frequency scales with ball-handle rating and difficulty — a butter-
      * fingered bot on Rookie hardly ever tries one. */
     if (!inCloseRange && defenderInLane && distDef < 4.6 && !bot.moveState && bot.moveCooldown <= 0) {
-      const moveChance = U.remap(bot.ratings.ballHandle, 25, 99, 0.006, 0.045) * diff;
+      // Tries a lot harder to shake somebody who is actually in front of him.
+      const moveChance = U.remap(bot.ratings.ballHandle, 25, 99, 0.006, 0.045) * diff *
+                         (1 + guarded * 2.4);
       if (U.rng.chance(moveChance)) {
         const wantsSpin = distDef < 2.6 && U.rng.chance(0.30);
         const lateral = opp.y > bot.y ? -1 : 1; // juke away from the defender's lean
@@ -103,11 +121,19 @@
       return;
     }
 
+    /* Walled off. Back it out and work a new angle rather than keep leaning
+     * into somebody who is not moving. Skipped once the clock has run him out
+     * of choices — at that point a bad shot beats no shot. */
+    if (guarded > 0.62 && !forced && !inCloseRange) {
+      resetOut(bot, dt, toHoop);
+      return;
+    }
+
     /* Otherwise keep working: drive when there's a lane, hunt separation when
      * there isn't. A defender who's already set and right in the lane is a
      * charge waiting to happen — peel off laterally instead of running
      * through them. */
-    if (!defenderInLane || U.rng.chance(driveTendency * diff * 0.05)) {
+    if (!defenderInLane || U.rng.chance(driveTendency * diff * 0.05 * (1 - guarded * 0.8))) {
       const chargeRisk = defenderInLane && distDef < 2.8 && BB.Rules && BB.Rules.isSet(opp);
       const sidestep = defenderInLane ? (opp.y > bot.y ? -1 : 1) * (chargeRisk ? 1.15 : 0.55) : 0;
       const perp = toHoop + Math.PI / 2;
@@ -116,7 +142,8 @@
       let dy = Math.sin(toHoop) * forward + Math.sin(perp) * sidestep;
       const m = Math.hypot(dx, dy) || 1;
       bot.intentX = dx / m; bot.intentY = dy / m; bot.intentMag = 1;
-      bot.sprinting = distHoop > 11 && !chargeRisk;
+      // Nobody sprints through a set defender; that is a charge, or a wall.
+      bot.sprinting = distHoop > 11 && !chargeRisk && guarded < 0.55;
 
       if (chargeRisk && !bot.moveState && bot.moveCooldown <= 0) {
         bot._tryDribbleMove(opp.y > bot.y ? -1 : 1, false);
@@ -127,6 +154,27 @@
   }
 
   function plant(bot) { bot.intentX = 0; bot.intentY = 0; bot.intentMag = 0; }
+
+  /**
+   * Backing it out. Away from the rim and hard across the floor, which resets
+   * the angle of attack and drags the defender along the whole way — the
+   * difference between a possession that has stalled and one that is still
+   * looking for something.
+   */
+  function resetOut(bot, dt, toHoop) {
+    bot._wanderTimer -= dt;
+    if (bot._wanderTimer <= 0) {
+      bot._wanderSign = U.rng.chance(0.5) ? 1 : -1;
+      bot._wanderTimer = U.rng.f(0.5, 1.1);
+    }
+    const perp = toHoop + Math.PI / 2;
+    const dx = -Math.cos(toHoop) * 0.55 + Math.cos(perp) * bot._wanderSign * 0.85;
+    const dy = -Math.sin(toHoop) * 0.55 + Math.sin(perp) * bot._wanderSign * 0.85;
+    const m = Math.hypot(dx, dy) || 1;
+    bot.intentX = dx / m; bot.intentY = dy / m;
+    bot.intentMag = 0.85;
+    bot.sprinting = false;
+  }
 
   /** Lateral hunting for separation when the direct lane is covered. */
   function wander(bot, dt, toHoop) {

@@ -2964,8 +2964,297 @@ console.log('\n[28] holding the defence key actually plays defence');
   check('defence probe raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[29] the stance locks on, and walls the drive off');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U;
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene, me = scene.player, foe = scene.ai;
+    var ball = scene.ball, hoop = scene.hoop;
+    me.opponent = foe; foe.opponent = me;
+
+    function stick(guard) {
+      return {
+        moveVector: function (o) { o = o || {}; o.x = 0; o.y = 0; o.mag = 0; return o; },
+        down: function (a) { return a === 'intense' && !!guard; },
+        pressed: function () { return false; },
+        released: function () { return false; }
+      };
+    }
+
+    /* ---- shift lock ---------------------------------------------------
+     * Walks the handler right round the defender while the defender slides
+     * off in a fixed direction of their own, and reports the worst the
+     * shoulders ever came off the man. Intent is written straight past
+     * readInput so the answer does not depend on where the camera is
+     * pointing. */
+    function lock(guard, ix, iy) {
+      me.placeAt(0, 25, 0); me.vx = me.vy = 0; me.z = 0;
+      me.hasBall = false; me.action = null;
+      me.facing = me.moveFacing = 0;
+      me.defenseQuality = 0; me.lockedT = 0; me._guardBlend = guard ? 1 : 0;
+      var sk = stick(guard), worst = 0, ang = 0, samples = 0;
+      for (var i = 0; i < 480; i++) {
+        // The man circles at a rate no turn rate could ever hold.
+        ang += (1 / 120) * 3.4;
+        foe.placeAt(me.x + Math.cos(ang) * 3.2, me.y + Math.sin(ang) * 3.2, 0);
+        foe.giveBall(ball);
+        me.readInput(sk);
+        me.intentX = ix; me.intentY = iy;
+        me.intentMag = Math.hypot(ix, iy);
+        me.update(1 / 120, ball);
+        if (i > 60) {
+          worst = Math.max(worst, Math.abs(U.angleDelta(
+            Math.atan2(foe.y - me.y, foe.x - me.x), me.facing)));
+          samples++;
+        }
+      }
+      return { worst: worst * 57.3, samples: samples };
+    }
+    var lockedStill = lock(true, 0, 0);
+    var lockedSliding = lock(true, 0, 1);
+    var unlocked = lock(false, 0, 1);
+
+    /* ---- the slide gait -----------------------------------------------
+     * Facing one way and travelling another has to shuffle the feet across
+     * the body, not scissor them fore and aft. Both are measured off the
+     * same pose: x is the forward axis of the solver's flat plane, side is
+     * the lateral offset that only exists at draw time. */
+    function gait(ix, iy) {
+      me.placeAt(0, 25, 0); me.vx = me.vy = 0; me.z = 0; me.hasBall = false;
+      me.action = null; me.facing = me.moveFacing = 0; me._guardBlend = 1;
+      foe.placeAt(me.x + 3.2, me.y, 0); foe.giveBall(ball);
+      var sk = stick(true);
+      // The man rides alongside, so the defender is genuinely strafing the
+      // whole way rather than drifting into a back-pedal as he slides off.
+      for (var w = 0; w < 240; w++) {
+        foe.placeAt(me.x + 3.2, me.y, 0);
+        me.readInput(sk);
+        me.intentX = ix; me.intentY = iy; me.intentMag = 1;
+        me.update(1 / 120, ball);
+      }
+      var sx = [], sd = [], cross = 0;
+      for (var i = 0; i < 90; i++) {
+        foe.placeAt(me.x + 3.2, me.y, 0);
+        me.readInput(sk);
+        me.intentX = ix; me.intentY = iy; me.intentMag = 1;
+        me.update(1 / 120, ball);
+        var p = me.pose;
+        sx.push(p.footR.x - p.footL.x);
+        sd.push((p.footR.side || 0) - (p.footL.side || 0));
+        // Total across-the-body separation, base stance included. Negative
+        // means the feet have crossed over, which is how you get beaten.
+        var sep = 2 * BB.Player.BONE.stance + (p.footR.side || 0) - (p.footL.side || 0);
+        if (sep < 0.02) cross++;
+      }
+      function range(a) { return Math.max.apply(null, a) - Math.min.apply(null, a); }
+      return { scissor: range(sx), shuffle: range(sd), cross: cross,
+               meanX: sx.reduce(function (a, b) { return a + b; }, 0) / sx.length };
+    }
+    // Straight at the man, straight across him, and backing away from him.
+    var atMan = gait(1, 0), across = gait(0, 1), backing = gait(-1, 0);
+
+    /* ---- pressure ------------------------------------------------------ */
+    function drive(q, behind) {
+      me.placeAt(hoop.x - 22, hoop.y, 0);
+      me.vx = me.vy = 0; me.z = 0; me.action = null; me.sprinting = false;
+      me.stamina = 1; me.giveBall(ball);
+      var off = behind ? -2.6 : 2.6;
+      var top = 0, x0 = me.x;
+      // Short enough that the half-court bound never truncates the run and
+      // makes both cases look identical.
+      for (var i = 0; i < 150; i++) {
+        // Walled off means walled off the whole way, not passed after a
+        // second: a defender who keeps up is the case being measured.
+        foe.placeAt(me.x + off, me.y, 0); foe.vx = foe.vy = 0;
+        foe.defenseQuality = q; foe.isGuarding = q > 0;
+        me.intentX = 1; me.intentY = 0; me.intentMag = 1;
+        me.update(1 / 120, ball);
+        top = Math.max(top, Math.hypot(me.vx, me.vy));
+      }
+      return { top: top, gained: me.x - x0,
+               pressure: me.pressure ? me.pressure() : 0 };
+    }
+    var open = drive(0, false), walled = drive(0.9, false), trailed = drive(0.9, true);
+
+    /* ---- and the CPU stops running into it -----------------------------
+     * The real scene, the real brain. The defender is held on the goal-side
+     * shoulder every tick, which is what "defending well" means, and the
+     * question is what the ball handler does about it. */
+    function possession(defend) {
+      foe.placeAt(hoop.x - 24, hoop.y, 0);
+      foe.vx = foe.vy = 0; foe.z = 0; foe.action = null;
+      foe.giveBall(ball);
+      // After giveBall, which sets its own patience -- otherwise the shot
+      // clock runs out mid-probe and the handler is forced into a shot for
+      // reasons that have nothing to do with who is guarding him.
+      foe.aiPatience = 999;
+      me.placeAt(hoop.x - 21.4, hoop.y, 0);
+      me.vx = me.vy = 0; me.z = 0; me.action = null;
+      me.defenseQuality = 0; me.lockedT = 0;
+      scene.phase = 'live';
+      var sk = stick(defend);
+      var closest = 1e9, sprint = 0, backOut = 0, moves = 0, held = 0;
+      var maxP = 0, maxQ = 0, wasMove = null;
+      for (var i = 0; i < 600; i++) {
+        /* Glued to the goal-side shoulder in BOTH runs. The control is the
+         * same defender standing in the same place with the key up, so what
+         * is being measured is the stance itself rather than the presence of
+         * a body in the lane. */
+        var a = Math.atan2(hoop.y - foe.y, hoop.x - foe.x);
+        // No facing argument: placeAt would reset the shoulders square to the
+        // court every tick, and _updateDefense grades the stance before
+        // updateMovement re-aims it -- so the man would read as turned around
+        // for reasons that have nothing to do with the game.
+        me.placeAt(foe.x + Math.cos(a) * 2.6, foe.y + Math.sin(a) * 2.6);
+        me.readInput(sk);
+        me.intentX = 0; me.intentY = 0; me.intentMag = 0;
+        scene.fixedUpdate(1 / 120);
+        if (i % 2 === 0) scene.update(1 / 60, 1 / 60);
+        if (ball.owner !== foe) break;
+        held++;
+        closest = Math.min(closest, U.dist(foe.x, foe.y, hoop.x, hoop.y));
+        if (foe.sprinting) sprint++;
+        // Intent pointing away from the rim is a handler resetting the angle.
+        var toRim = Math.atan2(hoop.y - foe.y, hoop.x - foe.x);
+        if (foe.intentMag > 0.1 &&
+            Math.abs(U.angleDelta(toRim, Math.atan2(foe.intentY, foe.intentX))) > 1.9) backOut++;
+        if (foe.moveState && foe.moveState !== wasMove) moves++;
+        wasMove = foe.moveState;
+        maxP = Math.max(maxP, foe.pressure ? foe.pressure() : 0);
+        maxQ = Math.max(maxQ, me.defenseQuality);
+      }
+      return { closest: closest, sprint: sprint, backOut: backOut, moves: moves,
+               held: held, maxP: maxP, maxQ: maxQ };
+    }
+    var pressed = possession(true), free = possession(false);
+
+    /* ---- and it is a read, not just a speed cap ------------------------
+     * Same picture every tick -- handler twenty feet out, defender goal-side
+     * two and a half feet off -- with only the quality of that defender's
+     * position changing. Calls the brain directly so the statistics are not
+     * diluted by where the possession happened to wander. */
+    function brain(q) {
+      var back = 0, sprint = 0, moves = 0, wasMove = null, N = 600;
+      foe.giveBall(ball); foe.aiPatience = 999; foe.moveState = null;
+      me.isGuarding = q > 0;
+      for (var i = 0; i < N; i++) {
+        foe.placeAt(hoop.x - 20, hoop.y, 0);
+        /* Goal-side and three and a half feet off. Closer than about 2.8ft
+         * and the handler reads a charge risk and refuses to sprint whoever
+         * is guarding him, which would make the sprint comparison below true
+         * for a reason that has nothing to do with the stance. */
+        me.placeAt(hoop.x - 16.6, hoop.y, 0);
+        me.defenseQuality = q;
+        foe.intentX = 0; foe.intentY = 0; foe.intentMag = 0; foe.sprinting = false;
+        foe.moveState = null; foe.moveCooldown = 0;
+        BB.AI.offense(foe, me, hoop, 1 / 120, 1);
+        var toRim = Math.atan2(hoop.y - foe.y, hoop.x - foe.x);
+        if (foe.intentMag > 0.1 &&
+            Math.abs(U.angleDelta(toRim, Math.atan2(foe.intentY, foe.intentX))) > 1.9) back++;
+        if (foe.sprinting) sprint++;
+        if (foe.moveState && foe.moveState !== wasMove) moves++;
+        wasMove = foe.moveState;
+      }
+      return { back: back, sprint: sprint, moves: moves, n: N };
+    }
+    var brainOn = brain(0.95), brainOff = brain(0);
+
+    return {
+      brainOn: brainOn, brainOff: brainOff,
+      lockedStill: lockedStill, lockedSliding: lockedSliding, unlocked: unlocked,
+      atMan: atMan, across: across, backing: backing,
+      open: open, walled: walled, trailed: trailed,
+      pressed: pressed, free: free,
+      pageErr: window.__pageErr || null
+    };
+  `, 'lockdrive');
+  if (r.err) check('lock/drive probe ran', false, r.err);
+  const o = r.out || {};
+  const still = o.lockedStill || {}, sliding = o.lockedSliding || {}, free1 = o.unlocked || {};
+  const atMan = o.atMan || {}, across = o.across || {}, backing = o.backing || {};
+  const open = o.open || {}, walled = o.walled || {}, trailed = o.trailed || {};
+  const pressed = o.pressed || {}, unguarded = o.free || {};
+
+  /* Shift lock. Not "turns towards" — locked, against a man moving faster
+   * than any turn rate could follow. */
+  check('the stance stays pointed at the man, not merely turns towards him',
+        still.worst < 1.0 && still.samples > 300,
+        'worst ' + (still.worst || 0).toFixed(2) + ' degrees off over ' +
+        (still.samples || 0) + ' ticks against a man circling at 3.4 rad/s');
+  check('and it holds while you are sliding somewhere else',
+        sliding.worst < 1.0,
+        'worst ' + (sliding.worst || 0).toFixed(2) + ' degrees off while sliding');
+  check('with the key up you face where you are going instead',
+        free1.worst > 45,
+        'ended ' + (free1.worst || 0).toFixed(0) + ' degrees off the man');
+
+  /* The gait that has to come with it, or the figure moonwalks. */
+  check('sliding across the man shuffles the feet sideways',
+        across.shuffle > 0.10 && across.shuffle > across.scissor * 4,
+        'shuffle ' + (across.shuffle || 0).toFixed(3) + ' against a fore/aft scissor of ' +
+        (across.scissor || 0).toFixed(3));
+  check('going straight at him still scissors them fore and aft',
+        atMan.scissor > 0.10 && atMan.scissor > atMan.shuffle * 4,
+        'scissor ' + (atMan.scissor || 0).toFixed(3) + ' against a shuffle of ' +
+        (atMan.shuffle || 0).toFixed(3));
+  check('and backing off back-pedals rather than running on the spot',
+        backing.scissor > 0.10,
+        'scissor ' + (backing.scissor || 0).toFixed(3) + ' backing away');
+  check('the feet never cross in a slide',
+        across.cross === 0 && atMan.cross === 0,
+        (across.cross || 0) + ' crossed frames');
+
+  /* Pressure. Position has to cost the handler something on the floor. */
+  check('driving into a set defender is slower than driving into nobody',
+        walled.top < open.top * 0.75,
+        (open.top || 0).toFixed(1) + 'ft/s open against ' +
+        (walled.top || 0).toFixed(1) + 'ft/s walled off');
+  check('and it costs them ground, not just speed',
+        walled.gained < open.gained * 0.8,
+        (open.gained || 0).toFixed(1) + 'ft gained open against ' +
+        (walled.gained || 0).toFixed(1) + 'ft guarded');
+  /* Directional, or beating somebody would feel worse than being stuck in
+   * front of them: a defender you have already gone past is not guarding. */
+  check('a defender you have beaten does not slow you down',
+        trailed.top > open.top * 0.98 && trailed.pressure < 0.02,
+        'trailing defender left ' + (trailed.top || 0).toFixed(1) +
+        'ft/s against ' + (open.top || 0).toFixed(1) + 'ft/s open');
+  /* The defender only gives up 8% of their own top end to hold the stance,
+   * so a third off the handler is the margin that makes staying in front
+   * possible at all rather than a coin flip on reaction time. */
+  check('a defender in a stance is faster than the man they are walling off',
+        walled.top < open.top * 0.92,
+        'handler down to ' + (walled.top || 0).toFixed(1) +
+        'ft/s against a stance that keeps ' + (open.top * 0.92).toFixed(1) + 'ft/s');
+
+  /* And the CPU plays it as a read, not just a speed cap. */
+  check('the CPU cannot drive through good position',
+        pressed.held > 200 && pressed.closest > unguarded.closest + 5,
+        'got within ' + (pressed.closest || 0).toFixed(1) + 'ft of the rim against a stance, ' +
+        (unguarded.closest || 0).toFixed(1) + 'ft against the same man standing up' +
+        ' [p=' + (pressed.maxP || 0).toFixed(2) + '/' + (unguarded.maxP || 0).toFixed(2) +
+        ' q=' + (pressed.maxQ || 0).toFixed(2) + '/' + (unguarded.maxQ || 0).toFixed(2) +
+        ' held=' + pressed.held + '/' + unguarded.held +
+        ' back=' + pressed.backOut + '/' + unguarded.backOut + ']');
+  const bOn = o.brainOn || {}, bOff = o.brainOff || {};
+  check('it backs the ball out and works a new angle instead',
+        bOn.back > bOn.n * 0.9 && bOff.back === 0,
+        'reset the angle on ' + (bOn.back || 0) + ' of ' + (bOn.n || 0) +
+        ' ticks against a stance, ' + (bOff.back || 0) + ' against nobody');
+  check('and never sprints into somebody who is set',
+        bOn.sprint === 0 && bOff.sprint > 0,
+        (bOn.sprint || 0) + ' sprinting ticks against a stance, ' +
+        (bOff.sprint || 0) + ' without one');
+  check('it tries harder to shake the man off the dribble',
+        bOn.moves > bOff.moves * 1.6 && bOff.moves > 0,
+        (bOn.moves || 0) + ' dribble moves in ' + (bOn.n || 0) +
+        ' ticks against a stance, ' + (bOff.moves || 0) + ' without one');
+  check('lock/drive probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[29] screenshots');
+  console.log('\n[30] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],

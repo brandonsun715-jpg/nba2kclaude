@@ -390,7 +390,11 @@
       this._animClock = U.rng.f(0, 6.28); // phase-offset so idle players don't sync
       this.pose = {
         hipY: 0, shoulderY: 0, headY: 0, torsoLean: 0, hipLean: 0, armRoll: 0, armTuck: 0,
-        footL: { x: 0, y: 0, pitch: 0 }, footR: { x: 0, y: 0, pitch: 0 },
+        // `side` is a lateral foot offset, across the body rather than along
+        // the forward axis — the shuffle of a defensive slide, which cannot be
+        // expressed in the solver's single flat plane.
+        footL: { x: 0, y: 0, pitch: 0, side: 0 },
+        footR: { x: 0, y: 0, pitch: 0, side: 0 },
         handL: { x: 0, y: 0 }, handR: { x: 0, y: 0 },
         kneeL: { jx: 0, jy: 0, ex: 0, ey: 0 }, kneeR: { jx: 0, jy: 0, ex: 0, ey: 0 },
         elbowL: { jx: 0, jy: 0, ex: 0, ey: 0 }, elbowR: { jx: 0, jy: 0, ex: 0, ey: 0 }
@@ -731,8 +735,14 @@
       const gassed = 0.65 + this.stamina * 0.35;
       // No sprinting out of a stance, and a slide is a shade slower than a run.
       const sprinting = this.sprinting && !this.isGuarding;
+      /* Guarded, and going at them. A live defender right in front of you takes
+       * better than a third off the top end and a fifth off the first step, so
+       * a drive into good position is a wrestle rather than a straight line —
+       * which, with a defender who only gives up 8% of their own top end to
+       * hold the stance, is what makes staying in front possible at all. */
+      const pressure = this.pressure();
       const top = (sprinting ? this.phys.maxSprint : this.phys.maxSpeed) * gassed *
-                  (this.isGuarding ? 0.92 : 1);
+                  (this.isGuarding ? 0.92 : 1) * (1 - pressure * 0.40);
       const targetVx = ix * top;
       const targetVy = iy * top;
 
@@ -742,7 +752,8 @@
        * staying with a handler is won on the first step after they move, not
        * on how fast you can go in a straight line. */
       const slide = this.isGuarding ? 1 : 0;
-      const accel = (mag > 0.02 ? this.phys.accel : this.phys.decel) * (1 + slide * 0.55);
+      const accel = (mag > 0.02 ? this.phys.accel : this.phys.decel) *
+                    (1 + slide * 0.55) * (1 - pressure * 0.22);
       this.vx = U.moveToward(this.vx, targetVx, accel * dt);
       this.vy = U.moveToward(this.vy, targetVy, accel * dt);
 
@@ -781,8 +792,17 @@
         // reads the feet correctly the moment the shot is over.
         if (mag > 0.15) this.moveFacing = Math.atan2(iy, ix);
       } else if (marking) {
-        const aim = Math.atan2(marking.y - this.y, marking.x - this.x);
-        this.facing = U.angleLerp(this.facing, aim, U.clamp01(this.phys.turnRate * 1.8 * dt));
+        /* Locked on, not merely turning towards. A stance points at the man
+         * and the stick only decides where you slide — you never present a
+         * shoulder, let alone your back, whatever direction you are moving.
+         *
+         * Turning towards him at a rate, however fast, is not the same thing:
+         * a handler who changes direction hard is asking the defender to turn
+         * faster than any rate would allow, and every degree of lag is a
+         * degree of the floor they have won. moveFacing keeps tracking the
+         * stick underneath, which is what the slide gait in _updatePose reads
+         * to shuffle the feet sideways instead of scissoring them. */
+        this.facing = Math.atan2(marking.y - this.y, marking.x - this.x);
         if (mag > 0.15) this.moveFacing = Math.atan2(iy, ix);
       } else if (mag > 0.15) {
         this.moveFacing = Math.atan2(iy, ix);
@@ -809,6 +829,13 @@
       this.x = U.clamp(this.x, pad - C.APRON, C.COURT_L - pad + C.APRON);
       this.y = U.clamp(this.y, pad - C.APRON, C.COURT_W - pad + C.APRON);
       if (this.boundX) this.x = U.clamp(this.x, this.boundX[0], this.boundX[1]);
+
+      /* Re-aim the lock after the step, not before it. Everything above works
+       * off where the body was at the top of the tick, so a defender sliding
+       * hard came out of the frame a degree or two off the man — small, but
+       * it is the difference between a lock and a very fast turn, and it is
+       * free to take back here. */
+      if (marking) this.facing = Math.atan2(marking.y - this.y, marking.x - this.x);
 
       /* Stamina: drains while sprinting, recovers otherwise. Tuned so a
        * real sprint costs something noticeable (a below-average player
@@ -907,6 +934,36 @@
        * worth a fraction of what it would otherwise be. */
       return U.clamp01(near * (0.15 + online * 0.85) * (0.55 + square * 0.45) *
                        stance * skill);
+    }
+
+    /**
+     * How hard this player is being guarded RIGHT NOW, 0..1. Zero for anybody
+     * who does not have the ball.
+     *
+     * The point of it is that good defensive position has to cost the handler
+     * something on the floor, not only on the shot. A defender who graded well
+     * and then watched the ball go past them at full speed was a scoreboard,
+     * not an obstacle.
+     *
+     * Directional, because a defender is only in the way if they are in the
+     * way: the same man at the same distance behind you as you drive away is
+     * not guarding anything, and slowing you down for it would make beating
+     * somebody feel worse than being stuck in front of them.
+     */
+    pressure() {
+      if (!this.hasBall) return 0;
+      const d = this.opponent;
+      if (!d || !d.defenseQuality) return 0;
+      const dist = U.dist(this.x, this.y, d.x, d.y);
+      // Full weight from about two and a half feet, which is where a defender
+      // is actually on you rather than merely near you.
+      const close = U.clamp01(U.remap(dist, 6.0, 2.4, 0, 1));
+      if (close <= 0) return 0;
+      const heading = this.intentMag > 0.05
+        ? Math.atan2(this.intentY, this.intentX) : this.facing;
+      const toDef = Math.atan2(d.y - this.y, d.x - this.x);
+      const inPath = U.clamp01(1 - Math.abs(U.angleDelta(heading, toDef)) / 1.35);
+      return U.clamp01(d.defenseQuality * close * inPath);
     }
 
     /**
@@ -1531,9 +1588,13 @@
         const foot = leg.side < 0 ? p.footL : p.footR;
         const sfx = leg.side < 0 ? 'L' : 'R';
         const w = leg.side * BONE.hipW;
+        /* The slide's lateral step. The hip stays put and the foot goes out,
+         * with the knee taking a little over half of it so the leg reads as
+         * one limb rather than a shin swinging off a static thigh. */
+        const out = foot.side || 0;
         posePoint(A, f, 0, p.hipY, 0, w, hipLean);
-        posePoint(B, f, knee.jx, knee.jy, w, w * SPLAY.knee, hipLean);
-        posePoint(D, f, knee.ex, knee.ey, w, leg.side * BONE.stance, hipLean);
+        posePoint(B, f, knee.jx, knee.jy, w, w * SPLAY.knee + out * 0.55, hipLean);
+        posePoint(D, f, knee.ex, knee.ey, w, leg.side * BONE.stance + out, hipLean);
         D[2] += ankleUp;
 
         /* The foot pitches about the ankle: toe down through push-off, toe up
@@ -1795,6 +1856,9 @@
 
       let flX = -BONE.hipW, flY = 0;
       let frX = BONE.hipW, frY = 0;
+      // Lateral foot displacement, off the solver's plane entirely. Only the
+      // slide writes it; everything else leaves the feet under the hips.
+      let sideL = 0, sideR = 0;
       /* Hands hang just inside full extension so the elbows keep a soft bend —
        * and far enough inside it to survive the idle bob. At 0.96 the breathing
        * sway added below pushed the resting hand past the arm's actual reach
@@ -1828,8 +1892,35 @@
         // on the hardwood.
         stepFoot(STEP_L, phase + Math.PI, gait);
         stepFoot(STEP_R, phase, gait);
-        flX = -BONE.hipW + STEP_L.x; flY = STEP_L.y; pitchL = STEP_L.pitch;
-        frX = BONE.hipW + STEP_R.x; frY = STEP_R.y; pitchR = STEP_R.pitch;
+
+        /* Which way the body is travelling relative to which way it is
+         * pointed. Normally these are the same thing and this is a no-op, but
+         * a defender locked onto their man — and a shooter squaring up on the
+         * move — travel one way while facing another, and the stride has to
+         * know the difference or the figure moonwalks: feet scissoring
+         * forwards while the body slides sideways.
+         *
+         * `along` is signed, so backing up back-pedals for free rather than
+         * running on the spot. */
+        const rel = U.angleDelta(this.facing, this.moveFacing);
+        const along = Math.cos(rel);
+        // posePoint's `width` axis is the facing direction turned -90 degrees,
+        // so the rightward component of the heading carries a minus sign.
+        const lateral = -Math.sin(rel);
+
+        flX = -BONE.hipW + STEP_L.x * along; flY = STEP_L.y; pitchL = STEP_L.pitch;
+        frX = BONE.hipW + STEP_R.x * along; frY = STEP_R.y; pitchR = STEP_R.pitch;
+
+        /* The shuffle. One foot reaches out the way the body is going while
+         * the other pushes and recovers, and they never cross — cross your
+         * feet in a slide and you are beaten. Capped below the width of the
+         * stance for that reason, which also keeps the sideways displacement
+         * small enough that the leg's true 3D length barely changes: the
+         * solver works in the flat plane and knows nothing about this axis. */
+        const shuffle = U.clamp(lateral * gait.stride * 1.15,
+                                -BONE.stance * 0.8, BONE.stance * 0.8);
+        sideR = shuffle * Math.sin(phase);
+        sideL = -sideR;
 
         /* Arms swing as pendulums from the shoulder, on an arc rather than up
          * and down a line: the hand travels forward AND rises as it comes
@@ -2332,8 +2423,8 @@
       p.headY = shoulderY - BONE.neck - this.armRaise * 0.05;
       p.torsoLean = torsoLean;
       p.hipLean = hipLean == null ? torsoLean : hipLean;
-      p.footL.x = flX; p.footL.y = flY; p.footL.pitch = pitchL;
-      p.footR.x = frX; p.footR.y = frY; p.footR.pitch = pitchR;
+      p.footL.x = flX; p.footL.y = flY; p.footL.pitch = pitchL; p.footL.side = sideL;
+      p.footR.x = frX; p.footR.y = frY; p.footR.pitch = pitchR; p.footR.side = sideR;
       p.handL.x = hlX; p.handL.y = hlY;
       p.handR.x = hrX; p.handR.y = hrY;
 
