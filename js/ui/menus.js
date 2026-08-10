@@ -172,6 +172,16 @@
         act: function () { M.closeAll(); BB.Engine.setState('shootaround'); }
       },
       {
+        id: 'tutorial', tab: 'How to Play', title: 'How to Play', pose: 'dribble',
+        tags: ['Every Control', 'Every Rule', 'Start Here'],
+        body: 'The whole game, explained in order: how to move, how to keep ' +
+              'the ball, how to score, how to guard somebody, and which rules ' +
+              'the referee is actually watching for. Every key shown is the ' +
+              'key you have bound right now.',
+        cta: 'Open How to Play',
+        act: function () { M.push('tutorial'); }
+      },
+      {
         id: 'createPlayer', tab: 'My Player', title: 'My Player', pose: 'idle',
         tags: ['Build', 'Appearance', 'Ratings'],
         body: 'Name, number, position, height, build and colours, plus the ' +
@@ -588,6 +598,157 @@
       onCancel() { M.pop(); }
     });
 
+    /* --------------------------------------------------------------- tutorial
+     *
+     * Everything the game knows how to do, in the order somebody would need to
+     * learn it: move, keep the ball, score, pass, guard, and what the referee
+     * is watching for.
+     *
+     * Every key printed here is read from Input.label at build time rather
+     * than typed into the copy, so a rebound control teaches the truth instead
+     * of teaching the default. A manual that can go stale is worse than none,
+     * because the player has no way of knowing which half is lying.
+     *
+     * Chapters carry the mode they are best practised in, so a lesson ends
+     * with the floor rather than with more reading.
+     */
+    const CHAPTERS = [
+      {
+        name: 'Moving',
+        note: 'Movement is relative to the camera, not to the court. Push the ' +
+              'stick the way you want to go on screen and that is where you go.',
+        practice: ['shootaround', 'Try it in Shootaround'],
+        lessons: [
+          ['up,left,down,right', 'Run', 'Hold a direction to move. Your top speed comes off the Speed rating, and acceleration decides how fast you reach it.'],
+          ['sprint', 'Sprint', 'Held, not tapped. Sprinting burns stamina, and a gassed player is slower, jumps lower and shoots worse. Let go and it comes back.'],
+          [null, 'Stamina', 'The bar under your name on the scorebug. It drains while you sprint and refills whenever you are not.']
+        ]
+      },
+      {
+        name: 'Keeping the ball',
+        note: 'A dribble move buys you a step. Chaining one into another buys ' +
+              'more, but the defender is reading the same window you are.',
+        practice: ['oneVone', 'Try it in 1 vs 1'],
+        lessons: [
+          ['dribble', 'Dribble move', 'On its own this is a hesitation. Add a direction for a crossover, or hold Sprint for a spin.'],
+          ['pickup', 'Pick up your dribble', 'Gathers the ball into two hands. Press it again to fake a re-dribble — but you cannot legally start dribbling again, and the referee is watching.'],
+          [null, 'Travelling', 'Moving too far after you have gathered is a travel and a turnover. Gather when you are ready to do something with it.']
+        ]
+      },
+      {
+        name: 'Scoring',
+        note: 'Every shot is a timing test. Hold to gather, release at the top ' +
+              'of the meter that appears on the shooter.',
+        practice: ['shootaround', 'Practise the meter'],
+        lessons: [
+          ['shoot', 'Shoot', 'Hold to rise into the shot, release to let it go. Release inside the green window for the best chance the shot has.'],
+          [null, 'The green window', 'A narrow band near the top of the meter. Better ratings widen it. A perfect release is worth far more than an open look with bad timing.'],
+          [null, 'Layups and dunks', 'Close to the rim the same button becomes a layup, or a dunk if you have the rating and the run-up for it.'],
+          [null, 'Range and contest', 'Distance hurts your chances and so does a hand in your face. A defender who is set, square and close takes a shot from makeable to bad.']
+        ]
+      },
+      {
+        name: 'Passing',
+        note: 'In 5 vs 5 the other four are moving whether you look at them or not.',
+        practice: ['fiveVfive', 'Try it in 5 vs 5'],
+        lessons: [
+          ['pass', 'Pass', 'Fires at the team-mate you are closest to facing. Pass accuracy and vision decide whether it arrives clean.'],
+          ['lob', 'Lob', 'Over the top, for a cutter with a head start on their man.'],
+          ['switchMan', 'Switch player', 'On defence, take control of whoever is nearest the ball.']
+        ]
+      },
+      {
+        name: 'Defence',
+        note: 'Defence is position, not speed. Being in the right place is ' +
+              'worth more than being quick to the wrong one.',
+        practice: ['oneVone', 'Try it in 1 vs 1'],
+        lessons: [
+          ['intense', 'Get in a stance', 'Held, not tapped. Your hips drop, your base widens and your hands go to work. In a stance you face the ball handler no matter which way you slide.'],
+          [null, 'Slide, do not run', 'In a stance you shuffle. You change direction quicker than a sprinter can, but you cannot sprint out of it.'],
+          [null, 'What good position is', 'Four things at once: close to your man, between them and the basket, square to them, and in a stance. Miss one and the rest count for much less.'],
+          [null, 'The ring at your feet', 'It grows and brightens as your position improves, and turns gold once you have held good position long enough to have genuinely locked somebody up.'],
+          ['pass', 'Steal', 'The pass button on defence. Miss and it is a reach — a foul, and the ball stays theirs.'],
+          ['lob', 'Block', 'The lob button on defence. Time it to the shot, not to the jump.']
+        ]
+      },
+      {
+        name: 'The rules',
+        note: 'A streetball ruleset, refereed properly.',
+        practice: ['fiveVfive', 'See it in 5 vs 5'],
+        lessons: [
+          [null, 'Shot clock', '24 seconds, reset to 14 on an offensive rebound. Let it hit zero and you have handed the ball over.'],
+          [null, 'Fouls', 'Charging is on you. Shooting fouls put you on the line, and contact away from a shot just gives the ball back.'],
+          [null, 'The bonus', 'Enough team fouls in a quarter and every foul after it shoots free throws.'],
+          [null, 'Out of bounds', 'Called the moment the ball lands out, not when it finally stops rolling.']
+        ]
+      },
+      {
+        name: 'Your player',
+        note: 'Everyone starts at 60 overall. The number is earned, never set.',
+        practice: null,
+        lessons: [
+          [null, 'The build', 'Archetype decides the SHAPE of your 60 — what you are already good at and what you are not. It is not a head start.'],
+          [null, 'Position caps', 'Your position sets a hard ceiling on each attribute. A Center will never shoot threes like a guard, however long you grind.'],
+          [null, 'Career points', 'Games bank experience. Levelling up earns points, and you spend them wherever you want them — inside the caps.']
+        ]
+      }
+    ];
+
+    M.define({
+      id: 'tutorial',
+      build() {
+        const cap = (action) => {
+          if (!action) return '';
+          return action.split(',')
+            .map((a) => '<kbd class="key__cap">' + BB.Input.label(a.trim()) + '</kbd>')
+            .join('');
+        };
+        return `
+          <div class="panel panel--xwide tut">
+            <header class="panel__head">
+              <h2>How to Play</h2>
+              <button class="btn btn--ghost" data-nav data-act="back">Back</button>
+            </header>
+            <div class="panel__body">
+              <p class="note">Everything below is live: each key shown is the key bound to that action right now. Rebind anything in Controls and this page follows.</p>
+              ${CHAPTERS.map((ch, i) => `
+                <section class="tut__ch">
+                  <div class="tut__chhead">
+                    <span class="tut__num">${String(i + 1).padStart(2, '0')}</span>
+                    <h3>${ch.name}</h3>
+                  </div>
+                  <p class="tut__note">${ch.note}</p>
+                  <div class="tut__list">
+                    ${ch.lessons.map(([k, title, text]) => `
+                      <div class="tut__lesson">
+                        <div class="tut__keys">${cap(k)}</div>
+                        <div class="tut__copy">
+                          <b>${title}</b>
+                          <span>${text}</span>
+                        </div>
+                      </div>`).join('')}
+                  </div>
+                  ${ch.practice ? `<button class="btn btn--tiny" data-nav data-play="${ch.practice[0]}">${ch.practice[1]}</button>` : ''}
+                </section>`).join('')}
+            </div>
+          </div>`;
+      },
+      mount(el) {
+        el.addEventListener('click', (e) => {
+          const play = e.target.closest('[data-play]');
+          if (play) {
+            A.play('uiSelect');
+            M.closeAll();
+            BB.Engine.setState(play.dataset.play);
+            return;
+          }
+          const b = e.target.closest('[data-act]');
+          if (b && b.dataset.act === 'back') M.pop();
+        });
+      },
+      onCancel() { M.pop(); }
+    });
+
     /* ------------------------------------------------------------ createPlayer
      *
      * The creator edits the player you can SEE. It borrows the standby scene's
@@ -646,6 +807,7 @@
                 <section class="group">
                   <h3>Appearance</h3>
                   ${swatchRow('skin', 'Skin tone', P.SKIN_TONES, draft.skin)}
+                  ${segmented('hairStyle', 'Hair', draft.hairStyle, P.HAIR_STYLES)}
                   ${swatchRow('hair', 'Hair color', P.HAIR_COLORS, draft.hair)}
                   ${swatchRow('jerseyMain', 'Jersey', P.JERSEY_COLORS, draft.jerseyMain)}
                   ${swatchRow('jerseyTrim', 'Trim', P.JERSEY_COLORS, draft.jerseyTrim)}
@@ -692,6 +854,7 @@
           if (!model) return;
           model.skin = draft.skin;
           model.hair = draft.hair;
+          model.hairStyle = draft.hairStyle;
           model.jerseyMain = draft.jerseyMain;
           model.jerseyTrim = draft.jerseyTrim;
           model.heightIn = draft.height;
@@ -740,6 +903,7 @@
             Array.prototype.forEach.call(seg.parentNode.children, (c) => c.classList.toggle('is-on', c === seg));
             if (key === 'position' || key === 'archetype') reshape();
             else refresh();
+            applyLook();
             A.play('uiMove');
             return;
           }
@@ -762,6 +926,7 @@
             draft.archetype = arch[U.rng.i(0, arch.length - 1)];
             draft.skin = P.SKIN_TONES[U.rng.i(0, P.SKIN_TONES.length - 1)];
             draft.hair = P.HAIR_COLORS[U.rng.i(0, P.HAIR_COLORS.length - 1)];
+            draft.hairStyle = P.HAIR_STYLES[U.rng.i(0, P.HAIR_STYLES.length - 1)][0];
             draft.jerseyMain = P.JERSEY_COLORS[U.rng.i(0, P.JERSEY_COLORS.length - 1)];
             draft.jerseyTrim = P.JERSEY_COLORS[U.rng.i(0, P.JERSEY_COLORS.length - 1)];
             draft.height = U.rng.i(68, 82);

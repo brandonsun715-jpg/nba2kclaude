@@ -3325,8 +3325,199 @@ console.log('\n[29] the stance locks on, and walls the drive off');
   check('lock/drive probe raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[30] the hair is hair, and there is more than one of it');
+{
+  /* The complaint that started this was that the hair looked welded to the
+   * jersey, so the check is the literal thing: how far apart are they. Zones
+   * are per-vertex and the mesh is quantised, so both are read back off the
+   * asset the runtime actually loaded rather than off the rigger's log. */
+  const r = runInPage(`
+    var BB = window.BB, M = BB.PLAYER_MESH, Skin = BB.Skin;
+    var lo = M.bounds.lo, ext = M.bounds.ext, H = M.height;
+    var qp = atob(M.buffers.pos), qs = atob(M.buffers.skin);
+    var n = M.vertexCount;
+    var hairLow = 1e9, hairHigh = -1e9, jerseyHigh = -1e9, hairN = 0;
+    var bodyHairLow = 1e9;
+    for (var i = 0; i < n; i++) {
+      var q = qp.charCodeAt(i * 6 + 4) | (qp.charCodeAt(i * 6 + 5) << 8);
+      var z = (lo[2] + (q / 65535) * ext[2]) / H;
+      var zone = qs.charCodeAt(i * 4 + 3);
+      if (zone === 4) {
+        hairN++;
+        if (z < hairLow) hairLow = z;
+        if (z > hairHigh) hairHigh = z;
+      } else if (zone === 1 && z > jerseyHigh) jerseyHigh = z;
+    }
+
+    // Every style has to be a real block of triangles, and they must not all
+    // be the same block — that is what a silently culled shell looks like.
+    var styles = Object.keys(Skin.hairStyles || {});
+    var starts = {}, dupes = 0, empty = 0;
+    for (var k = 0; k < styles.length; k++) {
+      var cut = Skin.hairStyles[styles[k]];
+      if (!cut.count) empty++;
+      if (starts[cut.start]) dupes++;
+      starts[cut.start] = 1;
+    }
+    return {
+      hairN: hairN, hairLow: hairLow, hairHigh: hairHigh, jerseyHigh: jerseyHigh,
+      gap: hairLow - jerseyHigh,
+      styles: styles, empty: empty, dupes: dupes,
+      bodyIndexCount: Skin.bodyIndexCount, indexCount: Skin.indexCount,
+      profileStyles: BB.PlayerProfile.HAIR_STYLES.map(function (h) { return h[0]; }),
+      pageErr: window.__pageErr || null
+    };
+  `, 'hair');
+  if (r.err) check('hair probe ran', false, r.err);
+  const o = r.out || {};
+  check('the mesh still has hair on it', o.hairN > 200, o.hairN + ' vertices');
+  // The old zoner reached z/H 0.832 against a jersey that starts at 0.832 —
+  // hair and clothing were the same vertices.
+  check('no hair vertex reaches the jersey', o.gap > 0.01,
+        'hair bottoms at ' + (o.hairLow || 0).toFixed(3) +
+        'H, jersey tops at ' + (o.jerseyHigh || 0).toFixed(3) + 'H, gap ' +
+        ((o.gap || 0) * 100).toFixed(1) + '%');
+  check('the hair sits on the skull, not the shoulders', o.hairLow > 0.87,
+        'lowest hair at ' + (o.hairLow || 0).toFixed(3) + 'H');
+  check('there are eight haircuts baked in', o.styles.length === 8,
+        (o.styles || []).join(', '));
+  check('every haircut has geometry of its own', o.empty === 0 && o.dupes === 0,
+        o.empty + ' empty, ' + o.dupes + ' sharing a range');
+  check('the haircuts live past the end of the body',
+        o.bodyIndexCount > 0 && o.bodyIndexCount < o.indexCount,
+        o.bodyIndexCount + ' of ' + o.indexCount);
+  check('the creator offers every baked style plus a shaved head',
+        o.profileStyles.length === o.styles.length + 1 &&
+        o.profileStyles.indexOf('bald') >= 0,
+        (o.profileStyles || []).join(', '));
+  check('hair probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[31] a haircut is a choice that reaches the floor');
+{
+  const r = runInPage(`
+    var BB = window.BB, P = BB.PlayerProfile;
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene;
+    for (var i = 0; i < 30; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+    var pl = scene.player;
+
+    // A style set on the player has to arrive at the draw call, which reads it
+    // off the pose rather than off the player.
+    var seen = [];
+    var names = ['afro', 'cornrows', 'bald'];
+    for (var s = 0; s < names.length; s++) {
+      pl.hairStyle = names[s];
+      scene.render(0);
+      var poses = BB.S3._poses.slice(0, BB.S3._poseCount);
+      seen.push(poses.length ? poses[0].hairStyle : null);
+    }
+
+    // Shaved is the one with no shell, so it has to be done in colour: the
+    // scalp goes to a skin tone instead of the hair colour.
+    pl.skin = '#C99268'; pl.hair = '#1B1310';
+    pl.hairStyle = 'afro'; scene.render(0);
+    var withHair = Array.prototype.slice.call(BB.S3._poses[0].zc.slice(16, 19));
+    pl.hairStyle = 'bald'; scene.render(0);
+    var shaved = Array.prototype.slice.call(BB.S3._poses[0].zc.slice(16, 19));
+
+    // And a saved player has to carry their haircut into a game.
+    P.clear();
+    var d = P.newDraft();
+    d.hairStyle = 'locs';
+    P.save(d);
+    var cfg = P.toPlayerConfig(P.newDraft());
+    P.clear();
+
+    return {
+      seen: seen, withHair: withHair, shaved: shaved,
+      carried: cfg.hairStyle,
+      dflt: P.newDraft().hairStyle,
+      pageErr: window.__pageErr || null
+    };
+  `, 'haircut');
+  if (r.err) check('haircut probe ran', false, r.err);
+  const o = r.out || {};
+  check('the style set on a player reaches the draw call',
+        JSON.stringify(o.seen) === JSON.stringify(['afro', 'cornrows', 'bald']),
+        JSON.stringify(o.seen));
+  const wh = o.withHair || [], sh = o.shaved || [];
+  const moved = wh.length === 3 && sh.length === 3 &&
+    (Math.abs(wh[0] - sh[0]) + Math.abs(wh[1] - sh[1]) + Math.abs(wh[2] - sh[2])) > 0.15;
+  check('a shaved head repaints the scalp instead of drawing hair', moved,
+        'hair zone ' + JSON.stringify(wh) + ' -> ' + JSON.stringify(sh));
+  check('a saved player carries their haircut into a game', o.carried === 'locs',
+        String(o.carried));
+  check('a brand new player still gets a haircut', !!o.dflt, String(o.dflt));
+  check('haircut probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[32] the tutorial teaches the keys you actually have');
+{
+  const r = runInPage(`
+    var BB = window.BB;
+    BB.Engine.setState('menu'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene;
+    for (var i = 0; i < 20; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+
+    // The front page has to carry it, or nobody finds it.
+    var tabs = Array.prototype.map.call(
+      document.querySelectorAll('.screen--main .menu-tab'),
+      function (t) { return t.textContent.trim(); });
+
+    /* pop() takes the old screen out on a timer, so a synchronous probe that
+     * pushes twice has two .screen--tutorial nodes in the DOM at once and
+     * querySelector hands back the stale one. Read the live entry instead. */
+    BB.Menus.push('tutorial');
+    var el = BB.Menus.top.el;
+    var chapters = el.querySelectorAll('.tut__ch').length;
+    var lessons = el.querySelectorAll('.tut__lesson').length;
+    var practice = el.querySelectorAll('[data-play]').length;
+    var caps = Array.prototype.map.call(el.querySelectorAll('.tut__keys kbd'),
+      function (k) { return k.textContent.trim(); });
+    var modes = Array.prototype.map.call(el.querySelectorAll('[data-play]'),
+      function (b) { return b.dataset.play; });
+    BB.Menus.pop();
+
+    // Rebind, reopen, and the page has to be telling the new truth.
+    BB.Input.rebind('sprint', ['KeyZ']);
+    BB.Menus.push('tutorial');
+    var el2 = BB.Menus.top.el;
+    var afterCaps = Array.prototype.map.call(el2.querySelectorAll('.tut__keys kbd'),
+      function (k) { return k.textContent.trim(); });
+    BB.Menus.pop();
+    BB.Input.resetBindings();
+
+    return {
+      tabs: tabs, chapters: chapters, lessons: lessons, practice: practice,
+      caps: caps, afterCaps: afterCaps, modes: modes,
+      pageErr: window.__pageErr || null
+    };
+  `, 'tutorial');
+  if (r.err) check('tutorial probe ran', false, r.err);
+  const o = r.out || {};
+  check('the front page carries the tutorial',
+        (o.tabs || []).some((t) => /HOW TO PLAY/i.test(t)), (o.tabs || []).join(' | '));
+  check('it covers the whole game in chapters', o.chapters >= 7, o.chapters + ' chapters');
+  check('and teaches a real number of things', o.lessons >= 20, o.lessons + ' lessons');
+  check('every practice link points at a mode that exists',
+        (o.modes || []).length > 0 &&
+        (o.modes || []).every((m) => ['oneVone', 'fiveVfive', 'shootaround'].indexOf(m) >= 0),
+        (o.modes || []).join(', '));
+  check('the keys it prints are real bound keys',
+        (o.caps || []).indexOf('SHIFT') >= 0 && (o.caps || []).indexOf('W') >= 0,
+        (o.caps || []).slice(0, 8).join(' '));
+  /* The whole point of reading Input.label at build time: a manual that can go
+   * stale teaches the default instead of the truth, and the player has no way
+   * to tell which half is lying. */
+  check('rebinding a control rewrites the lesson',
+        (o.afterCaps || []).indexOf('Z') >= 0 && (o.afterCaps || []).indexOf('SHIFT') < 0,
+        (o.afterCaps || []).slice(0, 8).join(' '));
+  check('tutorial probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[30] screenshots');
+  console.log('\n[33] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],
