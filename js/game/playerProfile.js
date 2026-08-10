@@ -197,6 +197,34 @@
         for (const k of BB.Player.RATING_KEYS) raw[k] += err;
       }
 
+      /* The passes above shift the WHOLE spread, which is exactly what an
+       * attribute sitting on its cap cannot do — it absorbs nothing and the
+       * average never travels the last step. Roughly one build in 700 used to
+       * walk out of here a point light or a point heavy, which is how a
+       * creator screen promising "everyone starts at 60" would quietly show
+       * 59. So the last point is closed by hand: nudge only the attributes
+       * that still have room, one at a time, and stop the moment the weighted
+       * overall reads exactly. It moves a handful of ratings by a single
+       * point in the rare case it fires at all, so the archetype's shape
+       * survives intact. */
+      let settle = 0;
+      let gap = START_OVERALL - BB.Player.computeOverall(out);
+      while (gap !== 0 && settle++ < 200) {
+        const dir = gap > 0 ? 1 : -1;
+        let moved = false;
+        for (const k of BB.Player.RATING_KEYS) {
+          const next = out[k] + dir;
+          if (next < 25 || next > this.capFor(draft.position, draft.archetype, k)) continue;
+          out[k] = next;
+          moved = true;
+          if (BB.Player.computeOverall(out) === START_OVERALL) break;
+        }
+        // Every attribute pinned against the wall in the direction we need:
+        // nothing further is reachable, so take what we have rather than spin.
+        if (!moved) break;
+        gap = START_OVERALL - BB.Player.computeOverall(out);
+      }
+
       out.shotTendency = U.clamp(Math.round(U.rng.f(55, 85)), 0, 100);
       out.driveTendency = U.clamp(Math.round(U.rng.f(40, 75)), 0, 100);
       out.passTendency = U.clamp(Math.round(U.rng.f(35, 65)), 0, 100);

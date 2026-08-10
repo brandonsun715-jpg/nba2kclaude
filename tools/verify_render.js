@@ -965,6 +965,78 @@ console.log('\n[13] a created player starts at 60 and climbs');
   check('creator raised no errors', !o.pageErr, o.pageErr);
 }
 
+{
+  /* Every build starts on 60 — for EVERY roll of the dice, not merely most.
+   *
+   * The checks above roll the ratings a few dozen times per run, off an RNG
+   * seeded from Math.random at boot, so a generator that lands right 99.85% of
+   * the time reads as a suite that fails about one run in sixteen for no
+   * reason anybody can reproduce. That was section 13's long-standing flake.
+   *
+   * The cause was structural, not statistical: generateRatings converges by
+   * sliding the entire spread until the weighted overall hits the target, and
+   * an attribute already pinned against its position cap cannot slide. When
+   * enough of them were pinned the average stopped a point short and the loop
+   * gave up quietly after six passes.
+   *
+   * So this sweeps the space hard enough that a regression cannot hide, off
+   * FIXED seeds — a check written to catch a flake has no business being one.
+   * 7500 rolls against the old code caught 11; the odds of it catching none
+   * are about one in seventy thousand.
+   */
+  const r = runInPage(`
+    var BB = window.BB, P = BB.PlayerProfile, U = BB.U;
+    var archs = Object.keys(P.ARCHETYPES), poss = ['PG', 'SG', 'SF', 'PF', 'C'];
+    var rolls = 0, off = 0, worst = 0, example = null;
+    var capBreaks = 0, floorBreaks = 0;
+
+    for (var s = 0; s < 300; s++) {
+      for (var a = 0; a < archs.length; a++) {
+        for (var p = 0; p < poss.length; p++) {
+          U.rng = U.makeRng(s * 7919 + a * 131 + p * 17 + 1);
+          var d = P.newDraft();
+          d.archetype = archs[a]; d.position = poss[p]; d.ratings = null;
+          var ovr = P.overallOf(d);
+          rolls++;
+          var gap = ovr - P.START_OVERALL;
+          if (gap !== 0) {
+            off++;
+            if (Math.abs(gap) > Math.abs(worst)) worst = gap;
+            if (!example) example = archs[a] + '/' + poss[p] + ' rolled ' + ovr;
+          }
+          // The settle step moves individual ratings, so it must still
+          // respect the ceilings the position sets and the floor of 25.
+          for (var k = 0; k < BB.Player.RATING_KEYS.length; k++) {
+            var key = BB.Player.RATING_KEYS[k];
+            var v = d.ratings[key];
+            if (v > P.capFor(d.position, d.archetype, key)) capBreaks++;
+            if (v < 25) floorBreaks++;
+          }
+        }
+      }
+    }
+
+    return {
+      rolls: rolls, off: off, worst: worst, example: example,
+      capBreaks: capBreaks, floorBreaks: floorBreaks,
+      start: P.START_OVERALL, pageErr: window.__pageErr || null
+    };
+  `, 'starting overall');
+  if (r.err) check('starting-overall sweep ran', false, r.err);
+  const o = r.out || {};
+  check('the sweep actually rolled a full spread of builds', o.rolls === 7500,
+        'rolled ' + o.rolls);
+  check('every roll of every build lands exactly on the starting overall',
+        o.off === 0,
+        o.off + ' of ' + o.rolls + ' missed, worst by ' + o.worst +
+        (o.example ? ' (' + o.example + ')' : ''));
+  check('no rating is nudged above its position cap', o.capBreaks === 0,
+        o.capBreaks + ' over cap');
+  check('no rating is nudged below the floor', o.floorBreaks === 0,
+        o.floorBreaks + ' under 25');
+  check('starting-overall sweep raised no errors', !o.pageErr, o.pageErr);
+}
+
 console.log('\n[14] the figure faces the way it is facing, and wears its own colours');
 {
   /* Read the head back off the framebuffer.
