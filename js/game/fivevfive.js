@@ -58,7 +58,7 @@
       const World = BB.Game.ensureWorld();
 
       /* ---------------------------------------------------------- rosters */
-      this.teamA = new BB.Team({ name: 'Blacktop', abbr: 'BLK', primary: PAL.paint, secondary: PAL.chalk });
+      this.teamA = new BB.Team({ name: 'Home', abbr: 'HOM', primary: PAL.paint, secondary: PAL.chalk });
       BB.Team.generateRoster(this.teamA, (Math.random() * 1e9) | 0);
       const startersA = this.teamA.startingFive();
 

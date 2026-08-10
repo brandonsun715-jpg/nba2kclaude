@@ -893,7 +893,7 @@ input:focus-visible + .switch { outline: 2px solid var(--mint); outline-offset: 
 }
 
 /* =============================================================================
- * THE BLACKTOP PACKAGE
+ * THE NBA 1K26 PACKAGE
  * -----------------------------------------------------------------------------
  * A broadcast package wants weight, edges and a single loud accent. The sheet
  * above already had the bones — condensed display type, one reward colour, a
@@ -1325,4 +1325,186 @@ input:focus-visible + .switch { outline: 2px solid var(--mint); outline-offset: 
     rgba(5,7,12,0.95) 0%, rgba(5,7,12,0.92) 52%, rgba(5,7,12,0.72) 76%,
     rgba(5,7,12,0.22) 92%, rgba(5,7,12,0.00) 100%);
   z-index: -1;
+}
+
+/* ------------------------------------------------------- pause / match end --
+   These two screens shipped referring to a component that was never written.
+   `.menu-list` and `.menu-item` appear nowhere else in this sheet, so the pause
+   menu and the end-of-game screen — the two screens a player sees every single
+   session — were rendering as raw browser buttons: white boxes with default
+   chrome, and the accessibility outline as the only styling on them.
+
+   Built here as a stacked list rather than a row of buttons. A pause menu is a
+   list of decisions of unequal weight (resume is not the same size of choice as
+   leaving the game), and a stack can rank them where a row insists they are all
+   the same. */
+.pause {
+  width: min(420px, 92vw);
+  align-items: stretch; text-align: left;
+  gap: 0;
+  background: linear-gradient(180deg, rgba(18,26,38,0.97), rgba(11,16,24,0.98));
+  border: 1px solid var(--edge);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 18px), calc(100% - 18px) 100%, 0 100%);
+  box-shadow: 0 34px 90px rgba(0,0,0,0.66);
+  padding: 26px 26px 22px;
+}
+.pause__bar {
+  width: 40px; height: 3px; border-radius: 0; margin-bottom: 14px;
+}
+.pause__title {
+  font-size: 32px; letter-spacing: 0.09em; text-transform: uppercase; line-height: 1;
+}
+.pause__sub {
+  margin: 6px 0 0; letter-spacing: 0.18em; color: rgba(243,240,231,0.5);
+}
+
+.menu-list {
+  display: flex; flex-direction: column;
+  margin-top: 22px; border-top: 1px solid var(--edge);
+}
+.menu-list--tight { gap: 0; }
+
+.menu-item {
+  all: unset; cursor: pointer;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 13px 4px 13px 14px;
+  border-bottom: 1px solid var(--edge);
+  color: rgba(243, 240, 231, 0.72);
+  position: relative;
+  transition: color 0.15s var(--ease), background 0.15s var(--ease),
+              padding-left 0.15s var(--ease);
+}
+/* The marker rides the left edge the same way it does on the front page's
+   mode rail, so the two lists behave like one idea. */
+.menu-item::before {
+  content: ''; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  width: 2px; height: 0; background: var(--orange);
+  transition: height 0.15s var(--ease);
+}
+/* A chevron, so a row reads as something that goes somewhere. */
+.menu-item::after {
+  content: ''; width: 0; height: 0; margin-right: 10px;
+  border-top: 4px solid transparent; border-bottom: 4px solid transparent;
+  border-left: 6px solid rgba(243, 240, 231, 0.22);
+  transition: border-left-color 0.15s var(--ease), transform 0.15s var(--ease);
+}
+.menu-item:hover, .menu-item:focus-visible {
+  color: var(--chalk); background: rgba(243, 240, 231, 0.05);
+  padding-left: 18px; outline: none;
+}
+.menu-item:hover::before, .menu-item:focus-visible::before { height: 100%; }
+.menu-item:hover::after, .menu-item:focus-visible::after {
+  border-left-color: var(--orange); transform: translateX(3px);
+}
+.menu-item__k {
+  font: 800 13px var(--body); letter-spacing: 0.12em; text-transform: uppercase;
+}
+
+/* The one you most likely want, given as a solid bar instead of another line. */
+.menu-item--lead {
+  background: var(--orange); color: #160902; margin-bottom: 2px;
+  border-bottom-color: transparent;
+}
+.menu-item--lead::after { border-left-color: rgba(22, 9, 2, 0.55); }
+.menu-item--lead:hover, .menu-item--lead:focus-visible {
+  background: var(--gold); color: #160902;
+}
+.menu-item--lead:hover::after, .menu-item--lead:focus-visible::after {
+  border-left-color: #160902;
+}
+
+/* Leaving the game is the one row that should never be hit by accident. */
+.menu-item--warn { color: rgba(255, 140, 153, 0.78); }
+.menu-item--warn::before { background: var(--red); }
+.menu-item--warn:hover, .menu-item--warn:focus-visible {
+  color: #FFC9CF; background: rgba(226, 59, 78, 0.14);
+}
+.menu-item--warn:hover::after, .menu-item--warn:focus-visible::after {
+  border-left-color: var(--red);
+}
+
+.matchend__xp {
+  margin: 12px 0 0; font: var(--display); font-size: 24px;
+  letter-spacing: 0.06em; color: var(--gold);
+}
+.matchend__level {
+  margin-top: 10px; padding: 9px 12px;
+  background: rgba(34, 228, 160, 0.12);
+  border-left: 3px solid var(--mint);
+  font: 800 11px var(--mono); letter-spacing: 0.1em; color: var(--mint);
+}
+.matchend__level span { display: block; margin-top: 3px; color: rgba(243,240,231,0.6); letter-spacing: 0.06em; }
+
+/* ------------------------------------------------------------ the coach ----
+   The drill card, live on court during the walkthrough. Bottom-left, clear of
+   the scorebug at the top and clear of the shot meter, which hangs on the
+   shooter and can be anywhere up the floor. */
+.coach {
+  position: fixed; left: 22px; bottom: 22px;
+  width: min(340px, 42vw);
+  z-index: 45;
+  padding: 16px 18px 14px;
+  background: linear-gradient(180deg, rgba(18,26,38,0.95), rgba(9,13,20,0.96));
+  border: 1px solid var(--edge);
+  border-left: 3px solid var(--orange);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%);
+  box-shadow: 0 20px 50px rgba(0,0,0,0.55);
+  animation: coachIn 0.28s var(--ease-back) both;
+}
+@keyframes coachIn {
+  from { opacity: 0; transform: translateX(-14px); }
+  to { opacity: 1; transform: none; }
+}
+
+.coach__step {
+  font: 800 9.5px var(--mono); letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--orange);
+}
+.coach__title {
+  margin: 5px 0 0; font: var(--display); font-size: 19px;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--chalk);
+}
+.coach__task {
+  margin: 6px 0 0; font: 700 12.5px/1.45 var(--body); color: var(--chalk);
+}
+.coach__keys { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 9px; }
+
+.coach__bar {
+  margin-top: 11px; height: 4px;
+  background: rgba(243, 240, 231, 0.12);
+  overflow: hidden;
+}
+.coach__bar i {
+  display: block; height: 100%; width: 0;
+  background: linear-gradient(90deg, var(--orange), var(--gold));
+  transition: width 0.12s linear;
+}
+/* Finishing a drill has to land as an event, not as a panel that quietly
+   swaps text — the bar goes green and holds for a beat before the next one. */
+.coach.is-done { border-left-color: var(--mint); }
+.coach.is-done .coach__bar i { background: var(--mint); }
+.coach.is-done .coach__step { color: var(--mint); }
+
+.coach__why {
+  margin: 10px 0 0; padding-top: 9px;
+  border-top: 1px solid var(--edge);
+  font: 500 11.5px/1.5 var(--body); color: rgba(243, 240, 231, 0.56);
+}
+
+.coach__skip {
+  all: unset; cursor: pointer;
+  display: inline-block; margin-top: 10px;
+  font: 800 9.5px var(--mono); letter-spacing: 0.14em; text-transform: uppercase;
+  color: rgba(243, 240, 231, 0.34);
+  border-bottom: 1px solid rgba(243, 240, 231, 0.18);
+}
+.coach__skip:hover, .coach__skip:focus-visible {
+  color: var(--chalk); border-bottom-color: var(--chalk); outline: none;
+}
+
+.tut__start { margin: 0 0 16px; border-top: none; }
+
+@media (max-width: 700px) {
+  .coach { left: 12px; right: 12px; bottom: 12px; width: auto; }
+  .coach__why { display: none; }
 }

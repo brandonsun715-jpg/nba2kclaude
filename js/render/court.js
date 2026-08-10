@@ -38,8 +38,8 @@
     oh: C.COURT_W + PAD * 2,
 
     team: {
-      name: 'BLACKTOP',
-      abbr: 'BLK',
+      name: 'NBA 1K26',
+      abbr: 'N1K',
       primary: PAL.paint,
       secondary: PAL.orange,
       accent: PAL.chalk
@@ -107,7 +107,7 @@
    * across the street.
    */
   function drawSurround(ctx, team) {
-    // Blacktop first, over the entire baked pad.
+    // Asphalt first, over the entire baked pad.
     const g = ctx.createLinearGradient(0, -PAD, C.COURT_L * 0.4, C.COURT_W + PAD);
     g.addColorStop(0, PAL.asphaltLight);
     g.addColorStop(0.5, PAL.asphalt);

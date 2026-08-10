@@ -261,7 +261,7 @@
           <div class="menu">
             <div class="menu__brand">
               <span class="menu__mark" aria-hidden="true"></span>
-              <span class="menu__word">BLACKTOP</span>
+              <span class="menu__word">NBA 1k 26</span>
             </div>
             <nav class="menu-tabs" role="tablist" aria-label="Game modes">
               ${MODES.map((m) => `
@@ -710,7 +710,12 @@
               <button class="btn btn--ghost" data-nav data-act="back">Back</button>
             </header>
             <div class="panel__body">
-              <p class="note">Everything below is live: each key shown is the key bound to that action right now. Rebind anything in Controls and this page follows.</p>
+              <nav class="menu-list menu-list--tight tut__start">
+                <button class="menu-item menu-item--lead" data-nav data-autofocus data-act="walk">
+                  <span class="menu-item__k">Start the walkthrough</span>
+                </button>
+              </nav>
+              <p class="note">Seven drills on a live court — you have to actually do each one before it moves on. Or read the whole thing below: every key shown is the key bound to that action right now, so rebinding anything in Controls updates this page too.</p>
               ${CHAPTERS.map((ch, i) => `
                 <section class="tut__ch">
                   <div class="tut__chhead">
@@ -743,7 +748,55 @@
             return;
           }
           const b = e.target.closest('[data-act]');
-          if (b && b.dataset.act === 'back') M.pop();
+          if (!b) return;
+          if (b.dataset.act === 'walk') {
+            A.play('uiSelect');
+            M.closeAll();
+            BB.Engine.setState('tutorialDrills');
+            return;
+          }
+          if (b.dataset.act === 'back') M.pop();
+        });
+      },
+      onCancel() { M.pop(); }
+    });
+
+    /* Shown once the last drill is done. */
+    M.define({
+      id: 'tutorialDone',
+      build() {
+        return `
+          <div class="pause">
+            <div class="pause__bar" style="background:var(--mint)"></div>
+            <h2 class="pause__title">Drills complete</h2>
+            <p class="pause__sub">You have run the whole walkthrough</p>
+            <p class="matchend__xp">That is the game</p>
+            <nav class="menu-list menu-list--tight">
+              <button class="menu-item menu-item--lead" data-nav data-autofocus data-act="play">
+                <span class="menu-item__k">Play 1 vs 1</span>
+              </button>
+              <button class="menu-item" data-nav data-act="again">
+                <span class="menu-item__k">Run the drills again</span>
+              </button>
+              <button class="menu-item" data-nav data-act="read">
+                <span class="menu-item__k">Read How to Play</span>
+              </button>
+              <button class="menu-item" data-nav data-act="menu">
+                <span class="menu-item__k">Main menu</span>
+              </button>
+            </nav>
+          </div>`;
+      },
+      mount(el) {
+        el.addEventListener('click', (e) => {
+          const b = e.target.closest('[data-act]');
+          if (!b) return;
+          switch (b.dataset.act) {
+            case 'play': M.closeAll(); BB.Engine.setState('oneVone'); break;
+            case 'again': M.closeAll(); BB.Engine.setState('tutorialDrills'); break;
+            case 'read': M.pop(); M.push('tutorial'); break;
+            case 'menu': M.pop(); break;
+          }
         });
       },
       onCancel() { M.pop(); }

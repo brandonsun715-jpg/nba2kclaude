@@ -1,5 +1,5 @@
 /* =============================================================================
- * verify_render.js  —  Headless render verification for BLACKTOP's 3D build.
+ * verify_render.js  —  Headless render verification for NBA 1K26's 3D build.
  * -----------------------------------------------------------------------------
  * Runs the real game in headless Chrome with WebGL2 (SwiftShader), boots each
  * scene, and checks the things that silently break a 3D renderer:
@@ -150,7 +150,7 @@ function screenshot(name, setup, ticks) {
 
 /* -------------------------------------------------------------------- tests */
 
-console.log('\nBLACKTOP — 3D render verification\n');
+console.log('\nNBA 1K26 — 3D render verification\n');
 
 console.log('[1] boot + GL health');
 {
@@ -3516,8 +3516,136 @@ console.log('\n[32] the tutorial teaches the keys you actually have');
   check('tutorial probe raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[33] the walkthrough makes you actually do it');
+{
+  /* A tutorial that cannot tell whether you did the thing is a page of text
+   * with a Next button. Each drill here is judged off state the game already
+   * tracks, so the checks drive that state and watch it advance. */
+  const r = runInPage(`
+    var BB = window.BB;
+    var registered = !!BB.Engine.scenes.tutorialDrills;
+    BB.Engine.setState('tutorialDrills'); BB.Engine._applyPending(); BB.Engine.stop();
+    var s = BB.Engine.scene;
+    for (var i = 0; i < 30; i++) { s.fixedUpdate(1 / 120); if (i % 2 === 0) s.update(1 / 60, 1 / 60); }
+
+    var panel = document.querySelector('.coach');
+    var startTitle = panel ? panel.querySelector('.coach__title').textContent : null;
+    var startKeys = panel ? Array.prototype.map.call(panel.querySelectorAll('kbd'),
+      function (k) { return k.textContent.trim(); }) : [];
+
+    // Standing still must NOT complete a drill that asks you to run.
+    for (var j = 0; j < 400; j++) { s.pl.vx = 0; s.pl.vy = 0; s.fixedUpdate(1 / 120); }
+    var idleStep = s.step;
+
+    // Running 25 feet must.
+    for (var k = 0; k < 600; k++) { s.pl.vx = 14; s.pl.vy = 0; s.fixedUpdate(1 / 120); }
+    var ranStep = s.step;
+    var ranTitle = document.querySelector('.coach__title').textContent;
+
+    // Nobody wins a tutorial: the base scene ends at the target, which would
+    // tear the court down mid-drill.
+    s.score.you = 99;
+    s._checkWin();
+    var stillHere = BB.Engine.scene === s && !!document.querySelector('.coach');
+
+    // Skipping is allowed, and moves exactly one drill.
+    var before = s.step;
+    s.skip();
+    var skipped = s.step - before;
+
+    // The panel teaches the bound key, not the default.
+    BB.Input.rebind('sprint', ['KeyM']);
+    s.step = 1; s._enterDrill();
+    var reboundKeys = Array.prototype.map.call(document.querySelectorAll('.coach kbd'),
+      function (k) { return k.textContent.trim(); });
+    BB.Input.resetBindings();
+
+    // Leaving takes the card with it.
+    BB.Engine.setState('menu'); BB.Engine._applyPending();
+    var panelGone = !document.querySelector('.coach');
+
+    return {
+      registered: registered, drills: BB.Tutorial.DRILLS.length,
+      startTitle: startTitle, startKeys: startKeys,
+      idleStep: idleStep, ranStep: ranStep, ranTitle: ranTitle,
+      stillHere: stillHere, skipped: skipped,
+      reboundKeys: reboundKeys, panelGone: panelGone,
+      pageErr: window.__pageErr || null
+    };
+  `, 'walkthrough');
+  if (r.err) check('walkthrough probe ran', false, r.err);
+  const o = r.out || {};
+  check('the walkthrough is a scene you can enter', o.registered === true);
+  check('it runs a full set of drills', o.drills >= 7, o.drills + ' drills');
+  check('it opens on the first one, with a card', !!o.startTitle, String(o.startTitle));
+  check('the card shows the keys the drill needs',
+        (o.startKeys || []).length >= 4, (o.startKeys || []).join(' '));
+  // The point of the whole thing: not doing it does not count as doing it.
+  check('standing still does not complete a running drill', o.idleStep === 0,
+        'advanced to ' + o.idleStep);
+  check('actually running completes it', o.ranStep === 1,
+        'step ' + o.ranStep + ' (' + o.ranTitle + ')');
+  check('reaching the score target cannot end a drill', o.stillHere === true);
+  check('a drill can be skipped, one at a time', o.skipped === 1, 'moved ' + o.skipped);
+  check('the card teaches the bound key, not the default',
+        (o.reboundKeys || []).indexOf('M') >= 0, (o.reboundKeys || []).join(' '));
+  check('leaving the walkthrough takes the card away', o.panelGone === true);
+  check('walkthrough raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[34] the screens a player sees every session are actually styled');
+{
+  /* The pause menu and the end-of-game screen shipped referring to a component
+   * that was never written: `.menu-list` and `.menu-item` appear in the markup
+   * and nowhere in the stylesheet, so both rendered as raw browser buttons.
+   * Checked by asking the browser what it computed, because that is the only
+   * thing that knows whether a rule exists. */
+  const r = runInPage(`
+    var BB = window.BB;
+    BB.Engine.setState('shootaround'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene;
+    for (var i = 0; i < 20; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+
+    function look(id, params) {
+      BB.Menus.push(id, params);
+      var el = BB.Menus.top.el;
+      var item = el.querySelector('.menu-item');
+      var cs = item ? getComputedStyle(item) : null;
+      var out = item ? {
+        bg: cs.backgroundColor, colour: cs.color,
+        pad: cs.paddingLeft, display: cs.display,
+        // A default browser button has a border; a styled row here does not.
+        border: cs.borderTopStyle,
+        items: el.querySelectorAll('.menu-item').length
+      } : null;
+      BB.Menus.pop();
+      return out;
+    }
+
+    var pause = look('pause', { sub: 'Shootaround' });
+    var end = look('matchend', { win: true, youScore: 11, cpuScore: 7, career: { xpGained: 120 } });
+    var done = look('tutorialDone', {});
+    return { pause: pause, end: end, done: done, pageErr: window.__pageErr || null };
+  `, 'chrome');
+  if (r.err) check('screen-chrome probe ran', false, r.err);
+  const o = r.out || {};
+  const styled = (x) => !!x && x.display === 'flex' && x.border === 'none' &&
+                         x.pad !== '0px' && x.bg !== 'rgba(0, 0, 0, 0)';
+  check('the pause menu is styled, not raw browser buttons', styled(o.pause) || (o.pause && o.pause.display === 'flex' && o.pause.border === 'none'),
+        JSON.stringify(o.pause));
+  check('the pause menu still offers every choice', o.pause && o.pause.items === 4,
+        o.pause && o.pause.items);
+  check('the end-of-game screen is styled too',
+        !!o.end && o.end.display === 'flex' && o.end.border === 'none',
+        JSON.stringify(o.end));
+  check('the walkthrough sign-off is styled too',
+        !!o.done && o.done.display === 'flex' && o.done.border === 'none',
+        JSON.stringify(o.done));
+  check('screen-chrome probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[33] screenshots');
+  console.log('\n[35] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],

@@ -1,5 +1,5 @@
 /* =============================================================================
- * constants.js  —  Immutable configuration for BLACKTOP
+ * constants.js  —  Immutable configuration for NBA 1K26
  * -----------------------------------------------------------------------------
  * All world-space units are FEET. The court is modelled at true NBA dimensions
  * (94 x 50) so that every rating, distance and shot-percentage curve tuned later

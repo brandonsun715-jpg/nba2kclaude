@@ -27,7 +27,7 @@
   const World = { ready: false, court: null, park: null, hoops: null, team: null };
 
   function ensureWorld(team) {
-    team = team || { name: 'Blacktop', abbr: 'BLK', primary: PAL.paint, secondary: PAL.orange };
+    team = team || { name: 'Home', abbr: 'HOM', primary: PAL.paint, secondary: PAL.orange };
     if (!World.ready) {
       World.court = BB.Court.init();
       World.court.setTeam(team);
@@ -1062,6 +1062,10 @@
     .register('menu', MenuScene)
     .register('shootaround', ShootaroundScene)
     .register('oneVone', OneVOneScene);
+
+  /* The walkthrough is the 1 vs 1 scene with a coach over it, so it can only be
+   * built once that scene is on the register. */
+  if (BB.Tutorial) BB.Tutorial.install();
 
   BB.World = World;
   BB.Game = { ensureWorld };

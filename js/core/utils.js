@@ -217,14 +217,20 @@
      * rename is no reason to take somebody's career off them. Reads fall back
      * to the old prefix and carry the value forward on the spot, so the first
      * launch after updating migrates whatever it finds and never looks again. */
-    prefix: 'blacktop.',
-    legacyPrefix: 'hardwood.',
+    prefix: 'nba1k26.',
+    /* Every name this game has been saved under, newest first. The game has
+       been renamed twice; a player who has been here through both should not
+       lose a career to it, and somebody who skipped a version should migrate
+       straight from whichever name they still have on disk. */
+    legacyPrefixes: ['blacktop.', 'hardwood.'],
     get(key, fallback) {
       if (!this.available) return fallback;
       try {
         let raw = global.localStorage.getItem(this.prefix + key);
         if (raw == null) {
-          raw = global.localStorage.getItem(this.legacyPrefix + key);
+          for (let i = 0; i < this.legacyPrefixes.length && raw == null; i++) {
+            raw = global.localStorage.getItem(this.legacyPrefixes[i] + key);
+          }
           if (raw != null) global.localStorage.setItem(this.prefix + key, raw);
         }
         return raw == null ? fallback : JSON.parse(raw);
@@ -241,7 +247,9 @@
       if (!this.available) return;
       try {
         global.localStorage.removeItem(this.prefix + key);
-        global.localStorage.removeItem(this.legacyPrefix + key);
+        for (let i = 0; i < this.legacyPrefixes.length; i++) {
+          global.localStorage.removeItem(this.legacyPrefixes[i] + key);
+        }
       } catch (e) { /* ignore */ }
     }
   };
