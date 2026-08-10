@@ -33,8 +33,8 @@
   class Team {
     constructor(cfg) {
       cfg = cfg || {};
-      this.name = cfg.name || 'Hardwood';
-      this.abbr = cfg.abbr || 'HWD';
+      this.name = cfg.name || 'Blacktop';
+      this.abbr = cfg.abbr || 'BLK';
       this.primary = cfg.primary || PAL.paint;
       this.secondary = cfg.secondary || PAL.orange;
       this.roster = [];

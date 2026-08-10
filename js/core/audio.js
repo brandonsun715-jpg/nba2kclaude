@@ -201,7 +201,7 @@
       return s;
     };
 
-    /* --- ball on hardwood: short low thud with a slap transient ----------- */
+    /* --- ball on blacktop: short low thud with a slap transient ----------- */
     A.define('dribble', (a, out, t, p) => {
       const ctx = a.ctx;
       const o = ctx.createOscillator();

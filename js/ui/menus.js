@@ -251,7 +251,7 @@
           <div class="menu">
             <div class="menu__brand">
               <span class="menu__mark" aria-hidden="true"></span>
-              <span class="menu__word">HARDWOOD</span>
+              <span class="menu__word">BLACKTOP</span>
             </div>
             <nav class="menu-tabs" role="tablist" aria-label="Game modes">
               ${MODES.map((m) => `

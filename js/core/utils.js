@@ -213,23 +213,36 @@
         return true;
       } catch (e) { return false; }
     })(),
+    /* Saves were written under the old name for the game's whole life, and a
+     * rename is no reason to take somebody's career off them. Reads fall back
+     * to the old prefix and carry the value forward on the spot, so the first
+     * launch after updating migrates whatever it finds and never looks again. */
+    prefix: 'blacktop.',
+    legacyPrefix: 'hardwood.',
     get(key, fallback) {
       if (!this.available) return fallback;
       try {
-        const raw = global.localStorage.getItem('hardwood.' + key);
+        let raw = global.localStorage.getItem(this.prefix + key);
+        if (raw == null) {
+          raw = global.localStorage.getItem(this.legacyPrefix + key);
+          if (raw != null) global.localStorage.setItem(this.prefix + key, raw);
+        }
         return raw == null ? fallback : JSON.parse(raw);
       } catch (e) { return fallback; }
     },
     set(key, value) {
       if (!this.available) return false;
       try {
-        global.localStorage.setItem('hardwood.' + key, JSON.stringify(value));
+        global.localStorage.setItem(this.prefix + key, JSON.stringify(value));
         return true;
       } catch (e) { return false; }
     },
     remove(key) {
       if (!this.available) return;
-      try { global.localStorage.removeItem('hardwood.' + key); } catch (e) { /* ignore */ }
+      try {
+        global.localStorage.removeItem(this.prefix + key);
+        global.localStorage.removeItem(this.legacyPrefix + key);
+      } catch (e) { /* ignore */ }
     }
   };
 

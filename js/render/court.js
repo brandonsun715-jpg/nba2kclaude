@@ -38,8 +38,8 @@
     oh: C.COURT_W + PAD * 2,
 
     team: {
-      name: 'HARDWOOD',
-      abbr: 'HWD',
+      name: 'BLACKTOP',
+      abbr: 'BLK',
       primary: PAL.paint,
       secondary: PAL.orange,
       accent: PAL.chalk

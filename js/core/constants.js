@@ -1,5 +1,5 @@
 /* =============================================================================
- * constants.js  —  Immutable configuration for HARDWOOD
+ * constants.js  —  Immutable configuration for BLACKTOP
  * -----------------------------------------------------------------------------
  * All world-space units are FEET. The court is modelled at true NBA dimensions
  * (94 x 50) so that every rating, distance and shot-percentage curve tuned later

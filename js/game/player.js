@@ -93,7 +93,7 @@
    * The foot is the one bone the pose solver has to know the shape of. Rolling
    * up onto the toe at push-off means lifting the ankle by exactly the toe's
    * own length times the sine of the roll — do it by any other number and the
-   * shoe either hovers or sinks through the hardwood. Read off the same bind
+   * shoe either hovers or sinks through the blacktop. Read off the same bind
    * skeleton draw() places the mesh with, so the two cannot drift apart.
    */
   BONE.toe = (function () {
@@ -1900,7 +1900,7 @@
         // the floor, so the foot has to slide no matter how the phase is
         // driven. During stance the foot tracks straight back at exactly the
         // rate the body moves forward, which is what leaves it standing still
-        // on the hardwood.
+        // on the blacktop.
         stepFoot(STEP_L, phase + Math.PI, gait);
         stepFoot(STEP_R, phase, gait);
 

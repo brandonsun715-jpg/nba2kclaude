@@ -5,7 +5,7 @@
  * of 16 laid out as m[col * 4 + row]. Every function writes into a caller
  * supplied `out` so the render loop never allocates.
  *
- * Coordinate convention for HARDWOOD's 3D renderer:
+ * Coordinate convention for BLACKTOP's 3D renderer:
  *   world  x = baseline to baseline (0..94 ft)
  *   world  y = sideline to sideline (0..50 ft)
  *   world  z = height off the floor

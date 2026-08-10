@@ -246,7 +246,7 @@ function measure() {
 const want = process.argv.slice(2).filter((a) => POSES[a] != null);
 const list = want.length ? want : Object.keys(POSES);
 
-console.log('\nHARDWOOD — player model preview\n');
+console.log('\nBLACKTOP — player model preview\n');
 
 const r = measure();
 if (r.err) {

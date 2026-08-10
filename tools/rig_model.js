@@ -3,7 +3,7 @@
  * -----------------------------------------------------------------------------
  * The supplied basketball_player OBJ is a single unrigged A-pose mesh: one
  * group, 49,200 quads, no skeleton, no bone weights, and an empty material
- * library. HARDWOOD animates its players with a two-bone IK solver that emits
+ * library. BLACKTOP animates its players with a two-bone IK solver that emits
  * joint positions every frame, so a mesh can only be used if it can be
  * deformed by those joints. This tool does the offline half of that:
  *
@@ -780,7 +780,7 @@ function pack(verts, tris, J) {
 
 /* --------------------------------------------------------------------- run */
 
-console.log('\nHARDWOOD — rigging ' + path.basename(SRC) + '\n');
+console.log('\nBLACKTOP — rigging ' + path.basename(SRC) + '\n');
 
 const raw = parseObj(SRC);
 console.log('  parsed      ' + raw.positions.length + ' vertices, ' +

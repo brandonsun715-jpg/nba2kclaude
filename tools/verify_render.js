@@ -1,5 +1,5 @@
 /* =============================================================================
- * verify_render.js  —  Headless render verification for HARDWOOD's 3D build.
+ * verify_render.js  —  Headless render verification for BLACKTOP's 3D build.
  * -----------------------------------------------------------------------------
  * Runs the real game in headless Chrome with WebGL2 (SwiftShader), boots each
  * scene, and checks the things that silently break a 3D renderer:
@@ -150,7 +150,7 @@ function screenshot(name, setup, ticks) {
 
 /* -------------------------------------------------------------------- tests */
 
-console.log('\nHARDWOOD — 3D render verification\n');
+console.log('\nBLACKTOP — 3D render verification\n');
 
 console.log('[1] boot + GL health');
 {
@@ -1689,7 +1689,7 @@ console.log('\n[20] the court is outdoors, in a park, in daylight');
         'mean luminance ' + (o.meanLum || 0).toFixed(0) + ' of 255');
   check('almost nothing in frame falls to black', o.darkFrac < 0.16,
         ((o.darkFrac || 0) * 100).toFixed(1) + '% of the frame is near-black');
-  check('the court is painted acrylic, not hardwood', o.courtFrac > 0.2,
+  check('the court is painted acrylic, not blacktop', o.courtFrac > 0.2,
         'painted surface covers ' + ((o.courtFrac || 0) * 100).toFixed(1) + '% of frame');
 
   /* The crowd stands on the ground behind a fence. In the bowl they were

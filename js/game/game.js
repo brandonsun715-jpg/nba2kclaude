@@ -27,7 +27,7 @@
   const World = { ready: false, court: null, park: null, hoops: null, team: null };
 
   function ensureWorld(team) {
-    team = team || { name: 'Hardwood', abbr: 'HWD', primary: PAL.paint, secondary: PAL.orange };
+    team = team || { name: 'Blacktop', abbr: 'BLK', primary: PAL.paint, secondary: PAL.orange };
     if (!World.ready) {
       World.court = BB.Court.init();
       World.court.setTeam(team);

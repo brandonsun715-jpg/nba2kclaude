@@ -238,7 +238,7 @@
     boot.innerHTML = '<div style="max-width:34rem;margin:auto;padding:2rem;'
       + 'color:#F3F0E7;font:500 1rem/1.6 system-ui,sans-serif;text-align:center">'
       + '<h1 style="font-size:1.4rem;margin:0 0 .8rem">WebGL2 required</h1>'
-      + 'HARDWOOD renders the court in 3D and needs WebGL2, which this browser '
+      + 'BLACKTOP renders the court in 3D and needs WebGL2, which this browser '
       + 'either does not support or has disabled. Enabling hardware acceleration '
       + 'in your browser settings usually fixes it.</div>';
   }
