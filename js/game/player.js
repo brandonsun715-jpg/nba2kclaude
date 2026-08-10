@@ -291,6 +291,9 @@
       this.heightIn = cfg.height || 79;
       this.skin = cfg.skin || '#C99268';
       this.hair = cfg.hair || '#1B1310';
+      // Which haircut, out of the shells baked into the mesh. The scalp is
+      // always there; the style is the volume sitting on top of it.
+      this.hairStyle = cfg.hairStyle || 'fade';
       this.jerseyMain = (this.team && this.team.primary) || PAL.paint;
       this.jerseyTrim = (this.team && this.team.secondary) || PAL.orange;
 
@@ -1662,9 +1665,17 @@
       // has offered seven of them since the day it shipped and every one of
       // them landed on the floor: this zone was painted from `skin`, so a
       // black-haired player and a blond one came out identical.
-      copyCol(z[4], this._col('hair', this.hair || U.shade(this.skin, -0.42)));
+      /* A shaved head is the one style with no shell to draw, so it has to be
+       * done in colour: paint the scalp with the skin tone (a shade down, the
+       * way a fresh shave actually reads) instead of the hair colour. Every
+       * other style leaves the scalp as hair and lets its shell add the
+       * volume. */
+      copyCol(z[4], this.hairStyle === 'bald'
+        ? this._col('scalp', U.shade(this.skin, -0.10))
+        : this._col('hair', this.hair || U.shade(this.skin, -0.42)));
       copyCol(z[5], this._col('trim', this.jerseyTrim));
       Skin.setZones(sp, z);
+      sp.hairStyle = this.hairStyle;
 
       if (this.human) {
         // Selection ring under the controlled player. A torus, not a quad: a

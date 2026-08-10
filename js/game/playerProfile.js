@@ -19,6 +19,21 @@
     '#111721', '#F3F0E7', '#1AA6A0', '#B0242E', '#3D3D3D'
   ];
 
+  /* The haircuts, in the order the creator offers them. The key must match a
+   * shell baked into the mesh by tools/rig_model.js — except 'bald', which
+   * draws no shell at all and repaints the scalp as skin. */
+  const HAIR_STYLES = [
+    ['fade', 'Fade'],
+    ['buzz', 'Buzz'],
+    ['bald', 'Shaved'],
+    ['afro', 'Afro'],
+    ['highTop', 'High Top'],
+    ['waves', 'Waves'],
+    ['cornrows', 'Cornrows'],
+    ['locs', 'Locs'],
+    ['puff', 'Puff']
+  ];
+
   const ARCHETYPES = {
     balanced: { label: 'Balanced', boost: [], cut: [] },
     sharpshooter: {
@@ -103,13 +118,14 @@
 
   const DEFAULT_DRAFT = {
     name: 'YOU', number: 23, position: 'SF',
-    height: 79, skin: SKIN_TONES[2], hair: HAIR_COLORS[0],
+    height: 79, skin: SKIN_TONES[2], hair: HAIR_COLORS[0], hairStyle: 'fade',
     jerseyMain: JERSEY_COLORS[0], jerseyTrim: JERSEY_COLORS[8],
     archetype: 'balanced'
   };
 
   const PlayerProfile = {
-    SKIN_TONES, HAIR_COLORS, JERSEY_COLORS, ARCHETYPES, POSITION_CAPS, START_OVERALL,
+    SKIN_TONES, HAIR_COLORS, JERSEY_COLORS, HAIR_STYLES, ARCHETYPES, POSITION_CAPS,
+    START_OVERALL,
 
     /** The saved player, or null if nobody's ever saved one yet. */
     load() { return U.store.get('createdPlayer', null); },
@@ -248,7 +264,7 @@
       return Object.assign({
         human: true, name: draft.name || 'YOU', number: draft.number,
         position: draft.position, height: draft.height,
-        skin: draft.skin, hair: draft.hair,
+        skin: draft.skin, hair: draft.hair, hairStyle: draft.hairStyle,
         ratings: this.ensureRatings(draft)
       }, extra || {});
     },

@@ -590,7 +590,9 @@
         const Skin = BB.Skin;
         gl.useProgram(Skin.prog.prog);
         this._setCommon(Skin.prog);
-        for (let i = 0; i < this._poseCount; i++) Skin.draw(this._poses[i]);
+        for (let i = 0; i < this._poseCount; i++) {
+          Skin.draw(this._poses[i], this._poses[i].hairStyle);
+        }
       }
 
       /* --- contact shadows: blended, depth-tested, no depth write */

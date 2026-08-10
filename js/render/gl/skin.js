@@ -140,6 +140,14 @@
       gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, raw, gl.STATIC_DRAW);
       this.indexType = M.wideIndex ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
       this.indexCount = M.triCount * 3;
+      this.indexBytes = M.wideIndex ? 4 : 2;
+
+      /* The haircuts live in the same buffer, past the end of the body (see
+       * buildHair in tools/rig_model.js). Drawing a figure is therefore the
+       * body's index range plus, optionally, one style's. */
+      this.bodyIndexCount = M.bodyIndexCount == null ? this.indexCount : M.bodyIndexCount;
+      this.hairStyles = M.hairStyles || {};
+      this.hairOrder = M.hairOrder || [];
 
       gl.bindVertexArray(null);
 
@@ -247,8 +255,10 @@
       }
     },
 
-    /** One player, one draw call. Assumes the program is already bound. */
-    draw(pose) {
+    /** One player. Assumes the program is already bound.
+     * @param {string} [hairStyle] a key of hairStyles; anything unrecognised
+     *   (including 'bald') draws the body alone, leaving the bare scalp. */
+    draw(pose, hairStyle) {
       const gl = BB.GLX.gl, u = this.prog.u;
       gl.uniformMatrix4fv(u.u_bones, false, pose.pal.subarray(0, this.boneCount * 16));
       gl.uniformMatrix3fv(u.u_boneNormals, false, pose.nrm.subarray(0, this.boneCount * 9));
@@ -273,7 +283,11 @@
        * torn — that is the inside of a limb seen through the inside of a
        * torso. None of it was the animation, and none of it was the mesh. */
       gl.frontFace(gl.CW);
-      gl.drawElements(gl.TRIANGLES, this.indexCount, this.indexType, 0);
+      gl.drawElements(gl.TRIANGLES, this.bodyIndexCount, this.indexType, 0);
+      const cut = hairStyle && this.hairStyles[hairStyle];
+      if (cut && cut.count) {
+        gl.drawElements(gl.TRIANGLES, cut.count, this.indexType, cut.start * this.indexBytes);
+      }
       gl.frontFace(gl.CCW);
       gl.bindVertexArray(null);
     }

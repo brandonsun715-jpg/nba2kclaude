@@ -60,6 +60,9 @@ BONES.forEach((b, i) => { BONE_INDEX[b] = i; });
 /* Material zones, matched by name at runtime to the player's palette. */
 const ZONE = { SKIN: 0, JERSEY: 1, SHORTS: 2, SHOE: 3, HAIR: 4 };
 
+/** Clamp to 0..1. Used wherever a measurement becomes a blend factor. */
+const U01 = (t) => (t < 0 ? 0 : t > 1 ? 1 : t);
+
 /* ------------------------------------------------------------------- parse */
 
 function parseObj(file) {
@@ -301,8 +304,36 @@ function skinVertex(p, segs, J) {
 function zoneOf(p, boneName, J) {
   const H = J.height, z = p[2];
   if (z < H * 0.082) return ZONE.SHOE;
-  if (boneName === 'head') return z > H * 0.945 || p[1] > -H * 0.01 ? ZONE.HAIR : ZONE.SKIN;
-  const trunk = boneName === 'pelvis' || boneName === 'torso';
+
+  /* Hair is the CRANIUM, and nothing but the cranium.
+   *
+   * The rule here used to hand the hair zone to any vertex the skinning had
+   * given to the head bone, provided it sat behind the mid-plane — at any
+   * height at all. Skinning gives the head bone the base of the neck and the
+   * top of the shoulders as well, so a third of the "hair" (274 of 867
+   * vertices) was being painted down the collar. It reached z/H 0.832, which
+   * is exactly where the jersey starts, and that is the hair that looked
+   * welded to the jersey.
+   *
+   * Gating on the skull line is what was missing: above 0.90H there is
+   * nothing but head, so crown-and-back can be read straight off the
+   * geometry. Everything below falls through to the garment rules, where a
+   * collar vertex becomes jersey and a neck vertex becomes skin. */
+  if (boneName === 'head' && z > H * 0.89) {
+    /* The scalp ends on the same slanted hairline the haircuts grow from (see
+     * buildHair): high across the brow, dropping away to the nape. It used to
+     * be a crown-or-back test, which is a corner in a place a hairline has no
+     * corner — it left a visible staircase across the temple that every style
+     * inherited, because the shells taper out along one boundary and the
+     * scalp's colour changed along a different one. Skull fit, measured:
+     * centre y -0.043H, half-depth 0.051H. */
+    const t = U01((p[1] + H * 0.094) / (H * 0.102));
+    return z > H * (0.960 - 0.062 * t) ? ZONE.HAIR : ZONE.SKIN;
+  }
+
+  // The head bone counts as trunk below the skull: that is the collar, and it
+  // is wearing the jersey like the shoulders it sits on.
+  const trunk = boneName === 'pelvis' || boneName === 'torso' || boneName === 'head';
   const thigh = boneName === 'thighL' || boneName === 'thighR';
   if ((trunk || thigh) && z > H * 0.285 && z < H * 0.545) return ZONE.SHORTS;
   if (trunk && z >= H * 0.545 && z < H * 0.855) return ZONE.JERSEY;
@@ -828,12 +859,172 @@ const verts = shaded.pos.map((p, i) => {
 const best = { verts, tris: shaded.tris };
 console.log('  shaded      ' + verts.length + ' vertices, ' + best.tris.length + ' triangles');
 
+/* ------------------------------------------------------------------ hair
+ * The OBJ ships exactly one haircut, fused into the same surface as the head.
+ * Everything above is about getting that surface labelled correctly; this is
+ * about giving the player a choice.
+ *
+ * Each style is baked as its own block of triangles APPENDED AFTER the body,
+ * so the runtime can draw the body and then whichever style it wants out of
+ * the same buffer — no rebuilds, no second mesh, one extra draw call.
+ *
+ * The styles are shells grown off the skull. The scalp underneath is already
+ * zoned as hair and already the right colour, which is what makes this cheap:
+ * a shell only has to add VOLUME, and it can taper its thickness to nothing at
+ * the hairline instead of needing a rim to close it off. A shell that reaches
+ * zero exactly where the scalp takes over has no seam to hide.
+ */
+function buildHair(bodyVerts, J) {
+  const H = J.height;
+  const scalp = bodyVerts.filter((v) => v.zone === ZONE.HAIR);
+  if (!scalp.length) return { styles: {}, order: [] };
+
+  // Fit the skull as a box, and work in the ellipsoid inscribed in it.
+  const lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9];
+  for (const v of scalp) {
+    for (let i = 0; i < 3; i++) {
+      lo[i] = Math.min(lo[i], v.p[i]);
+      hi[i] = Math.max(hi[i], v.p[i]);
+    }
+  }
+  // The scalp is a cap, not a ball: it has no underside, so its own box would
+  // put the centre far too high. Drop the origin to the skull's mid-height.
+  const c = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, H * 0.938];
+  const r = [
+    Math.max((hi[0] - lo[0]) / 2, H * 0.03),
+    Math.max((hi[1] - lo[1]) / 2, H * 0.03),
+    Math.max(hi[2] - c[2], H * 0.03)
+  ];
+
+  /* How much of the skull a haircut is allowed to cover, smoothed.
+   *
+   * The same crown-or-back rule the zoner uses, but as a 0..1 ramp rather than
+   * a yes/no: 1 well inside the hair, falling to 0 at the hairline. Every
+   * style multiplies its thickness by this, so none of them creep down over
+   * an ear or a forehead, and all of them land flush on the scalp. */
+  /* Where the hairline sits, as a 0..1 ramp rather than a yes/no.
+   *
+   * A real hairline is not a height, it is a slope: high across the brow and
+   * dropping away to the nape. Reading it off the crown-or-back rule the zoner
+   * uses left the temples bare, because that rule was written to answer a
+   * different question — which existing vertices are hair — not where a
+   * haircut is allowed to grow.
+   *
+   * Every style multiplies its thickness by this, so all of them taper to
+   * nothing exactly at the hairline and meet the scalp with no rim and no
+   * seam. */
+  const cover = (p) => {
+    const t = U01((p[1] - (c[1] - r[1])) / Math.max(2 * r[1], 1e-6)); // 0 brow, 1 nape
+    const line = H * (0.960 - 0.062 * t);
+    return U01((p[2] - line) / (H * 0.028));
+  };
+
+  /* Thickness profiles, as a fraction of skull radius. Each gets the point on
+   * the unit sphere it is being asked about, so a style can be tall on top and
+   * tight at the sides — which is the whole difference between a fade and an
+   * afro. `az` is 0 at the back of the head and grows around the side. */
+  const STYLES = {
+    buzz:     { amp: 0.045, f: () => 1 },
+    fade:     { amp: 0.130, f: (d) => 0.35 + 0.65 * Math.pow(U01(d[2]), 1.5) },
+    afro:     { amp: 0.850, f: () => 1 },
+    highTop:  { amp: 0.980, f: (d) => Math.pow(U01(d[2]), 0.30) },
+    waves:    { amp: 0.100, f: (d, az) => 1 + 0.30 * Math.cos(az * 16) },
+    cornrows: { amp: 0.230, f: (d, az) => 0.35 + 0.65 * Math.pow(Math.abs(Math.cos(az * 5)), 0.8) },
+    locs:     { amp: 0.560, f: (d, az, po) => 0.70 + 0.50 * Math.cos(az * 9) * Math.cos(po * 8) },
+    puff:     { amp: 0.720, f: (d) => Math.pow(U01(d[2]), 0.7) * (0.65 + 0.65 * U01(d[1])) }
+  };
+
+  console.log('  SKULL FIT   c=[' + c.map((v) => (v / H).toFixed(3)).join(', ') +
+              ']H  r=[' + r.map((v) => (v / H).toFixed(3)).join(', ') + ']H');
+
+  const AZ = 40, PO = 26;   // grid resolution around and over the skull
+  const out = { styles: {}, order: [] };
+
+  for (const name of Object.keys(STYLES)) {
+    const spec = STYLES[name];
+    const first = shaded.tris.length;
+    const grid = [];
+
+    for (let i = 0; i <= PO; i++) {
+      const po = (i / PO) * (Math.PI * 0.80);      // pole down past the nape
+      const row = [];
+      for (let k = 0; k <= AZ; k++) {
+        const az = (k / AZ) * Math.PI * 2;
+        const d = [
+          Math.sin(po) * Math.sin(az),
+          Math.sin(po) * Math.cos(az),
+          Math.cos(po)
+        ];
+        const base = [c[0] + d[0] * r[0], c[1] + d[1] * r[1], c[2] + d[2] * r[2]];
+        const t = cover(base) * spec.amp * Math.max(0, spec.f(d, az, po));
+        const p = [
+          c[0] + d[0] * r[0] * (1 + t),
+          c[1] + d[1] * r[1] * (1 + t),
+          c[2] + d[2] * r[2] * (1 + t)
+        ];
+        const L = Math.hypot(d[0] / r[0], d[1] / r[1], d[2] / r[2]) || 1;
+        row.push(bodyVerts.push({
+          p,
+          n: [d[0] / r[0] / L, d[1] / r[1] / L, d[2] / r[2] / L],
+          b0: BONE_INDEX.head, b1: BONE_INDEX.head, w0: 1,
+          zone: ZONE.HAIR
+        }) - 1);
+      }
+      grid.push(row);
+    }
+
+    // Only emit a quad where the style actually has substance, so a fade does
+    // not pay for the polygons an afro needs down the back of the neck.
+    for (let i = 0; i < PO; i++) {
+      for (let k = 0; k < AZ; k++) {
+        const a = grid[i][k], b = grid[i][k + 1], d2 = grid[i + 1][k], e = grid[i + 1][k + 1];
+        const live = [a, b, d2, e].some((ix) => cover(bodyVerts[ix].p) > 0.02);
+        if (!live) continue;
+        /* Wound to match the body. Every bone matrix carries the court-to-GL
+         * axis swap, which is a reflection, so the runtime draws the figure
+         * with frontFace(CW) — see Skin.draw. A shell wound the other way is
+         * not subtly wrong, it is invisible: back-face culling eats it whole
+         * and every haircut silently renders as the bare scalp. */
+        shaded.tris.push([a, b, d2], [b, e, d2]);
+      }
+    }
+
+    out.styles[name] = { start: first * 3, count: (shaded.tris.length - first) * 3 };
+    out.order.push(name);
+  }
+  return out;
+}
+
+const bodyTris = shaded.tris.length;
+const bodyVertCount = best.verts.length;
+const HAIR = buildHair(best.verts, J);
+console.log('  hair        ' + HAIR.order.length + ' styles, ' +
+            (shaded.tris.length - bodyTris) + ' triangles, ' +
+            (best.verts.length - bodyVertCount) + ' vertices');
+
 const zoneCount = [0, 0, 0, 0, 0];
 for (const v of verts) zoneCount[v.zone]++;
+{
+  const H = J.height;
+  const hair = verts.filter((v) => v.zone === 4);
+  const zs = hair.map((v) => v.p[2] / H).sort((a, b) => a - b);
+  const jerseyTop = verts.filter((v) => v.zone === 1).reduce((m, v) => Math.max(m, v.p[2]), 0);
+  console.log('  HAIR DIAG   n=' + hair.length +
+    '  z/H lowest=' + zs[0].toFixed(3) +
+    ' med=' + zs[Math.floor(zs.length * 0.5)].toFixed(3) +
+    ' top=' + zs[zs.length - 1].toFixed(3) +
+    '  jersey top=' + (jerseyTop / H).toFixed(3) +
+    '  gap=' + ((zs[0] - jerseyTop / H) * 100).toFixed(1) + '% of stature');
+}
 console.log('  final zones skin ' + zoneCount[0] + '  jersey ' + zoneCount[1] +
             '  shorts ' + zoneCount[2] + '  shoe ' + zoneCount[3] + '  hair ' + zoneCount[4]);
 
 const asset = pack(best.verts, best.tris, J);
+/* Where the body stops and the haircuts start. The runtime draws
+ * [0, bodyIndexCount) for the figure, then one style's range on top. */
+asset.bodyIndexCount = bodyTris * 3;
+asset.hairStyles = HAIR.styles;
+asset.hairOrder = HAIR.order;
 const json = JSON.stringify(asset);
 const body = '/* Generated by tools/rig_model.js from ' + path.basename(SRC) + '.\n' +
   ' * A skinned player mesh: quantised positions and normals, two bone weights\n' +
