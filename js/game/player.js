@@ -1668,9 +1668,22 @@
         F[1] = D[1] + (dy / L) * handLen;
         F[2] = D[2] + (dz / L) * handLen;
 
+        /* Palm twist.
+         *
+         * The mesh is bound in an A-pose with the arms held out and the palms
+         * turned back. Bringing one down to the hip is a big swing, and a real
+         * arm does not make it rigidly: the forearm rotates internally on the
+         * way down so the palm ends up facing the thigh. This rig has no wrist
+         * and no twist bone, so the hand kept whatever facing the bind gave it
+         * and the palms pointed backwards in every hanging pose.
+         *
+         * `ref` is what pins rotation about a bone's own length, so spinning
+         * the hand's copy of it about the forearm axis IS the twist — one
+         * rotation, no new bone, and it costs nothing when the angle is zero. */
         Skin.setBone(sp, 'upperArm' + sfx, A, B, ref, g);
         Skin.setBone(sp, 'forearm' + sfx, B, D, ref, g);
-        Skin.setBone(sp, 'hand' + sfx, D, F, ref, g);
+        const tw = (hand.twist == null ? 0 : hand.twist) * arm.side;
+        Skin.setBone(sp, 'hand' + sfx, D, F, tw ? spin(ref, dx / L, dy / L, dz / L, tw, HREF) : ref, g);
       }
 
       /* ------------------------------------------------------------- kit
@@ -2024,6 +2037,10 @@
       /* Per-hand lateral offset, off the pose plane. Zero for everything that
        * wants the old mirrored behaviour; the shot and the carry set it. */
       let hlSide = 0, hrSide = 0;
+      /* Palm rotation about the forearm, mirrored per side. The resting value
+       * turns the palms in toward the thighs, which is where a hanging arm
+       * actually leaves them; poses that need a different palm say so. */
+      let hlTwist = 0.85, hrTwist = 0.85;
       let armRoll = 0;
       /* How far the arms are drawn in toward the body's centreline, 0..1.
        *
@@ -2485,6 +2502,7 @@
       p.footL.x = flX; p.footL.y = flY; p.footL.pitch = pitchL; p.footL.side = sideL;
       p.footR.x = frX; p.footR.y = frY; p.footR.pitch = pitchR; p.footR.side = sideR;
       p.handL.side = hlSide; p.handR.side = hrSide;
+      p.handL.twist = hlTwist; p.handR.twist = hrTwist;
       p.handL.x = hlX; p.handL.y = hlY;
       p.handR.x = hrX; p.handR.y = hrY;
 
@@ -2699,6 +2717,17 @@
   const SPINE_BONES = ['pelvis', 'torso', 'head'];
   const HIP = [0, 0, 0], SHO = [0, 0, 0];
   const REF_DIR = [1, 0, 0];
+  const HREF = [1, 0, 0];
+
+  /** Rotates `v` about unit axis (ax, ay, az) by `a` radians, into `out`.
+   *  Rodrigues — used to twist a bone's reference direction about the bone. */
+  function spin(v, ax, ay, az, a, out) {
+    const c = Math.cos(a), s = Math.sin(a), d = ax * v[0] + ay * v[1] + az * v[2];
+    out[0] = v[0] * c + (ay * v[2] - az * v[1]) * s + ax * d * (1 - c);
+    out[1] = v[1] * c + (az * v[0] - ax * v[2]) * s + ay * d * (1 - c);
+    out[2] = v[2] * c + (ax * v[1] - ay * v[0]) * s + az * d * (1 - c);
+    return out;
+  }
 
   function dist3(a, b) {
     return Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
