@@ -253,8 +253,21 @@ function gatePenalty(name, p, J, seg) {
     // all above it. An A-pose hangs the arm right against the ribs, so a
     // generous gate lets it capture chest and armhole vertices — and those
     // then swing with the arm and tear the jersey open when it moves.
+    /* The deltoid has to be SHARED, or the shoulder tears.
+     *
+     * At 6.0 this gate was a wall standing exactly where the joint bends: a
+     * vertex just inboard of the shoulder was pushed onto the torso with
+     * effectively all of its weight, its neighbour just outboard onto the
+     * upper arm with all of its, and the pair pulled apart the moment the arm
+     * rotated. The visible result was a hole at the shoulder in every raised
+     * or rolled-arm pose — the defensive stance and the jump shot both.
+     *
+     * Gentler here so the cap can be genuinely blended between the two bones,
+     * which is what lets it deform instead of splitting. The gate still has to
+     * exist: without any, the jersey's chest panel joins the arm and swings
+     * with it. */
     const inboard = shoulderX * 1.05 - ax;
-    if (inboard > 0) pen += inboard * 6.0;
+    if (inboard > 0) pen += inboard * 2.2;
     const above = p[2] - J.shoulderL[2];
     if (above > 0) pen += above * 4.0;
   } else if (/^(thigh|shin|foot)/.test(name)) {
@@ -289,8 +302,14 @@ function skinVertex(p, segs, J) {
   }
   scored.sort((a, b) => a[1] - b[1]);
   const [n0, d0] = scored[0], [n1, d1] = scored[1];
-  const w0 = 1 / Math.pow(Math.max(d0, 1e-3), 4);
-  const w1 = 1 / Math.pow(Math.max(d1, 1e-3), 4);
+  /* Falloff exponent. At 4 the nearer bone takes essentially everything —
+   * a vertex 10% closer to one bone gives it 68% of the weight, and one 30%
+   * closer gives it 86% — so the skin is rigid right up to a seam and then
+   * jumps. At 2 the same two vertices come out 55/45 and 65/35, which is a
+   * joint that bends rather than a pair of shells that slide past each
+   * other. */
+  const w0 = 1 / Math.pow(Math.max(d0, 1e-3), 2);
+  const w1 = 1 / Math.pow(Math.max(d1, 1e-3), 2);
   const sum = w0 + w1;
   return [BONE_INDEX[n0], BONE_INDEX[n1], w0 / sum, w1 / sum];
 }
@@ -837,7 +856,7 @@ shaded.pos.forEach((p, i) => {
   dense[i * nb + sk[0]] = sk[2];
   dense[i * nb + sk[1]] = sk[3];
 });
-const smoothed = smoothWeights(shaded.pos.length, shaded.tris, nb, dense, 10);
+const smoothed = smoothWeights(shaded.pos.length, shaded.tris, nb, dense, 18);
 
 const verts = shaded.pos.map((p, i) => {
   // Back to two bones: take the strongest pair from the smoothed field.
