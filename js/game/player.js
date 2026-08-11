@@ -911,8 +911,16 @@
       if (!hoop) return 0;
 
       const d = U.dist(this.x, this.y, foe.x, foe.y);
+      /* Close is good; ON TOP of them is where it stops helping.
+       *
+       * The second term used to start punishing at 2.1 feet and bottom out at
+       * 1.0, which graded a defender pressed right up into the handler at 0.58
+       * while one standing three feet off scored 0.90. Two feet is not too
+       * close to guard somebody, it is exactly where you want to be — the
+       * penalty belongs where bodies are genuinely tangled and the handler can
+       * simply step through you. */
       const near = U.clamp01(U.remap(d, 8.5, 2.8, 0, 1)) *
-                   U.clamp01(U.remap(d, 1.0, 2.1, 0.3, 1));
+                   U.clamp01(U.remap(d, 0.55, 1.25, 0.45, 1));
       if (near <= 0) return 0;
 
       // On the line from the ball to the rim they are attacking.

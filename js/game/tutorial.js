@@ -100,15 +100,25 @@
       task: 'Hold the defence key and stay in front of the CPU for 3 seconds.',
       why: 'In a stance your hips drop, your base widens, and you stay pointed at the ball handler however you slide.',
       keys: ['intense'],
+      // The partner attacks but never shoots, so the stand can actually be
+      // held for three seconds instead of ending in a jumper after one.
+      partner: 'attack',
       enter(t) { t.giveBall(t.foe); },
       test(t, dt) {
         const p = t.pl, foe = t.foe;
         t.ensureBall(foe, dt);
         // guardQuality is the same 0..1 the contest maths reads: close, between
         // them and the rim, square, and in a stance — multiplied, not summed.
-        const q = p.guardQuality ? p.guardQuality(foe) : 0;
-        if (p.isGuarding && q > 0.55) t.k.g = (t.k.g || 0) + dt;
-        else t.k.g = Math.max(0, (t.k.g || 0) - dt * 0.8);
+        /* Judged off defenseQuality, not a raw per-tick guardQuality.
+         *
+         * defenseQuality is the smoothed number the game already uses for the
+         * ring under your feet and for the contest on the shot — so the drill
+         * is asking for exactly the thing the player can SEE. Grading against
+         * the raw per-tick value instead would tick the bar up and down on
+         * frames where nothing the player did changed. */
+        const q = p.defenseQuality || 0;
+        if (p.isGuarding && q > 0.5) t.k.g = (t.k.g || 0) + dt;
+        else t.k.g = Math.max(0, (t.k.g || 0) - dt * 0.6);
         return U.clamp01(t.k.g / 3);
       }
     },
@@ -118,6 +128,8 @@
       task: 'Make the CPU miss while you are guarding them.',
       why: 'A defender who is set, square and close takes a makeable shot and makes it bad. That is the whole job.',
       keys: ['intense'],
+      // This one wants a shot to contest, so the partner is let off the leash.
+      partner: 'shoot',
       enter(t) { t.giveBall(t.foe); },
       test(t, dt) {
         if (!(t.k.miss > 0)) t.ensureBall(t.foe, dt);
@@ -154,6 +166,17 @@
       scene.enter = function (params, prev) {
         base.enter.call(this, params, prev);
         this.isTutorial = true;
+
+        /* A drill is not a game. The scene underneath keeps a score, runs a
+         * clock, calls a play-by-play man and throws SWISH! across the screen
+         * — all correct for 1 vs 1 and all wrong here, where the only thing
+         * that should be on screen is the drill you are being asked to do.
+         *
+         * Silenced at the presentation layer rather than by threading a flag
+         * through every call site, so nothing added to the scene later can
+         * leak a banner into the walkthrough by forgetting a condition. */
+        BB.HUD.mute(true);
+        BB.Commentary.mute(true);
         this.step = 0;
         this.k = {};
         this.progress = 0;
@@ -168,6 +191,9 @@
 
       scene.exit = function () {
         this._killPanel();
+        BB.HUD.mute(false);
+        BB.Commentary.mute(false);
+        if (this.foe) this.foe.noShoot = false;
         if (base.exit) base.exit.call(this);
       };
 
@@ -234,6 +260,10 @@
         this._madeAt = this.score.you;
         this._threeAt = 0;
         if (!d) return;
+        // Everything except the two defensive drills wants a partner that
+        // stays out of the way; 'attack' drives without shooting, 'shoot'
+        // plays normally so there is something to contest.
+        this.foe.noShoot = d.partner !== 'shoot';
         if (d.enter) d.enter(this);
         this._paintPanel(true);
       };

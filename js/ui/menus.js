@@ -260,8 +260,7 @@
         return `
           <div class="menu">
             <div class="menu__brand">
-              <span class="menu__mark" aria-hidden="true"></span>
-              <span class="menu__word">NBA 1k 26</span>
+              <span class="menu__word"><svg class="logo" viewBox="0 0 300 76" role="img" aria-label="NBA 1K26"> <defs> <clipPath id="lgBadge"><rect x="0" y="4" width="52" height="68" rx="9"/></clipPath> </defs> <g clip-path="url(#lgBadge)"> <rect x="0" y="4" width="26" height="68" fill="#1D428A"/> <rect x="26" y="4" width="26" height="68" fill="#C8102E"/> <path d="M32.5 15.5c2.6 0 4.7 2.1 4.7 4.7s-2.1 4.7-4.7 4.7-4.7-2.1-4.7-4.7 2.1-4.7 4.7-4.7z" fill="#fff"/> <path d="M30.8 27c3.4-1.2 6.2.4 7 3.2l2.2 8.2 4.6 3.1-2 3.4-5.7-3.6-1.2-4-1.4 7.9 5.2 6.3-1.4 12.9-4.3-.5 1-11.2-6.4-6.9-3.6 8-8.1 5.3-2.2-3.5 6.6-4.6 3.6-9.2c1-4.9 3.3-13.2 6.1-14.9z" fill="#fff"/> <circle cx="21.5" cy="33.5" r="5.2" fill="#fff"/><circle cx="21.5" cy="33.5" r="5.2" fill="none" stroke="#C8102E" stroke-width="0.9"/><path d="M16.3 33.5h10.4M21.5 28.3v10.4" stroke="#C8102E" stroke-width="0.9" fill="none"/></g> <rect x="0" y="4" width="52" height="68" rx="9" fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="1.5"/> <g transform="skewX(-12)"> <text x="76" y="58" fill="#C8102E" font-family="'Arial Narrow','Helvetica Neue Condensed',Arial,sans-serif" font-weight="800" font-size="62" letter-spacing="-1">1K</text> <text x="152" y="58" fill="#F3F0E7" font-family="'Arial Narrow','Helvetica Neue Condensed',Arial,sans-serif" font-weight="800" font-size="62" letter-spacing="-1">26</text> </g> </svg></span>
             </div>
             <nav class="menu-tabs" role="tablist" aria-label="Game modes">
               ${MODES.map((m) => `

@@ -63,7 +63,13 @@
      * whatever's currently being said; otherwise a line already speaking
      * just wins and this call is dropped rather than queuing up a backlog.
      */
+    /* Silences the commentary box. The walkthrough borrows the 1 vs 1 scene,
+     * which calls into here on every score, miss, steal, block and foul; a
+     * drill does not want a play-by-play man reacting to it. */
+    mute(on) { this.muted = !!on; },
+
     say(key, lines, opts) {
+      if (this.muted) return;
       if (!SUPPORTED || !this.enabled || !lines || !lines.length) return;
       opts = opts || {};
       const now = (global.performance ? global.performance.now() : Date.now()) / 1000;

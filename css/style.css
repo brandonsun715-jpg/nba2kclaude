@@ -1508,3 +1508,17 @@ input:focus-visible + .switch { outline: 2px solid var(--mint); outline-offset: 
   .coach { left: 12px; right: 12px; bottom: 12px; width: auto; }
   .coach__why { display: none; }
 }
+
+/* ------------------------------------------------------------- the mark ----
+   Badge, then the number, set the way a sports-title lockup is: a squared
+   badge holding the silhouette, and the year split across two weights so the
+   eye reads "1K" and "26" as one word in two colours. Drawn as inline SVG so
+   it stays sharp at any size and needs no font file — the whole game has to
+   open from disk with nothing to fetch. */
+.logo { display: block; height: 100%; width: auto; overflow: visible; }
+
+.menu__word { display: block; height: clamp(30px, 3.6vw, 44px); letter-spacing: 0; }
+.menu__brand { gap: 0; }
+
+.boot__word { height: clamp(46px, 9vw, 78px); }
+.boot__word .logo { filter: drop-shadow(0 8px 26px rgba(0,0,0,0.6)); }

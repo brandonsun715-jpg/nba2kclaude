@@ -46,6 +46,13 @@
        * later cannot inherit a crouch from the last possession. */
       bot.isGuarding = false;
 
+      /* A possession starts the moment the ball arrives, and the settling beat
+       * in offense() is measured from there. Without this it carries over from
+       * the last possession, and a bot that had been holding the ball a while
+       * comes out of a turnover already free to fire. */
+      if (ball.owner === bot && !bot._hadBall) bot.aiSettle = 0;
+      bot._hadBall = ball.owner === bot;
+
       if (ball.owner === bot) {
         offense(bot, opp, hoop, dt, diff);
       } else if (ball.owner === opp) {
@@ -60,6 +67,24 @@
   function offense(bot, opp, hoop, dt, diff) {
     bot.aiPatience -= dt;
 
+    /* Time on the ball this possession.
+     *
+     * Every random decision below runs once per RENDERED FRAME — runAI is
+     * called from the scene's update(), not from its fixed step — so a chance
+     * expressed per call is really a chance per frame, and the bot decides
+     * faster on a faster machine. Measured on the old code: with nobody within
+     * twelve feet it pulled the trigger a median of 0.27s after catching, and
+     * even against a defender grading 0.90 it got a shot away in 1.32s. That
+     * is what made a three-second defensive stand impossible to hold: the ball
+     * was gone long before three seconds were up.
+     *
+     * Two changes. Rates below are now per SECOND and scaled by dt, so the
+     * same bot plays the same way at any frame rate; and a possession has a
+     * settling beat before any voluntary shot, because nobody catches and
+     * fires in a quarter of a second. */
+    bot.aiSettle = (bot.aiSettle || 0) + dt;
+    const settled = bot.aiSettle > 0.55;
+
     const toHoop = Math.atan2(hoop.y - bot.y, hoop.x - bot.x);
     const distHoop = U.dist(bot.x, bot.y, hoop.x, hoop.y);
     const distDef = U.dist(bot.x, bot.y, opp.x, opp.y);
@@ -70,7 +95,6 @@
     const driveTendency = bot.ratings.driveTendency / 100;
     const iq = U.remap(bot.ratings.basketballIQ, 25, 99, 0.6, 1.15);
 
-    const openLook = distDef > 4.6 || !defenderInLane;
     const forced = bot.aiPatience <= 0;
     const inCloseRange = distHoop <= 6.2;
 
@@ -90,35 +114,59 @@
      * wall, one step at a time, all the way to the basket. */
     const guarded = opp.defenseQuality || 0;
 
+    /* An open look is not merely a gap in the driving lane. The old test was
+     * `far away OR not in the lane`, which called a defender standing a foot
+     * off your shoulder "open" the moment they drifted off the exact line to
+     * the rim — so a handler with somebody genuinely in their face still shot
+     * as if nobody were there. Good position now closes the look. */
+    const openLook = (distDef > 4.6 || !defenderInLane) && guarded < 0.58;
+
     /* Closely guarded and not yet ready to shoot: occasionally try to shake
      * the defender with a move rather than just driving straight into them.
      * Frequency scales with ball-handle rating and difficulty — a butter-
      * fingered bot on Rookie hardly ever tries one. */
     if (!inCloseRange && defenderInLane && distDef < 4.6 && !bot.moveState && bot.moveCooldown <= 0) {
       // Tries a lot harder to shake somebody who is actually in front of him.
-      const moveChance = U.remap(bot.ratings.ballHandle, 25, 99, 0.006, 0.045) * diff *
-                         (1 + guarded * 2.4);
-      if (U.rng.chance(moveChance)) {
+      const moveRate = U.remap(bot.ratings.ballHandle, 25, 99, 0.36, 2.7) * diff *
+                       (1 + guarded * 2.4);
+      if (U.rng.chance(moveRate * dt)) {
         const wantsSpin = distDef < 2.6 && U.rng.chance(0.30);
         const lateral = opp.y > bot.y ? -1 : 1; // juke away from the defender's lean
         bot._tryDribbleMove(wantsSpin ? 0 : lateral, wantsSpin);
       }
     }
 
-    /* Point-blank: always go up rather than dribble into the defender. */
-    if (inCloseRange) {
+    /* A coached bot is a drill partner, not an opponent. The walkthrough sets
+     * this so a defensive drill has something to actually guard: it drives,
+     * probes and tries to shake you exactly as it always does, and simply
+     * never pulls the trigger. Without it the stance drill is unholdable —
+     * the ball is gone in about a second and the drill resets forever. */
+    if (bot.noShoot) {
+      bot.aiPatience = Math.max(bot.aiPatience, 1.5);
+    } else {
+
+    /* Point-blank: go up rather than dribble into the defender — but not off
+     * the catch, and not into a defender who is genuinely walling the rim. */
+    if (inCloseRange && (settled || forced) && (guarded < 0.72 || forced)) {
       plant(bot);
       bot._beginShot();
+      bot.aiSettle = 0;
       bot.aiPatience = U.rng.f(3.0, 5.5);
       return;
     }
 
-    /* Good look and either patient enough or forced to decide: shoot. */
-    if (openLook && (forced || U.rng.chance(shotTendency * iq * diff * 0.045))) {
+    /* Good look and either patient enough or forced to decide: shoot.
+     * The rate is per second, and a defender in good position takes most of
+     * it away — being guarded should change the DECISION, not only the odds
+     * once the ball is in the air. */
+    const shotRate = shotTendency * iq * diff * 1.35 * (1 - guarded * 0.8);
+    if (openLook && settled && (forced || U.rng.chance(shotRate * dt))) {
       plant(bot);
       bot._beginShot();
+      bot.aiSettle = 0;
       bot.aiPatience = U.rng.f(3.0, 6.0);
       return;
+    }
     }
 
     /* Walled off. Back it out and work a new angle rather than keep leaning
@@ -133,7 +181,7 @@
      * there isn't. A defender who's already set and right in the lane is a
      * charge waiting to happen — peel off laterally instead of running
      * through them. */
-    if (!defenderInLane || U.rng.chance(driveTendency * diff * 0.05 * (1 - guarded * 0.8))) {
+    if (!defenderInLane || U.rng.chance(driveTendency * diff * 3.0 * (1 - guarded * 0.8) * dt)) {
       const chargeRisk = defenderInLane && distDef < 2.8 && BB.Rules && BB.Rules.isSet(opp);
       const sidestep = defenderInLane ? (opp.y > bot.y ? -1 : 1) * (chargeRisk ? 1.15 : 0.55) : 0;
       const perp = toHoop + Math.PI / 2;

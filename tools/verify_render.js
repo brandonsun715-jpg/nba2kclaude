@@ -3644,8 +3644,125 @@ console.log('\n[34] the screens a player sees every session are actually styled'
   check('screen-chrome probe raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[35] the walkthrough is practice, not a game');
+{
+  /* The walkthrough borrows the 1 vs 1 scene, which keeps a score, calls a
+   * play-by-play man and throws SWISH! across the screen. Correct for 1 vs 1,
+   * wrong for a drill — and it was all still running. */
+  const r = runInPage(`
+    var BB = window.BB;
+    BB.Engine.setState('tutorialDrills'); BB.Engine._applyPending(); BB.Engine.stop();
+    var s = BB.Engine.scene;
+    for (var i = 0; i < 40; i++) { s.fixedUpdate(1 / 120); }
+    var muted = { hud: !!BB.HUD.muted, comm: !!BB.Commentary.muted, bug: BB.HUD.visible };
+
+    // Jump to the stance drill and hold a real stance in front of the CPU.
+    s.step = 5; s._enterDrill();
+    var partnerHeld = !!s.foe.noShoot;
+    var hoop = s.hoop, shotFrames = 0, t = 0, done = false, qs = [];
+    for (var k = 0; k < 60 * 12 && !done; k++) {
+      BB.Input.keys['KeyE'] = true;                       // hold the defence key
+      var ang = Math.atan2(hoop.y - s.foe.y, hoop.x - s.foe.x);
+      s.pl.placeAt(s.foe.x + Math.cos(ang) * 2.2, s.foe.y + Math.sin(ang) * 2.2, 0);
+      s.fixedUpdate(1 / 120); s.fixedUpdate(1 / 120); s.update(1 / 60, 1 / 60);
+      var a = s.foe.action, A = BB.Player.ACTION;
+      if (a === A.GATHER || a === A.METER || a === A.RELEASE) shotFrames++;
+      qs.push(s.pl.defenseQuality || 0);
+      t += 1 / 60;
+      if (s.step > 5) done = true;
+    }
+    BB.Input.keys['KeyE'] = false;
+    qs.sort(function (a, b) { return a - b; });
+
+    // The last drill wants a shot to contest, so the leash comes off.
+    s.step = 6; s._enterDrill();
+    var lastDrillShoots = !s.foe.noShoot;
+
+    // Leaving hands the broadcast back.
+    BB.Engine.setState('menu'); BB.Engine._applyPending();
+    var restored = { hud: !!BB.HUD.muted, comm: !!BB.Commentary.muted };
+
+    return {
+      muted: muted, partnerHeld: partnerHeld, lastDrillShoots: lastDrillShoots,
+      stanceDone: done, stanceSeconds: +t.toFixed(2), shotFrames: shotFrames,
+      medQuality: +qs[Math.floor(qs.length / 2)].toFixed(2),
+      restored: restored, pageErr: window.__pageErr || null
+    };
+  `, 'practice');
+  if (r.err) check('practice probe ran', false, r.err);
+  const o = r.out || {};
+  check('a drill silences the scorebug', o.muted && o.muted.hud === true && o.muted.bug === false,
+        JSON.stringify(o.muted));
+  check('and silences the commentary', o.muted && o.muted.comm === true);
+  check('the drill partner is held off the trigger', o.partnerHeld === true);
+  /* This is what made the drill unholdable: the CPU shot about a second after
+   * catching, so three seconds of defence could never be accumulated. */
+  check('the CPU takes no shot during the stance drill', o.shotFrames === 0,
+        o.shotFrames + ' shooting frames');
+  check('holding a stance actually completes the drill', o.stanceDone === true,
+        'gave up after ' + o.stanceSeconds + 's');
+  check('and it grades the position while you hold it', o.medQuality > 0.5,
+        'median ' + o.medQuality);
+  check('the contest drill still lets the CPU shoot', o.lastDrillShoots === true);
+  check('leaving gives the broadcast back',
+        o.restored && o.restored.hud === false && o.restored.comm === false,
+        JSON.stringify(o.restored));
+  check('practice probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[36] the CPU decides at the same speed on every machine');
+{
+  /* runAI is called from the scene's update(), which runs once per RENDERED
+   * frame — so any `rng.chance(p)` inside it is a chance PER FRAME, and the
+   * CPU decides faster on a faster machine. Measured on the old code it took
+   * a median of 0.27s to shoot with nobody inside twelve feet. */
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U;
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var s = BB.Engine.scene;
+    for (var i = 0; i < 40; i++) { s.fixedUpdate(1 / 120); }
+    var A = BB.Player.ACTION, hoop = s.hoop;
+
+    function holdTime(fps, trials) {
+      var step = 1 / fps, times = [];
+      for (var n = 0; n < trials; n++) {
+        s._startCheck(s.ai, s.player);
+        s.phase = 'live';
+        s.ai.placeAt(hoop.x - 18, hoop.y, 0);
+        s.player.placeAt(hoop.x - 30, hoop.y - 14, 0);   // nowhere near it
+        s.ai.aiPatience = 4.5; s.ai.aiSettle = 0; s.ai._hadBall = true;
+        var t = 0;
+        for (var k = 0; k < fps * 8; k++) {
+          s.ai.runAI(step, s.ball, { hoop: s.hoop, difficulty: s.difficulty });
+          s.ai.update(step, s.ball);
+          t += step;
+          var a = s.ai.action;
+          if (a === A.GATHER || a === A.METER || a === A.RELEASE || !s.ai.hasBall) break;
+        }
+        times.push(t);
+      }
+      times.sort(function (a, b) { return a - b; });
+      return { med: +times[Math.floor(times.length / 2)].toFixed(2), min: +times[0].toFixed(2) };
+    }
+
+    var slow = holdTime(30, 15), fast = holdTime(120, 15);
+    return { slow: slow, fast: fast, pageErr: window.__pageErr || null };
+  `, 'framerate');
+  if (r.err) check('frame-rate probe ran', false, r.err);
+  const o = r.out || {};
+  const slow = (o.slow || {}).med, fast = (o.fast || {}).med;
+  check('the CPU does not fire the instant it catches', (o.slow || {}).min >= 0.5,
+        'quickest shot at 30fps was ' + (o.slow || {}).min + 's');
+  /* The bug this catches: at a per-frame rate, quadrupling the frame rate
+   * quarters the time to shoot. */
+  check('a fast machine does not make the CPU quicker to shoot',
+        slow > 0 && fast > 0 && Math.abs(slow - fast) / Math.max(slow, fast) < 0.45,
+        '30fps ' + slow + 's vs 120fps ' + fast + 's');
+  check('frame-rate probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[35] screenshots');
+  console.log('\n[37] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],

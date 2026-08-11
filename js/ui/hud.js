@@ -54,8 +54,22 @@
       return this;
     },
 
-    show() { this.visible = true; this._safe = null; this.root.classList.add('is-live'); },
+    show() {
+      if (this.muted) return;
+      this.visible = true; this._safe = null; this.root.classList.add('is-live');
+    },
     hide() { this.visible = false; this.root.classList.remove('is-live'); },
+
+    /* Silences the whole broadcast layer — scorebug, banners, toasts.
+     *
+     * The walkthrough needs this because it borrows the 1 vs 1 scene, and that
+     * scene calls HUD.banner and HUD.toast from a dozen places. Muting the
+     * presentation once beats threading an `if (practice)` through every one
+     * of them, and it cannot be forgotten at a new call site later. */
+    mute(on) {
+      this.muted = !!on;
+      if (on) this.hide();
+    },
 
     /** Takes the scorebug away while an instant replay is on screen. */
     setReplay(on) { this.root.classList.toggle('is-replay', !!on); },
@@ -143,6 +157,7 @@
 
     /** Big centre-screen callout: END OF 1ST, SHOT CLOCK VIOLATION, and so on. */
     banner(text, sub, ms) {
+      if (this.muted) return;
       const b = this.el.banner;
       this.el.bannerText.textContent = text;
       this.el.bannerSub.textContent = sub || '';
@@ -156,6 +171,7 @@
 
     /** Small corner note: "24-second reset", control hints, etc. */
     toast(text, ms) {
+      if (this.muted) return;
       const t = this.el.toast;
       t.textContent = text;
       t.classList.remove('is-on');
