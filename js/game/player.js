@@ -1681,7 +1681,13 @@
       copyCol(z[4], this.hairStyle === 'bald'
         ? this._col('scalp', U.shade(this.skin, -0.10))
         : this._col('hair', this.hair || U.shade(this.skin, -0.42)));
-      copyCol(z[5], this._col('trim', this.jerseyTrim));
+      /* Zone 5 is the face. It was declared as the jersey trim and then never
+       * used — the rigger emitted nothing in it — so the slot was free for the
+       * brows, eyes and mouth, which need a colour of their own that is not
+       * the hair (a face is not a haircut) and not the skin (or it vanishes).
+       * Derived from the skin tone rather than fixed, so it stays a face on
+       * every complexion instead of two black dots on a dark one. */
+      copyCol(z[5], this._col('face', U.shade(this.skin, -0.52)));
       Skin.setZones(sp, z);
       sp.hairStyle = this.hairStyle;
 

@@ -58,7 +58,7 @@ const BONE_INDEX = {};
 BONES.forEach((b, i) => { BONE_INDEX[b] = i; });
 
 /* Material zones, matched by name at runtime to the player's palette. */
-const ZONE = { SKIN: 0, JERSEY: 1, SHORTS: 2, SHOE: 3, HAIR: 4 };
+const ZONE = { SKIN: 0, JERSEY: 1, SHORTS: 2, SHOE: 3, HAIR: 4, FACE: 5 };
 
 /** Clamp to 0..1. Used wherever a measurement becomes a blend factor. */
 const U01 = (t) => (t < 0 ? 0 : t > 1 ? 1 : t);
@@ -1013,6 +1013,96 @@ function buildHair(bodyVerts, J) {
   }
   return out;
 }
+
+/* --------------------------------------------------------------- the face
+ * The model ships a blank head: a smooth ovoid with nothing on the front of
+ * it. At the distance the game is usually played that reads as a mannequin,
+ * and in any close shot — the creator, a replay, the standby camera on the
+ * front page — it is the first thing the eye goes to and the last thing it
+ * forgives.
+ *
+ * Features are added the same way the haircuts were: small patches of extra
+ * geometry laid on the surface the head already has, in a zone of their own so
+ * the runtime can colour them. They sit in the BODY range rather than in a
+ * style range, because everybody has a face.
+ *
+ * Deliberately restrained. Brows, eyes and a mouth are enough for a head to
+ * read as a head at any distance this game draws one; a nose and lips modelled
+ * in a couple of hundred triangles look worse than none, because the eye knows
+ * exactly what a face should look like and notices every way it does not.
+ */
+function buildFace(bodyVerts, J) {
+  const H = J.height;
+  const head = bodyVerts.filter((v) =>
+    (v.b0 === BONE_INDEX.head || v.b1 === BONE_INDEX.head) && v.p[2] > H * 0.885);
+  if (head.length < 30) return 0;
+
+  const lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9];
+  for (const v of head) {
+    for (let i = 0; i < 3; i++) {
+      lo[i] = Math.min(lo[i], v.p[i]);
+      hi[i] = Math.max(hi[i], v.p[i]);
+    }
+  }
+  const c = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
+  const r = [(hi[0] - lo[0]) / 2, (hi[1] - lo[1]) / 2, (hi[2] - lo[2]) / 2];
+
+  /* The front of the skull at a given (x, z), from the ellipsoid the head
+   * fits. Laying the patches on the real surface rather than on a flat plane
+   * in front of it is what stops an eye floating off the cheek when the head
+   * turns. */
+  const frontY = (x, z) => {
+    const ex = (x - c[0]) / r[0], ez = (z - c[2]) / r[2];
+    const k = 1 - ex * ex - ez * ez;
+    return c[1] - r[1] * Math.sqrt(k > 0.04 ? k : 0.04);
+  };
+
+  const startTris = shaded.tris.length;
+  const SEG = 14;
+
+  /* One feature: an ellipse of `seg` segments laid on the face, pushed a
+   * hair's breadth proud of it so it cannot z-fight with the skin under it. */
+  function patch(cx, cz, rx, rz, proud) {
+    const centre = bodyVerts.push({
+      p: [cx, frontY(cx, cz) - proud, cz],
+      n: [0, -1, 0],
+      b0: BONE_INDEX.head, b1: BONE_INDEX.head, w0: 1,
+      zone: ZONE.FACE
+    }) - 1;
+    const ring = [];
+    for (let i = 0; i < SEG; i++) {
+      const a = (i / SEG) * Math.PI * 2;
+      const x = cx + Math.cos(a) * rx, z = cz + Math.sin(a) * rz;
+      ring.push(bodyVerts.push({
+        p: [x, frontY(x, z) - proud * 0.55, z],
+        n: [0, -1, 0],
+        b0: BONE_INDEX.head, b1: BONE_INDEX.head, w0: 1,
+        zone: ZONE.FACE
+      }) - 1);
+    }
+    for (let i = 0; i < SEG; i++) {
+      // Wound to match the body — the bone matrices carry the court-to-GL
+      // reflection, so the figure draws with frontFace(CW).
+      shaded.tris.push([centre, ring[i], ring[(i + 1) % SEG]]);
+    }
+  }
+
+  /* Sized small on purpose. The first pass used eyes twice this wide and they
+   * read as empty sockets rather than eyes — at this polygon count a feature
+   * that is too big stops being a shape and becomes a hole. The brows sat
+   * higher too, and disappeared under the hairline, which starts at 0.960H. */
+  const eyeX = H * 0.0150, proud = H * 0.0016;
+  patch(+eyeX, H * 0.9370, H * 0.0070, H * 0.0036, proud);   // eyes
+  patch(-eyeX, H * 0.9370, H * 0.0070, H * 0.0036, proud);
+  patch(+eyeX, H * 0.9468, H * 0.0106, H * 0.0021, proud);   // brows, clear of the hair
+  patch(-eyeX, H * 0.9468, H * 0.0106, H * 0.0021, proud);
+  patch(0, H * 0.9105, H * 0.0112, H * 0.0025, proud);       // mouth
+
+  return shaded.tris.length - startTris;
+}
+
+const FACE_TRIS = buildFace(best.verts, J);
+console.log('  face        ' + FACE_TRIS + ' triangles');
 
 const bodyTris = shaded.tris.length;
 const bodyVertCount = best.verts.length;

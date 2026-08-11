@@ -3393,6 +3393,68 @@ console.log('\n[30] the hair is hair, and there is more than one of it');
   check('hair probe raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[30b] the head has a face on it');
+{
+  /* The model ships a blank ovoid. Brows, eyes and a mouth are added as small
+   * patches in a zone of their own — checked here off the asset the runtime
+   * loaded, because a feature that misses the head is worse than none. */
+  const r = runInPage(`
+    var BB = window.BB, M = BB.PLAYER_MESH;
+    var lo = M.bounds.lo, ext = M.bounds.ext, H = M.height;
+    var qp = atob(M.buffers.pos), qs = atob(M.buffers.skin);
+    var n = M.vertexCount, face = 0;
+    var zLo = 1e9, zHi = -1e9, yLo = 1e9, yHi = -1e9, xAbs = 0;
+    var skullY = [1e9, -1e9];
+    for (var i = 0; i < n; i++) {
+      var q0 = qp.charCodeAt(i * 6) | (qp.charCodeAt(i * 6 + 1) << 8);
+      var q1 = qp.charCodeAt(i * 6 + 2) | (qp.charCodeAt(i * 6 + 3) << 8);
+      var q2 = qp.charCodeAt(i * 6 + 4) | (qp.charCodeAt(i * 6 + 5) << 8);
+      var x = lo[0] + (q0 / 65535) * ext[0];
+      var y = lo[1] + (q1 / 65535) * ext[1];
+      var z = (lo[2] + (q2 / 65535) * ext[2]);
+      var zone = qs.charCodeAt(i * 4 + 3);
+      if (zone === 5) {
+        face++;
+        if (z / H < zLo) zLo = z / H;
+        if (z / H > zHi) zHi = z / H;
+        if (y / H < yLo) yLo = y / H;
+        if (y / H > yHi) yHi = y / H;
+        if (Math.abs(x) / H > xAbs) xAbs = Math.abs(x) / H;
+      }
+      if (zone === 0 && z / H > 0.90) {
+        if (y / H < skullY[0]) skullY[0] = y / H;
+        if (y / H > skullY[1]) skullY[1] = y / H;
+      }
+    }
+    return {
+      face: face, zLo: zLo, zHi: zHi, yLo: yLo, yHi: yHi, xAbs: xAbs,
+      skullFront: skullY[0],
+      pageErr: window.__pageErr || null
+    };
+  `, 'face');
+  if (r.err) check('face probe ran', false, r.err);
+  const o = r.out || {};
+  check('the head carries facial features', o.face > 40, o.face + ' vertices');
+  // Everything has to land on the front of the skull, between the hairline and
+  // the chin — a feature on the crown or round the back is a bug you only see
+  // in a replay.
+  check('every feature sits between the chin and the hairline',
+        o.zLo > 0.895 && o.zHi < 0.960,
+        'z/H ' + (o.zLo || 0).toFixed(3) + '..' + (o.zHi || 0).toFixed(3));
+  check('and on the front of the head, not the back',
+        o.yHi < 0, 'y/H up to ' + (o.yHi || 0).toFixed(3));
+  check('they stay inside the width of the skull', o.xAbs < 0.030,
+        'reach ' + (o.xAbs || 0).toFixed(3) + 'H off centre');
+  /* Laid on the fitted ellipsoid rather than a flat plane in front of it: a
+   * feature further forward than the face itself floats off the cheek the
+   * moment the head turns. */
+  check('and lie on the face rather than floating in front of it',
+        o.yLo > o.skullFront - 0.006,
+        'front-most feature ' + (o.yLo || 0).toFixed(3) + 'H vs skin at ' +
+        (o.skullFront || 0).toFixed(3) + 'H');
+  check('face probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 console.log('\n[31] a haircut is a choice that reaches the floor');
 {
   const r = runInPage(`
