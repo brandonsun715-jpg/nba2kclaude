@@ -359,7 +359,15 @@ function zoneOf(p, boneName, J) {
      * inherited, because the shells taper out along one boundary and the
      * scalp's colour changed along a different one. Skull fit, measured:
      * centre y -0.043H, half-depth 0.051H. */
-    const t = U01((p[1] + H * 0.094) / (H * 0.102));
+    /* Front-to-back position across THIS skull, not across the one the game
+     * shipped with. These used to be the original model's measurements baked
+     * in as constants, which quietly assumes every head sits at the same depth
+     * relative to the spine. Hand the rule a model whose head is set further
+     * back and every vertex reads as "nape", so the hairline drops to the brow
+     * and the entire face is tagged as hair — the figure renders bald-fronted,
+     * with no skin on it anywhere above the collar. Measured per model, the
+     * same slanted hairline lands correctly on any of them. */
+    const t = U01((p[1] - J.headFrontY) / Math.max(1e-6, J.headBackY - J.headFrontY));
     return z > H * (0.960 - 0.062 * t) ? ZONE.HAIR : ZONE.SKIN;
   }
 
@@ -909,7 +917,91 @@ const STATURE = 178;
   }
 }
 
-const J = fitSkeleton(raw.positions);
+let J = fitSkeleton(raw.positions);
+
+/* Swing the arms down into an A-pose before anything is baked.
+ *
+ * The bind pose is not decoration — it is the pose every runtime bone matrix
+ * is a rotation AWAY from. The game's arms spend almost all of their time
+ * hanging: running, dribbling, guarding, standing. On the original model,
+ * whose arms are modelled at [0.29, 0, -0.96] — down and slightly out — that
+ * is a few degrees of correction. On a T-pose model, whose arms are modelled
+ * at [1, 0, 0], it is ninety, on every frame, for the whole game. The mesh is
+ * skinned with two bones and a smooth blend across each joint, and a blend
+ * built for a few degrees does not survive ninety: the deltoid shears, the
+ * limb reads as a flat plank swinging off the shoulder, and the arm looks
+ * broken in exactly the way a T-pose model always looks broken in an engine
+ * that expected an A-pose.
+ *
+ * So the arms are rotated down here, once, offline, and the skeleton is
+ * re-fitted to the result. Everything downstream then sees the pose it was
+ * written for. A model that already hangs its arms rotates by nothing and is
+ * left exactly as it was.
+ *
+ * The rotation eases in over the top of the upper arm rather than applying
+ * flat from the joint, because pivoting a rigid arm about a point tears it
+ * out of the shoulder it is attached to. Easing it bends the deltoid instead,
+ * which is what a shoulder does.
+ */
+{
+  const APOSE = [0.29, 0, -0.96];              // the pose the rig is built for
+  const n = Math.hypot(APOSE[0], APOSE[2]);
+  const norm = (v) => { const L = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / L, v[1] / L, v[2] / L]; };
+  let turned = 0;
+
+  for (const side of [1, -1]) {
+    const sh = side > 0 ? J.shoulderL : J.shoulderR;
+    const tip = side > 0 ? J.tipL : J.tipR;
+    const cur = norm([tip[0] - sh[0], tip[1] - sh[1], tip[2] - sh[2]]);
+    const tgt = [APOSE[0] / n * side, 0, APOSE[2] / n];
+    const dot = Math.max(-1, Math.min(1, cur[0] * tgt[0] + cur[1] * tgt[1] + cur[2] * tgt[2]));
+    const ang = Math.acos(dot);
+    if (ang < 0.02) continue;                  // already hanging: leave it alone
+    turned = Math.max(turned, ang);
+
+    // Rodrigues about the axis that carries the modelled arm onto the target.
+    let ax = norm([cur[1] * tgt[2] - cur[2] * tgt[1],
+                   cur[2] * tgt[0] - cur[0] * tgt[2],
+                   cur[0] * tgt[1] - cur[1] * tgt[0]]);
+    const armLen = dist3(sh, tip);
+    const EASE = 0.22;                         // fraction of the arm the bend spreads over
+
+    for (const p of raw.positions) {
+      const d = [p[0] - sh[0], p[1] - sh[1], p[2] - sh[2]];
+      // Only this arm: outboard of the shoulder, along its own axis.
+      const t = (d[0] * cur[0] + d[1] * cur[1] + d[2] * cur[2]) / armLen;
+      if (t <= 0) continue;
+      if (side > 0 ? p[0] < sh[0] * 0.72 : p[0] > sh[0] * 0.72) continue;
+      const w = U01(t / EASE);
+      const a = ang * w;
+      const c = Math.cos(a), s = Math.sin(a), k = 1 - c;
+      const cd = [ax[1] * d[2] - ax[2] * d[1], ax[2] * d[0] - ax[0] * d[2], ax[0] * d[1] - ax[1] * d[0]];
+      const dd = ax[0] * d[0] + ax[1] * d[1] + ax[2] * d[2];
+      for (let i = 0; i < 3; i++) p[i] = sh[i] + d[i] * c + cd[i] * s + ax[i] * dd * k;
+    }
+  }
+
+  if (turned > 0) {
+    console.log('  a-posed     arms swung down ' + (turned * 57.3).toFixed(0) + ' degrees');
+    J = fitSkeleton(raw.positions);            // the chain moved; re-measure it
+  }
+}
+
+/* How deep this model's skull actually is, for the hairline to slant across.
+ * Measured rather than assumed, because a head's depth relative to the spine
+ * is a property of the model and the zone rule needs it before any of the
+ * later skull fitting has run. */
+{
+  let f = 1e30, b = -1e30;
+  for (const p of raw.positions) {
+    if (p[2] > J.height * 0.90) { if (p[1] < f) f = p[1]; if (p[1] > b) b = p[1]; }
+  }
+  J.headFrontY = f < 1e29 ? f : -J.height * 0.094;
+  J.headBackY = b > -1e29 ? b : J.height * 0.008;
+  console.log('  skull depth y ' + (J.headFrontY / J.height).toFixed(3) + ' .. ' +
+              (J.headBackY / J.height).toFixed(3) + ' H');
+}
+
 console.log('  stature     ' + J.height.toFixed(1) + ' model units');
 const pct = (p) => (p[2] / J.height * 100).toFixed(1) + '%';
 console.log('  shoulder    ' + pct(J.shoulderL) + '  x=' + J.shoulderL[0].toFixed(1));
