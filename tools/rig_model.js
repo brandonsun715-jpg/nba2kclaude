@@ -267,7 +267,7 @@ function gatePenalty(name, p, J, seg) {
      * exist: without any, the jersey's chest panel joins the arm and swings
      * with it. */
     const inboard = shoulderX * 1.05 - ax;
-    if (inboard > 0) pen += inboard * 2.2;
+    if (inboard > 0) pen += inboard * 1.5;
     const above = p[2] - J.shoulderL[2];
     if (above > 0) pen += above * 4.0;
   } else if (/^(thigh|shin|foot)/.test(name)) {
@@ -355,7 +355,17 @@ function zoneOf(p, boneName, J) {
   const trunk = boneName === 'pelvis' || boneName === 'torso' || boneName === 'head';
   const thigh = boneName === 'thighL' || boneName === 'thighR';
   if ((trunk || thigh) && z > H * 0.285 && z < H * 0.545) return ZONE.SHORTS;
-  if (trunk && z >= H * 0.545 && z < H * 0.855) return ZONE.JERSEY;
+  /* The jersey is decided by WHERE a vertex is, not by which bone won it.
+   *
+   * Bone assignment across the shoulder is deliberately soft now — that is
+   * what stopped the deltoid tearing — but the garment boundary was still
+   * keyed off which bone came first, so along the shoulder line neighbouring
+   * vertices flipped between jersey and skin and the edge came out serrated.
+   * A vest does not have a zigzag hem. Inside the shoulder joint's own width
+   * is cloth, outside it is arm, and that reads the same however the weights
+   * fall. */
+  const shoulderSpan = Math.abs(J.shoulderL[0]) * 1.04;
+  if (Math.abs(p[0]) < shoulderSpan && z >= H * 0.545 && z < H * 0.855) return ZONE.JERSEY;
   return ZONE.SKIN;
 }
 
@@ -856,7 +866,7 @@ shaded.pos.forEach((p, i) => {
   dense[i * nb + sk[0]] = sk[2];
   dense[i * nb + sk[1]] = sk[3];
 });
-const smoothed = smoothWeights(shaded.pos.length, shaded.tris, nb, dense, 18);
+const smoothed = smoothWeights(shaded.pos.length, shaded.tris, nb, dense, 26);
 
 const verts = shaded.pos.map((p, i) => {
   // Back to two bones: take the strongest pair from the smoothed field.
