@@ -2290,9 +2290,21 @@
         const ext = U.ease.inOutSine(U.clamp01((v - 0.55) / 0.45));
 
         const setRX = U.lerp(0.13, 0.24, set);
-        const setRY = U.lerp(reachY(shoulderY, 0.60), shoulderY - 0.16, set);
+        /* The ball rides ABOVE the brow, not across the eyes.
+         *
+         * The set used to finish with the hands 0.16 above the shoulder, which
+         * on this figure is mouth height — so the gather played with two hands
+         * over the face and the head vanished behind them. In the reference
+         * the ball is at the forehead by the top of the set and clears the
+         * head on the way up, which is what leaves a shooter able to see the
+         * rim they are shooting at.
+         *
+         * Both hands rise by the same 0.14, so the gap between them — which
+         * has to stay inside one ball, and the suite checks it — is a pure
+         * translation and cannot change. */
+        const setRY = U.lerp(reachY(shoulderY, 0.60), shoulderY - 0.30, set);
         const setLX = U.lerp(0.13, 0.21, set);
-        const setLY = U.lerp(reachY(shoulderY, 0.60), shoulderY - 0.13, set);
+        const setLY = U.lerp(reachY(shoulderY, 0.60), shoulderY - 0.27, set);
 
         hrX = shR + U.lerp(setRX, 0.15, ext);
         hrY = U.lerp(setRY, shoulderY - 0.52, ext);
