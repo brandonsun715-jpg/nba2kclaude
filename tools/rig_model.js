@@ -22,7 +22,11 @@
  * step and must keep running straight off the filesystem, where fetch() of a
  * sibling file is blocked as a cross-origin request.
  *
- * Usage: node rig_model.js <model.obj> [--target 9000] [--out <path>]
+ * Usage: node rig_model.js <model.obj|model.glb> [--target 9000] [--out <path>]
+ *
+ * GLB/glTF is read through glb.js, which converts it into exactly the geometry
+ * bag parseObj returns — including the axis change, since glTF is Y-up and
+ * everything below measures stature along z.
  * ========================================================================== */
 'use strict';
 
@@ -41,7 +45,7 @@ const TARGET = +arg('target', 9000);
 const OUT = path.resolve(arg('out', path.join(__dirname, '..', 'js', 'render', 'playerMesh.js')));
 
 if (!SRC) {
-  console.error('usage: node rig_model.js <model.obj> [--target N] [--out path]');
+  console.error('usage: node rig_model.js <model.obj|model.glb> [--target N] [--out path]');
   process.exit(1);
 }
 
@@ -811,9 +815,38 @@ function pack(verts, tris, J) {
 
 console.log('\nNBA 1K26 — rigging ' + path.basename(SRC) + '\n');
 
-const raw = parseObj(SRC);
+const raw = /\.gl(b|tf)$/i.test(SRC) ? require('./glb').readGlb(SRC) : parseObj(SRC);
 console.log('  parsed      ' + raw.positions.length + ' vertices, ' +
-            raw.tris.length + ' triangles' + (raw.normals.length ? ', with normals' : ''));
+            raw.tris.length + ' triangles' + (raw.normals.length ? ', with normals' : '') +
+            (raw.meshes ? ', ' + raw.meshes + ' mesh node(s)' : ''));
+
+/* Stand the figure on the floor, centred left-to-right.
+ *
+ * fitSkeleton measures stature from the vertex extents and then places every
+ * landmark as a fraction of it, which silently assumes the feet are at z=0 and
+ * the spine is on x=0 — true of the original OBJ and true of nothing else. A
+ * glTF exported with the origin at the hips, or off to one side, would have
+ * its whole skeleton fitted at that offset. Cheap to normalise here, once,
+ * rather than to make every measurement downstream defensive about it.
+ *
+ * Only the two axes with a defensible canonical value are touched: the floor
+ * and the plane of symmetry. Forward/back is left alone — there is no
+ * equivalent "correct" y, and guessing one would move the figure relative to
+ * the arm-axis fit that follows. */
+{
+  let lo = 1e30, minX = 1e30, maxX = -1e30;
+  for (const p of raw.positions) {
+    if (p[2] < lo) lo = p[2];
+    if (p[0] < minX) minX = p[0];
+    if (p[0] > maxX) maxX = p[0];
+  }
+  const midX = (minX + maxX) * 0.5;
+  if (Math.abs(lo) > 1e-6 || Math.abs(midX) > 1e-6) {
+    for (const p of raw.positions) { p[0] -= midX; p[2] -= lo; }
+    console.log('  recentred   floor ' + lo.toFixed(2) + ' -> 0, midline ' +
+                midX.toFixed(2) + ' -> 0');
+  }
+}
 
 const J = fitSkeleton(raw.positions);
 console.log('  stature     ' + J.height.toFixed(1) + ' model units');
