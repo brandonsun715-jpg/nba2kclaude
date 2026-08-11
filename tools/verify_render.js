@@ -4261,8 +4261,202 @@ function dunkSetup(phase) {
   `;
 }
 
+console.log('\n[39] the foot the rig moves is the foot the model has');
+{
+  /* The rig shipped 337/337 green with the shoes on backwards, because nothing
+   * compared the foot BONE against the shoe it carries. setBone maps the bind
+   * segment onto the posed one, so the bone is the frame the shoe is rotated
+   * and stretched in: if the two disagree, every frame of the game applies the
+   * difference. Checked off the baked asset, which is the thing that ships. */
+  const r = runInPage(`
+    var M = window.BB.PLAYER_MESH;
+    var lo = M.bounds.lo, ext = M.bounds.ext, H = M.height;
+    var qp = atob(M.buffers.pos), qs = atob(M.buffers.skin);
+    var bi = {}; M.bones.forEach(function (b, i) { bi[b] = i; });
+
+    function at(i, k) {
+      var q = qp.charCodeAt(i * 6 + k * 2) | (qp.charCodeAt(i * 6 + k * 2 + 1) << 8);
+      return lo[k] + (q / 65535) * ext[k];
+    }
+    function dom(i) {
+      return qs.charCodeAt(i * 4 + 2) >= 128 ? qs.charCodeAt(i * 4) : qs.charCodeAt(i * 4 + 1);
+    }
+    /* The shoe is the shoe zone below a quarter of stature. The height bound is
+     * there because the jersey NUMBERS share the shoe's chalk colour slot. */
+    var SHOE = 3, top = -1e9;
+    for (var i = 0; i < M.vertexCount; i++) {
+      if (qs.charCodeAt(i * 4 + 3) === SHOE && at(i, 2) < H * 0.25) top = Math.max(top, at(i, 2));
+    }
+
+    function side(s) {
+      var seg = M.bind['foot' + s], a = seg[0], b = seg[1];
+      var d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+      var L = Math.hypot(d[0], d[1], d[2]);
+      var u = [d[0] / L, d[1] / L, d[2] / L];
+      var n = 0, behind = 0, tLo = 1e9, tHi = -1e9, lowTot = 0, lowOff = 0;
+      for (var i = 0; i < M.vertexCount; i++) {
+        var p = [at(i, 0), at(i, 1), at(i, 2)];
+        var mine = s === 'L' ? p[0] > 0 : p[0] < 0;
+        var d0 = dom(i);
+        if (qs.charCodeAt(i * 4 + 3) === SHOE && mine && p[2] < H * 0.25 && p[2] < top * 0.70) {
+          lowTot++;
+          if (d0 !== bi.footL && d0 !== bi.footR) lowOff++;
+        }
+        if (d0 !== bi['foot' + s]) continue;
+        n++;
+        var t = ((p[0] - a[0]) * u[0] + (p[1] - a[1]) * u[1] + (p[2] - a[2]) * u[2]) / L;
+        if (t < -0.15) behind++;
+        if (t < tLo) tLo = t;
+        if (t > tHi) tHi = t;
+      }
+      return { n: n, behind: behind / Math.max(1, n), tLo: tLo, tHi: tHi,
+               len: L / H, lowOnFoot: 1 - lowOff / Math.max(1, lowTot), lowTot: lowTot };
+    }
+    var l = side('L'), rr = side('R');
+    return {
+      L: l, R: rr, shoeTop: top / H,
+      // A left foot and a right foot are the same foot.
+      mirror: Math.abs(l.len - rr.len) + Math.abs(l.tLo - rr.tLo) + Math.abs(l.tHi - rr.tHi),
+      pageErr: window.__pageErr || null
+    };
+  `, 'foot');
+  if (r.err) check('foot probe ran', false, r.err);
+  const o = r.out || {};
+  const L = o.L || {}, R = o.R || {};
+  const worstBehind = Math.max(L.behind || 0, R.behind || 0);
+  const worstLo = Math.min(L.tLo == null ? 0 : L.tLo, R.tLo == null ? 0 : R.tLo);
+  const worstHi = Math.max(L.tHi || 0, R.tHi || 0);
+
+  check('the foot bone has some mesh on it', (L.n || 0) > 100 && (R.n || 0) > 100,
+        (L.n || 0) + ' / ' + (R.n || 0) + ' vertices');
+  /* THE bug. A bone laid along -y through a shoe that lies along +y had 46% of
+   * its own vertices sitting behind its ankle, and turned the shoe through 180
+   * degrees on every frame — the player ran with their feet on backwards. */
+  check('the shoe runs along its bone rather than against it',
+        worstBehind < 0.02,
+        (worstBehind * 100).toFixed(0) + '% of the foot bone\'s mesh is behind its own ankle');
+  // A bone shorter than its shoe stretches it; a longer one shrinks it.
+  check('and the bone spans the shoe it carries',
+        worstLo > -0.20 && worstHi > 0.80 && worstHi < 1.30,
+        'shoe runs from ' + worstLo.toFixed(2) + ' to ' + worstHi.toFixed(2) +
+        ' of a bone length (1.0 is a bone that fits)');
+  /* Everything below the collar has to move as one piece. When the bind
+   * segment cut diagonally through the shoe, the heel and the upper went to
+   * the SHIN and tore away from the sole the moment the ankle bent. */
+  check('the shoe below the collar all moves with the foot',
+        Math.min(L.lowOnFoot || 0, R.lowOnFoot || 0) > 0.95,
+        (Math.min(L.lowOnFoot || 0, R.lowOnFoot || 0) * 100).toFixed(0) +
+        '% of the lower shoe is on a foot bone');
+  check('the two feet are the same foot', (o.mirror || 9) < 0.02,
+        'left and right differ by ' + (o.mirror || 0).toFixed(3));
+  // A measured ankle lands on the top of the shoe. The fallback constant is
+  // 5.0%, which is halfway down inside it.
+  check('the ankle sits at the top of the shoe, not inside it',
+        o.shoeTop > 0.06 && o.shoeTop < 0.16,
+        'shoe reaches ' + ((o.shoeTop || 0) * 100).toFixed(1) + '% of stature');
+  check('foot probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[40] the knee bends the way a knee bends');
+{
+  /* The other half of what shipped green and looked wrong: nothing checked
+   * that the knee stays bent, or that it stays bent the same WAY, through the
+   * stride. solveIK2 takes a fixed bend flag per limb, and the two solutions
+   * it picks between are mirror images — take the wrong one and the leg folds
+   * backwards at the knee. */
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U;
+    var BONE = BB.Player.BONE, A = BB.Player.ACTION;
+    var pl = new BB.Player({ height: 79 });
+    pl.placeAt(20, 25, 0);
+    pl.facing = pl.moveFacing = 0;
+
+    /* Interior angle at the knee: 180 is a locked leg, small is a deep fold. */
+    function angle(k, ox, oy) {
+      var d = Math.hypot(k.ex - ox, k.ey - oy);
+      var c = U.clamp((BONE.thigh * BONE.thigh + BONE.shin * BONE.shin - d * d) /
+                      (2 * BONE.thigh * BONE.shin), -1, 1);
+      return Math.acos(c) * 57.3;
+    }
+    /* Which SIDE of the hip-to-ankle line the knee lies on. The sign is what
+     * the bend flag picks, and a real knee never changes it — the joint only
+     * folds one way. */
+    function side(ox, oy, k) {
+      return (k.ex - ox) * (k.jy - oy) - (k.ey - oy) * (k.jx - ox);
+    }
+
+    var lo = 1e9, hi = -1e9, pos = 0, neg = 0, worst = 0, n = 0;
+    function sample() {
+      var p = pl.pose;
+      var legs = [[-BONE.hipW, p.kneeL], [BONE.hipW, p.kneeR]];
+      for (var i = 0; i < 2; i++) {
+        var ox = legs[i][0], k = legs[i][1];
+        var a = angle(k, ox, p.hipY);
+        if (a < lo) lo = a;
+        if (a > hi) hi = a;
+        var s = side(ox, p.hipY, k);
+        if (s > 0) pos++; else neg++;
+        n++;
+      }
+      worst = Math.max(worst,
+        Math.hypot(p.kneeL.ex - p.footL.x, p.kneeL.ey - p.footL.y),
+        Math.hypot(p.kneeR.ex - p.footR.x, p.kneeR.ey - p.footR.y));
+    }
+
+    // The whole gait, at every speed the game actually runs at.
+    var speeds = [[0.35, false], [0.7, false], [1, false], [1, true]];
+    for (var s = 0; s < speeds.length; s++) {
+      pl.sprinting = speeds[s][1];
+      var top = pl.sprinting ? pl.phys.maxSprint : pl.phys.maxSpeed;
+      pl.vx = top * speeds[s][0]; pl.vy = 0;
+      for (var i = 0; i < 48; i++) {
+        pl.stridePhase = i / 48 * Math.PI * 2;
+        pl._updatePose(1 / 120);
+        sample();
+      }
+    }
+    // And standing still, where a locked knee is just as wrong.
+    pl.vx = pl.vy = 0; pl.sprinting = false;
+    var idleLo = 1e9, idleHi = -1e9;
+    for (var t = 0; t < 12; t++) {
+      pl.stridePhase = 0; pl._updatePose(1 / 60);
+      var p = pl.pose;
+      idleLo = Math.min(idleLo, angle(p.kneeL, -BONE.hipW, p.hipY));
+      idleHi = Math.max(idleHi, angle(p.kneeL, -BONE.hipW, p.hipY));
+      sample();
+    }
+    return { lo: lo, hi: hi, pos: pos, neg: neg, n: n, worst: worst,
+             idleLo: idleLo, idleHi: idleHi, pageErr: window.__pageErr || null };
+  `, 'knee');
+  if (r.err) check('knee probe ran', false, r.err);
+  const o = r.out || {};
+
+  /* The one that matters: every knee, at every speed, on the same side of the
+   * hip-to-ankle line. One sample on the other side is a leg that has folded
+   * backwards for that frame. */
+  check('the knee never folds the other way',
+        (o.pos === 0 || o.neg === 0) && (o.n || 0) > 300,
+        (Math.min(o.pos || 0, o.neg || 0)) + ' of ' + (o.n || 0) +
+        ' samples had the knee on the wrong side of the leg');
+  check('and never locks out straight',
+        (o.hi || 999) < 175,
+        'straightest knee in the cycle is ' + (o.hi || 0).toFixed(0) + ' degrees');
+  check('a running stride really folds the knee',
+        (o.lo || 999) < 95,
+        'deepest knee bend is only ' + (o.lo || 0).toFixed(0) + ' degrees');
+  // Nobody stands with locked knees, least of all somebody guarding you.
+  check('and a standing player keeps a soft bend in them',
+        (o.idleHi || 999) < 170 && (o.idleLo || 0) > 100,
+        'idle knee sits at ' + (o.idleLo || 0).toFixed(0) + '..' + (o.idleHi || 0).toFixed(0) +
+        ' degrees');
+  check('no leg is asked to reach further than it can',
+        (o.worst == null ? 9 : o.worst) < 0.005,
+        'worst shortfall ' + (o.worst || 0).toFixed(4));
+  check('knee probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[39] screenshots');
+  console.log('\n[41] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],

@@ -113,7 +113,7 @@ function parseObj(file) {
  * proportions alone cannot say how far out it is held.
  */
 
-function fitSkeleton(positions) {
+function fitSkeleton(positions, tris) {
   let hi = -1e9, lo = 1e9;
   for (const p of positions) { hi = Math.max(hi, p[2]); lo = Math.min(lo, p[2]); }
   const H = hi - lo;
@@ -175,75 +175,161 @@ function fitSkeleton(positions) {
   // Upper arm : forearm : hand as fractions of a whole arm's reach.
   const upper = armLen * 0.423, wristAt = armLen * 0.756;
 
-  /* Where this model's leg joints actually are.
+  /* Where this model's leg joints and foot actually are.
    *
    * The arm chain has always been measured off the mesh. The legs never were —
    * hip, knee and ankle were fractions of stature, which is standard human
    * proportion and is exactly right for the model the game shipped with. On
    * anything else the solver's knee sits where the mesh has no joint, so every
-   * time the leg bends the surface creases in the wrong place. It hides at a
-   * jog and gets uglier as the stride opens up, because near full extension a
-   * small error in joint position turns into a visible kink and the leg reads
-   * as bending backwards.
+   * time the leg bends the surface creases in the wrong place.
    *
-   * Two things are actually measurable, and the third follows from them:
+   * MEASURE THE SURFACE, NOT THE VERTICES. The scan this replaces binned
+   * vertices into thin horizontal slabs and asked what was in each one, which
+   * quietly assumes the mesh has vertices everywhere. A low-poly leg does not:
+   * its vertex rings sit two per cent of stature apart, so most slabs are
+   * empty, and both landmarks came back as artefacts of that — the ankle test
+   * read an empty slab, failed its own sanity check and fell through to the
+   * constant, and the crotch walk broke on the first slab it looked at and
+   * returned the top of its own search window. Nothing was measured; the tool
+   * printed the search range back as if it were a result.
    *
-   *  CROTCH is the lowest height at which the two legs are still one mass.
-   *  Below it there is a gap on the centreline; above it there is not. That is
-   *  the top of the leg, whatever the figure's proportions.
+   * Intersecting the TRIANGLES with each sample plane instead gives a profile
+   * that is a property of the surface, so it is the same on a 74k-triangle
+   * model and a 98k one, and neither can produce an empty slice where the leg
+   * plainly is. On that profile all three landmarks are real:
    *
-   *  ANKLE is where the leg stops being a leg and becomes a foot, which shows
-   *  up as the profile suddenly getting deeper — a shin is round, a foot is
-   *  long. Found by walking up from the floor until the depth drops back to
-   *  something shin-shaped.
+   *  CROTCH is the lowest height whose cross-section still spans the midline.
+   *  Above it the section crosses x=0 exactly; below it a gap opens and grows.
+   *  There is no threshold to pick — the gap is either zero or it is not.
    *
-   *  KNEE is then placed along the real leg rather than against stature. Its
-   *  position as a fraction of leg length is stable across humans in a way its
-   *  position as a fraction of height is not.
+   *  ANKLE is the waist between the flare of the foot and the swell of the
+   *  calf: a genuine minimum of the cross-section, so it needs no tolerance
+   *  either. (The old "the foot is deeper than the shin" idea was right about
+   *  the signal and wrong about how to find it — a depth THRESHOLD needs a
+   *  shin sample to compare against, and it was taking that sample from a
+   *  single slab which on this model was empty.)
    *
-   * Every one falls back to the old constant if the scan cannot find it, so a
-   * mesh that defeats this degrades to today's behaviour instead of breaking.
+   *  KNEE follows from the two: its position along the leg is stable across
+   *  builds in a way its position as a fraction of stature is not.
+   *
+   * Every one still falls back to the old constant if the scan cannot find it,
+   * but now it says so out loud rather than degrading in silence.
    */
   const legs = (function () {
     const dflt = { hip: H * 0.480, knee: H * 0.281, ankle: H * 0.050 };
-    const BANDS = 120, band = H * 0.6 / BANDS;
-    const nearMid = new Array(BANDS).fill(0);
-    const depthLo = new Array(BANDS).fill(1e30);
-    const depthHi = new Array(BANDS).fill(-1e30);
-    for (const p of positions) {
-      if (p[2] < 0 || p[2] >= H * 0.6) continue;
-      const b = Math.min(BANDS - 1, Math.floor(p[2] / band));
-      if (Math.abs(p[0]) < H * 0.022) nearMid[b]++;
-      if (p[1] < depthLo[b]) depthLo[b] = p[1];
-      if (p[1] > depthHi[b]) depthHi[b] = p[1];
-    }
+    const N = 400, step = H * 0.62 / N;
+    const mid = new Float64Array(N).fill(1e30);
+    const xLo = new Float64Array(N).fill(1e30), xHi = new Float64Array(N).fill(-1e30);
+    const yLo = new Float64Array(N).fill(1e30), yHi = new Float64Array(N).fill(-1e30);
+    const hits = new Int32Array(N);
+    const IN = H * 0.012;                        // inboard of this is the midline
 
-    /* Crotch: walking DOWN from the waist, the first band with nothing on the
-     * centreline is the first band where the legs have parted. */
-    let hip = -1;
-    const top = Math.floor(H * 0.55 / band);
-    for (let b = top; b >= 0; b--) {
-      if (nearMid[b] === 0) { hip = (b + 1) * band; break; }
-    }
-    if (!(hip > H * 0.30 && hip < H * 0.58)) hip = dflt.hip;
-
-    /* Ankle: the foot is much deeper front-to-back than the shin above it.
-     * Take the shin's depth from a band comfortably clear of the foot, then
-     * walk up from the floor to the first band that has shrunk back to it. */
-    const shinAt = Math.floor(H * 0.20 / band);
-    const shin = depthHi[shinAt] - depthLo[shinAt];
-    let ankle = -1;
-    if (shin > 0 && shin < H) {
-      for (let b = 0; b < shinAt; b++) {
-        const d = depthHi[b] - depthLo[b];
-        if (d > 0 && d < shin * 1.45) { ankle = b * band; break; }
+    /* One edge against every sample plane it crosses. Each crossing is a point
+     * on the outline of that cross-section. */
+    function edge(a, b) {
+      if (a[2] === b[2]) return;
+      let i0 = Math.ceil(Math.min(a[2], b[2]) / step);
+      let i1 = Math.floor(Math.max(a[2], b[2]) / step);
+      if (i0 < 0) i0 = 0;
+      if (i1 >= N) i1 = N - 1;
+      for (let i = i0; i <= i1; i++) {
+        const t = (i * step - a[2]) / (b[2] - a[2]);
+        if (t < 0 || t > 1) continue;
+        const x = a[0] + (b[0] - a[0]) * t, y = a[1] + (b[1] - a[1]) * t;
+        if (Math.abs(x) < mid[i]) mid[i] = Math.abs(x);
+        if (x < IN) continue;                    // the traced (+x) leg alone
+        hits[i]++;
+        if (x < xLo[i]) xLo[i] = x;
+        if (x > xHi[i]) xHi[i] = x;
+        if (y < yLo[i]) yLo[i] = y;
+        if (y > yHi[i]) yHi[i] = y;
       }
     }
-    if (!(ankle > H * 0.005 && ankle < H * 0.20)) ankle = dflt.ankle;
+    for (const t of tris) {
+      const a = positions[t[0][0]], b = positions[t[1][0]], c = positions[t[2][0]];
+      edge(a, b); edge(b, c); edge(c, a);
+    }
 
-    // Just over halfway up the leg, measured from the ankle.
-    const knee = ankle + (hip - ankle) * 0.545;
-    return { hip, knee, ankle };
+    // Crotch: walking DOWN from the waist, the first section with a hole in it.
+    const EPS = H * 0.0005;
+    let hip = -1;
+    for (let i = Math.floor(H * 0.60 / step); i >= 0; i--) {
+      if (mid[i] > EPS) { hip = (i + 1) * step; break; }
+    }
+    /* The hip JOINT rides above the crotch — the crotch is where the legs meet,
+     * the joint is where they pivot. The offset is calibrated so the model the
+     * game shipped with reproduces the 48.0% that was hand-tuned for it, which
+     * is also the check that this measurement is measuring anything. */
+    if (hip > H * 0.30 && hip < H * 0.58) hip += H * 0.034;
+    else { hip = dflt.hip; console.log('  ! crotch scan failed, using ' + hip.toFixed(1)); }
+
+    /* Ankle: the narrowest the lower leg ever gets. Girth rather than depth
+     * alone, because a shoe is both longer and wider than the shin over it. */
+    let best = 1e30;
+    const i0 = Math.max(1, Math.floor(H * 0.03 / step));
+    const i1 = Math.floor(H * 0.22 / step);
+    for (let i = i0; i <= i1; i++) {
+      if (!hits[i]) continue;
+      const g = (xHi[i] - xLo[i]) * (yHi[i] - yLo[i]);
+      if (g < best) best = g;
+    }
+    /* The waist is usually a short plateau rather than a single slice. Take its
+     * LOWEST slice — the top of the shoe — instead of whichever one inside it
+     * happened to win by a rounding, which is what makes this repeatable. */
+    let iAnk = -1;
+    for (let i = i0; i <= i1; i++) {
+      if (!hits[i]) continue;
+      if ((xHi[i] - xLo[i]) * (yHi[i] - yLo[i]) <= best * 1.06) { iAnk = i; break; }
+    }
+    let ankle, joint;
+    if (iAnk >= 0 && iAnk * step > H * 0.02 && iAnk * step < H * 0.20) {
+      ankle = iAnk * step;
+      // The joint is the centre of the leg where the leg is thinnest.
+      joint = [(xLo[iAnk] + xHi[iAnk]) * 0.5, (yLo[iAnk] + yHi[iAnk]) * 0.5, ankle];
+    } else {
+      ankle = dflt.ankle;
+      joint = [H * 0.070, 0, ankle];
+      console.log('  ! ankle scan failed, using ' + ankle.toFixed(1));
+    }
+
+    /* The foot, off the shoe rather than out of thin air.
+     *
+     * The toe used to be a fixed 9.3%-of-stature segment pointing [0,-.91,-.41]
+     * — identical on every model, and on this one about two thirds the length
+     * of the shoe it was supposed to carry. setBone maps the bind segment onto
+     * the posed one, so a bind segment that is not the shape of the shoe
+     * rotates and stretches the shoe by the difference on every single frame.
+     *
+     * The toe is the front of the shoe, averaged over the frontmost sliver so
+     * that no single stray vertex can define it. It comes out low because a
+     * toe tapers to the floor, which is exactly the point it rolls over.
+     *
+     * Deliberately NO lateral component: the bone is flattened onto the leg's
+     * own fore-aft plane. The runtime builds its foot segment along the
+     * player's forward axis with no sideways part to it (see draw()), so a
+     * bind bone that toes out would be rotated straight again on every frame —
+     * baking the toe-out in would CREATE the error it looks like it removes.
+     */
+    const shoe = [];
+    for (const p of positions) if (p[2] < ankle && p[0] > IN) shoe.push(p);
+    let toe;
+    if (shoe.length) {
+      let fy = 1e30, by = -1e30;
+      for (const p of shoe) { if (p[1] < fy) fy = p[1]; if (p[1] > by) by = p[1]; }
+      const cut = fy + (by - fy) * 0.08;
+      let ty = 0, tz = 0, n = 0;
+      for (const p of shoe) if (p[1] <= cut) { ty += p[1]; tz += p[2]; n++; }
+      toe = [joint[0], ty / n, tz / n];
+    } else {
+      toe = [joint[0], joint[1] - H * 0.085, ankle * 0.24];
+      console.log('  ! no shoe found, using a guessed foot');
+    }
+
+    /* Knee: along the real leg rather than against stature. The fraction is the
+     * shipped model's own knee expressed against its own measured ankle and
+     * hip, so that model still lands on the 28.1% it was tuned at. */
+    const knee = ankle + (hip - ankle) * 0.483;
+    return { hip, knee, ankle, joint, toe };
   })();
 
   /* The traced side is +x, and that is the model's LEFT: it faces -y, so
@@ -262,8 +348,8 @@ function fitSkeleton(positions) {
     tipL: [tipX, 0, tipZ],
     hipL: [H * 0.053, 0, legs.hip],
     kneeL: [H * 0.062, 0, legs.knee],
-    ankleL: [H * 0.070, 0, legs.ankle],
-    toeL: [H * 0.070, -H * 0.085, legs.ankle * 0.24]
+    ankleL: legs.joint,
+    toeL: legs.toe
   };
   for (const k of ['shoulder', 'elbow', 'wrist', 'tip', 'hip', 'knee', 'ankle', 'toe']) {
     const l = J[k + 'L'];
@@ -406,7 +492,12 @@ function skinVertex(p, segs, J) {
  */
 function zoneOf(p, boneName, J) {
   const H = J.height, z = p[2];
-  if (z < H * 0.082) return ZONE.SHOE;
+  /* A shoe is what is below the ankle, and the ankle is measured (see the leg
+   * fit). This used to be a flat 8.2% of stature, which is a different height
+   * from the one the foot BONE stops at the moment the ankle is anything but
+   * that — so the top of the shoe kept the leg's colour while moving with the
+   * foot, and the join between them showed as a painted band that slid. */
+  if (z < J.ankleL[2]) return ZONE.SHOE;
 
   /* Hair is the CRANIUM, and nothing but the cranium.
    *
@@ -924,8 +1015,9 @@ console.log('  parsed      ' + raw.positions.length + ' vertices, ' +
  * nothing — the runtime scales the whole mesh by its own reported height, so
  * the number itself is arbitrary — and removes the entire class of bug.
  *
- * Forward/back is deliberately left alone: there is no defensible canonical y,
- * and inventing one would shift the figure relative to the arm fit. */
+ * Forward/back is deliberately not TRANSLATED: there is no defensible canonical
+ * y origin, and inventing one would shift the figure relative to the arm fit.
+ * Which way it faces is a different question, and is settled just below. */
 const STATURE = 178;
 {
   let lo = 1e30, hi = -1e30, minX = 1e30, maxX = -1e30;
@@ -943,6 +1035,55 @@ const STATURE = 178;
     }
     console.log('  normalised  stature ' + (hi - lo).toFixed(3) + ' -> ' + STATURE +
                 ', floor ' + lo.toFixed(3) + ' -> 0, midline ' + midX.toFixed(3) + ' -> 0');
+  }
+}
+
+/* Turn the figure around if it is modelled facing the other way.
+ *
+ * Every forward/back assumption in this file and in the runtime reads -y as
+ * front: the foot bone points that way, the hairline slants that way, and the
+ * face is BUILT on that side of a head that ships blank. Hand it a model
+ * authored facing +y and none of that fails loudly — it all quietly happens
+ * back to front. The shoes were the visible half: setBone carries the bind
+ * segment onto the posed one, so a foot bone laid along -y through a shoe that
+ * lies along +y turns the shoe through 180 degrees on every frame, and the
+ * player runs with their feet on backwards. The face was the invisible half,
+ * being carved into the back of the skull.
+ *
+ * A foot settles it. It is the one part of a figure whose geometry says which
+ * way it is pointing without any ambiguity: it lies on the floor and sticks out
+ * from under its own leg on ONE side only, and that side is the toe. So compare
+ * how far the geometry below the ankle reaches either side of the leg above it
+ * and believe the longer one.
+ *
+ * The correction is a 180-degree turn about the vertical (x and y both negated)
+ * rather than a mirror of y alone. Those look identical on a figure that is
+ * symmetric across x, but a turn is a rotation and a mirror is a reflection:
+ * the mirror would invert the winding of every triangle in the model and draw
+ * the whole player inside out. Rotating leaves winding, and therefore the
+ * normals recomputed from it later, exactly as they were.
+ */
+{
+  const H = STATURE;
+  let legY = 0, nLeg = 0;
+  for (const p of raw.positions) {
+    if (p[2] > H * 0.12 && p[2] < H * 0.20) { legY += p[1]; nLeg++; }
+  }
+  if (nLeg) {
+    legY /= nLeg;
+    let front = 0, back = 0;
+    for (const p of raw.positions) {
+      if (p[2] > H * 0.09) continue;             // below the ankle: the foot
+      const d = p[1] - legY;
+      if (d < front) front = d;
+      if (d > back) back = d;
+    }
+    if (back > -front) {
+      for (const p of raw.positions) { p[0] = -p[0]; p[1] = -p[1]; }
+      console.log('  turned      model faces +y (toe reaches ' + back.toFixed(1) +
+                  ' back against ' + (-front).toFixed(1) +
+                  ' front) -> rotated 180 degrees to face -y');
+    }
   }
 }
 
@@ -988,7 +1129,7 @@ const STATURE = 178;
   }
 }
 
-let J = fitSkeleton(raw.positions);
+let J = fitSkeleton(raw.positions, raw.tris);
 
 /* Swing the arms down into an A-pose before anything is baked.
  *
@@ -1054,7 +1195,7 @@ let J = fitSkeleton(raw.positions);
 
   if (turned > 0) {
     console.log('  a-posed     arms swung down ' + (turned * 57.3).toFixed(0) + ' degrees');
-    J = fitSkeleton(raw.positions);            // the chain moved; re-measure it
+    J = fitSkeleton(raw.positions, raw.tris);   // the chain moved; re-measure it
   }
 }
 
@@ -1314,15 +1455,30 @@ function buildFace(bodyVerts, J) {
   const c = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
   const r = [(hi[0] - lo[0]) / 2, (hi[1] - lo[1]) / 2, (hi[2] - lo[2]) / 2];
 
-  /* The front of the skull at a given (x, z), from the ellipsoid the head
-   * fits. Laying the patches on the real surface rather than on a flat plane
-   * in front of it is what stops an eye floating off the cheek when the head
-   * turns. */
-  const frontY = (x, z) => {
+  /* Where the front of the skull actually is, at the height the features sit.
+   *
+   * The ellipsoid comes from a bounding BOX, and a box's half-depth is the
+   * distance out to the single frontmost point of the whole head — a nose, a
+   * brow, whatever protrudes most. The surface it describes therefore stands
+   * proud of the cheeks the features are supposed to lie on, by however much
+   * that one feature sticks out. Measure the skin across the region the face
+   * occupies and slide the ellipsoid back onto it: the curvature still comes
+   * from the fit, so features still wrap around the head, but they now start
+   * from the real surface instead of from the model's most prominent bump. */
+  const ell = (x, z) => {
     const ex = (x - c[0]) / r[0], ez = (z - c[2]) / r[2];
     const k = 1 - ex * ex - ez * ez;
     return c[1] - r[1] * Math.sqrt(k > 0.04 ? k : 0.04);
   };
+  const EYE_Z = H * 0.9370;
+  let skinY = 1e9;
+  for (const v of head) {
+    if (v.p[2] > H * 0.900 && v.p[2] < H * 0.955 && Math.abs(v.p[0]) < H * 0.030) {
+      skinY = Math.min(skinY, v.p[1]);
+    }
+  }
+  const shift = skinY < 1e8 ? skinY - ell(0, EYE_Z) : 0;
+  const frontY = (x, z) => ell(x, z) + shift;
 
   const startTris = shaded.tris.length;
   const SEG = 14;
