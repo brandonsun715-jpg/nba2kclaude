@@ -175,6 +175,77 @@ function fitSkeleton(positions) {
   // Upper arm : forearm : hand as fractions of a whole arm's reach.
   const upper = armLen * 0.423, wristAt = armLen * 0.756;
 
+  /* Where this model's leg joints actually are.
+   *
+   * The arm chain has always been measured off the mesh. The legs never were —
+   * hip, knee and ankle were fractions of stature, which is standard human
+   * proportion and is exactly right for the model the game shipped with. On
+   * anything else the solver's knee sits where the mesh has no joint, so every
+   * time the leg bends the surface creases in the wrong place. It hides at a
+   * jog and gets uglier as the stride opens up, because near full extension a
+   * small error in joint position turns into a visible kink and the leg reads
+   * as bending backwards.
+   *
+   * Two things are actually measurable, and the third follows from them:
+   *
+   *  CROTCH is the lowest height at which the two legs are still one mass.
+   *  Below it there is a gap on the centreline; above it there is not. That is
+   *  the top of the leg, whatever the figure's proportions.
+   *
+   *  ANKLE is where the leg stops being a leg and becomes a foot, which shows
+   *  up as the profile suddenly getting deeper — a shin is round, a foot is
+   *  long. Found by walking up from the floor until the depth drops back to
+   *  something shin-shaped.
+   *
+   *  KNEE is then placed along the real leg rather than against stature. Its
+   *  position as a fraction of leg length is stable across humans in a way its
+   *  position as a fraction of height is not.
+   *
+   * Every one falls back to the old constant if the scan cannot find it, so a
+   * mesh that defeats this degrades to today's behaviour instead of breaking.
+   */
+  const legs = (function () {
+    const dflt = { hip: H * 0.480, knee: H * 0.281, ankle: H * 0.050 };
+    const BANDS = 120, band = H * 0.6 / BANDS;
+    const nearMid = new Array(BANDS).fill(0);
+    const depthLo = new Array(BANDS).fill(1e30);
+    const depthHi = new Array(BANDS).fill(-1e30);
+    for (const p of positions) {
+      if (p[2] < 0 || p[2] >= H * 0.6) continue;
+      const b = Math.min(BANDS - 1, Math.floor(p[2] / band));
+      if (Math.abs(p[0]) < H * 0.022) nearMid[b]++;
+      if (p[1] < depthLo[b]) depthLo[b] = p[1];
+      if (p[1] > depthHi[b]) depthHi[b] = p[1];
+    }
+
+    /* Crotch: walking DOWN from the waist, the first band with nothing on the
+     * centreline is the first band where the legs have parted. */
+    let hip = -1;
+    const top = Math.floor(H * 0.55 / band);
+    for (let b = top; b >= 0; b--) {
+      if (nearMid[b] === 0) { hip = (b + 1) * band; break; }
+    }
+    if (!(hip > H * 0.30 && hip < H * 0.58)) hip = dflt.hip;
+
+    /* Ankle: the foot is much deeper front-to-back than the shin above it.
+     * Take the shin's depth from a band comfortably clear of the foot, then
+     * walk up from the floor to the first band that has shrunk back to it. */
+    const shinAt = Math.floor(H * 0.20 / band);
+    const shin = depthHi[shinAt] - depthLo[shinAt];
+    let ankle = -1;
+    if (shin > 0 && shin < H) {
+      for (let b = 0; b < shinAt; b++) {
+        const d = depthHi[b] - depthLo[b];
+        if (d > 0 && d < shin * 1.45) { ankle = b * band; break; }
+      }
+    }
+    if (!(ankle > H * 0.005 && ankle < H * 0.20)) ankle = dflt.ankle;
+
+    // Just over halfway up the leg, measured from the ankle.
+    const knee = ankle + (hip - ankle) * 0.545;
+    return { hip, knee, ankle };
+  })();
+
   /* The traced side is +x, and that is the model's LEFT: it faces -y, so
    * forward x up puts its right hand on -x. Getting this backwards names every
    * limb for the wrong side, and each bone then drags its mesh across the body
@@ -189,10 +260,10 @@ function fitSkeleton(positions) {
     elbowL: along(upper),
     wristL: along(wristAt),
     tipL: [tipX, 0, tipZ],
-    hipL: [H * 0.053, 0, H * 0.480],
-    kneeL: [H * 0.062, 0, H * 0.281],
-    ankleL: [H * 0.070, 0, H * 0.050],
-    toeL: [H * 0.070, -H * 0.085, H * 0.012]
+    hipL: [H * 0.053, 0, legs.hip],
+    kneeL: [H * 0.062, 0, legs.knee],
+    ankleL: [H * 0.070, 0, legs.ankle],
+    toeL: [H * 0.070, -H * 0.085, legs.ankle * 0.24]
   };
   for (const k of ['shoulder', 'elbow', 'wrist', 'tip', 'hip', 'knee', 'ankle', 'toe']) {
     const l = J[k + 'L'];
