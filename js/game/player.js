@@ -1656,9 +1656,25 @@
          * rather than the wrist detaching from it. */
         const hand = arm.side < 0 ? p.handL : p.handR;
         const out = hand.side || 0;
+        /* A hand may reach the centreline. It may not cross to the far side.
+         *
+         * Tuck and `side` both pull inward, and nothing stopped them summing
+         * past zero — so with both spent on the same shot the left hand came
+         * out right of centre and the right hand left of it, forearms folded
+         * horizontally into an X across the face for the whole motion. It
+         * reads as broken because it IS anatomically impossible, not because
+         * the numbers were merely large.
+         *
+         * Clamped here rather than by tuning each pose down, because every
+         * pose that ever wants tuck and side together would otherwise have to
+         * rediscover the same limit, and the one that forgets ships the X. A
+         * small allowance past centre stays, since a real guide hand does
+         * cross slightly onto the ball. */
+        const cross = BONE.shoulderW * 0.14;
+        const keep = (lat) => (arm.side < 0 ? Math.min(lat, cross) : Math.max(lat, -cross));
         posePoint(A, f, 0, p.shoulderY, 0, w, torsoLean);
-        posePoint(B, f, el.jx, el.jy, w, w * SPLAY.elbow * tuckE + out * 0.42, torsoLean, roll, pivot);
-        posePoint(D, f, el.ex, el.ey, w, w * SPLAY.wrist * tuckW + out, torsoLean, roll, pivot);
+        posePoint(B, f, el.jx, el.jy, w, keep(w * SPLAY.elbow * tuckE + out * 0.42), torsoLean, roll, pivot);
+        posePoint(D, f, el.ex, el.ey, w, keep(w * SPLAY.wrist * tuckW + out), torsoLean, roll, pivot);
 
         // The solver stops at the wrist; the hand carries on the way the
         // forearm was already pointing.
