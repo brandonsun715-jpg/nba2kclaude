@@ -148,6 +148,7 @@
       this.bodyIndexCount = M.bodyIndexCount == null ? this.indexCount : M.bodyIndexCount;
       this.hairStyles = M.hairStyles || {};
       this.hairOrder = M.hairOrder || [];
+      this.numberGlyphs = M.numberGlyphs || {};
 
       gl.bindVertexArray(null);
 
@@ -287,6 +288,20 @@
       const cut = hairStyle && this.hairStyles[hairStyle];
       if (cut && cut.count) {
         gl.drawElements(gl.TRIANGLES, cut.count, this.indexType, cut.start * this.indexBytes);
+      }
+      /* The wearer's number, one glyph range per digit. A single-digit number
+       * draws only the units slot, so 7 is centred rather than sitting as 07. */
+      const num = pose.number;
+      if (num != null) {
+        const g = this.numberGlyphs;
+        const tens = num >= 10 ? g['tens' + Math.floor(num / 10)] : null;
+        const units = num >= 10 ? g['units' + (num % 10)] : g['units' + num];
+        if (tens && tens.count) {
+          gl.drawElements(gl.TRIANGLES, tens.count, this.indexType, tens.start * this.indexBytes);
+        }
+        if (units && units.count) {
+          gl.drawElements(gl.TRIANGLES, units.count, this.indexType, units.start * this.indexBytes);
+        }
       }
       gl.frontFace(gl.CCW);
       gl.bindVertexArray(null);

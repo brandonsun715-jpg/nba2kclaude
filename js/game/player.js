@@ -1706,6 +1706,8 @@
       copyCol(z[5], this._col('face', U.shade(this.skin, -0.52)));
       Skin.setZones(sp, z);
       sp.hairStyle = this.hairStyle;
+      // The number on the back. Clamped because the glyph table only holds 0-99.
+      sp.number = U.clamp(Math.round(this.number || 0), 0, 99);
 
       if (this.human) {
         // Selection ring under the controlled player. A torus, not a quad: a

@@ -1111,11 +1111,109 @@ function buildFace(bodyVerts, J) {
   return shaded.tris.length - startTris;
 }
 
+/* --------------------------------------------------------- jersey numbers
+ * A blank back is the other thing that says "placeholder" at a glance, and a
+ * number is the one piece of kit that has to differ per player — so it cannot
+ * simply be baked in like the face.
+ *
+ * Same answer as the haircuts: bake ALL of it and let the runtime pick. Ten
+ * digits at each of two positions, each one its own block of triangles, and
+ * the renderer draws the two ranges the wearer's number needs. Twenty little
+ * index ranges cost nothing to carry and mean a number needs no texture, no
+ * UVs and no second material — none of which this mesh has.
+ *
+ * The glyphs are seven-segment, which is not a compromise here: a basketball
+ * block numeral IS a seven-segment figure with the corners squared off, and at
+ * the size a number is read from — across a court, on a moving back — the
+ * difference is invisible.
+ */
+function buildNumbers(bodyVerts, J) {
+  const H = J.height;
+  const jersey = bodyVerts.filter((v) => v.zone === ZONE.JERSEY);
+  if (jersey.length < 50) return { ranges: {}, tris: 0 };
+
+  // Fit the trunk as an ellipse across the band the number sits in.
+  const band = jersey.filter((v) => v.p[2] > H * 0.62 && v.p[2] < H * 0.80);
+  const src = band.length > 30 ? band : jersey;
+  let xLo = 1e9, xHi = -1e9, yLo = 1e9, yHi = -1e9;
+  for (const v of src) {
+    xLo = Math.min(xLo, v.p[0]); xHi = Math.max(xHi, v.p[0]);
+    yLo = Math.min(yLo, v.p[1]); yHi = Math.max(yHi, v.p[1]);
+  }
+  const cx = (xLo + xHi) / 2, cy = (yLo + yHi) / 2;
+  const rx = Math.max((xHi - xLo) / 2, H * 0.02), ry = Math.max((yHi - yLo) / 2, H * 0.02);
+
+  /* The BACK of the trunk at a given x. The model faces -y, so the back is
+   * +y. Laid on the fitted surface rather than a flat plane so a number wraps
+   * with the torso instead of hovering off it at the edges. */
+  const backY = (x) => {
+    const ex = (x - cx) / rx;
+    const k = 1 - ex * ex;
+    return cy + ry * Math.sqrt(k > 0.05 ? k : 0.05);
+  };
+
+  // Seven segments, in a 1 x 2 box: [x, y, w, h].
+  const T = 0.20;
+  const SEG = {
+    a: [0, 2 - T, 1, T], g: [0, 1 - T / 2, 1, T], d: [0, 0, 1, T],
+    f: [0, 1, T, 1], b: [1 - T, 1, T, 1], e: [0, 0, T, 1], c: [1 - T, 0, T, 1]
+  };
+  const DIGIT = ['abcdef', 'bc', 'abged', 'abgcd', 'fgbc', 'afgcd', 'afgecd',
+                 'abc', 'abcdefg', 'abfgcd'];
+
+  /* Stood well clear of the shirt. The back is fitted as an ellipse and the
+   * real surface is not one, so a glyph laid tight against the fit has half
+   * its segments swallowed where the two disagree — which is exactly how the
+   * first pass rendered, as a scatter of white fragments. */
+  const proud = H * 0.0075;
+  const gw = H * 0.076, gh = H * 0.070;      // glyph box, half-height per unit
+  const zTop = H * 0.790;                     // top of the numerals
+  const slots = { tens: -gw * 0.60, units: gw * 0.60 };
+
+  const out = { ranges: {}, tris: 0 };
+  const start0 = shaded.tris.length;
+
+  for (const slot of Object.keys(slots)) {
+    for (let d = 0; d < 10; d++) {
+      const first = shaded.tris.length;
+      for (const seg of DIGIT[d]) {
+        const [sx, sy, sw, sh] = SEG[seg];
+        const quad = [[sx, sy], [sx + sw, sy], [sx + sw, sy + sh], [sx, sy + sh]];
+        const idx = quad.map(([u, v]) => {
+          const x = slots[slot] + (u - 0.5) * gw;
+          const z = zTop - (2 - v) * gh * 0.5;
+          return bodyVerts.push({
+            p: [x, backY(x) + proud, z],
+            n: [0, 1, 0],
+            b0: BONE_INDEX.torso, b1: BONE_INDEX.torso, w0: 1,
+            zone: ZONE.SHOE
+          }) - 1;
+        });
+        // Same winding as the body — the bone matrices carry the reflection.
+        shaded.tris.push([idx[0], idx[2], idx[1]], [idx[0], idx[3], idx[2]]);
+      }
+      out.ranges[slot + d] = {
+        start: first * 3, count: (shaded.tris.length - first) * 3
+      };
+    }
+  }
+  out.tris = shaded.tris.length - start0;
+  return out;
+}
+
 const FACE_TRIS = buildFace(best.verts, J);
 console.log('  face        ' + FACE_TRIS + ' triangles');
 
+/* Captured BEFORE the numbers and the haircuts go in: everything past this
+ * point is optional geometry the runtime selects between, and everything
+ * before it is the figure itself. Baking a glyph on the wrong side of this
+ * line draws all twenty digits on every back at once. */
 const bodyTris = shaded.tris.length;
 const bodyVertCount = best.verts.length;
+
+const NUMBERS = buildNumbers(best.verts, J);
+console.log('  numbers     ' + NUMBERS.tris + ' triangles, ' +
+            Object.keys(NUMBERS.ranges).length + ' glyphs');
 const HAIR = buildHair(best.verts, J);
 console.log('  hair        ' + HAIR.order.length + ' styles, ' +
             (shaded.tris.length - bodyTris) + ' triangles, ' +
@@ -1144,6 +1242,7 @@ const asset = pack(best.verts, best.tris, J);
 asset.bodyIndexCount = bodyTris * 3;
 asset.hairStyles = HAIR.styles;
 asset.hairOrder = HAIR.order;
+asset.numberGlyphs = NUMBERS.ranges;
 const json = JSON.stringify(asset);
 const body = '/* Generated by tools/rig_model.js from ' + path.basename(SRC) + '.\n' +
   ' * A skinned player mesh: quantised positions and normals, two bone weights\n' +
