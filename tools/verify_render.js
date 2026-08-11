@@ -2011,6 +2011,7 @@ console.log('\n[22] a highlight gets a slow-motion replay');
       threshold: R.THRESHOLD,
       offTook: offTook,
       bufferFloats: R._buf.length,
+      bufferExpected: R.RATE * R.SECONDS * (R.BALL_STRIDE + R.MAX_PLAYERS * R.PLAYER_STRIDE),
       pageErr: window.__pageErr || null
     };
   `, 'replay');
@@ -2070,8 +2071,8 @@ console.log('\n[22] a highlight gets a slow-motion replay');
   check('turning it off in settings turns it off', o.offTook === false);
   // Preallocated once: a recorder that grows is a recorder that stutters.
   check('the recording buffer is fixed size',
-        o.bufferFloats === 60 * 6 * (6 + 10 * 40),
-        'buffer is ' + o.bufferFloats + ' floats');
+        o.bufferFloats > 0 && o.bufferFloats === o.bufferExpected,
+        'buffer is ' + o.bufferFloats + ' floats, expected ' + o.bufferExpected);
   check('replay probe raised no errors', !o.pageErr, o.pageErr);
 }
 
@@ -3823,13 +3824,456 @@ console.log('\n[36] the CPU decides at the same speed on every machine');
   check('frame-rate probe raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[37] a dunk is decided by the body, not a dice roll');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, C = BB.C, S = BB.Shooting;
+    var A = BB.Player.ACTION;
+
+    /* A build with everything held flat except the three numbers the dunk gate
+     * actually reads, so a result can only ever be about height and hops. */
+    function build(heightIn, vertical, dunk) {
+      var rt = BB.Player.defaultRatings(70);
+      for (var k in rt) rt[k] = 70;
+      rt.vertical = vertical;
+      rt.drivingDunk = dunk;
+      rt.standingDunk = dunk;
+      var p = new BB.Player({ height: heightIn, ratings: rt, human: true });
+      p.phys = BB.Player.derivePhysical(rt);
+      p.stamina = 1;
+      return p;
+    }
+
+    var HOOP = { x: 88.75, y: 25 };
+
+    /** Drive at the rim from dist feet and ask what comes out. */
+    function attempt(p, dist, sprint, speedFrac) {
+      p.placeAt(HOOP.x - dist, HOOP.y, 0);
+      p.sprinting = sprint;
+      p.vx = (sprint ? p.phys.maxSprint : p.phys.maxSpeed) * speedFrac;
+      p.vy = 0; p.z = 0; p.jumping = false;
+      p.action = null; p.armRaise = 0; p.hasBall = true;
+      p._beginShot();
+      return { type: p.shotType, auto: p.dunkAuto,
+               head: +p.dunkHeadroom(p.driving).toFixed(3) };
+    }
+
+    /** Run the gather out and report whether a bar ever appeared. */
+    function toMeter(p) {
+      for (var i = 0; i < 80 && p.action === A.GATHER; i++) p.updateShotState(1 / 120, null);
+      return { action: p.action, bar: p.meter.active };
+    }
+
+    var tall = build(84, 92, 85);     // built to dunk
+    var mid = build(78, 78, 70);      // can get there, but only just
+    var small = build(70, 45, 50);    // cannot, and no rating changes that
+
+    var gate = {
+      tall: attempt(tall, 5, true, 0.9),
+      mid: attempt(mid, 5, true, 0.9),
+      small: attempt(small, 5, true, 0.9),
+      // Standing under the rim: the drive bonus is what the mid build needs.
+      tallStand: attempt(tall, 2.5, false, 0),
+      midStand: attempt(mid, 2.5, false, 0),
+      // Out past the takeoff window, even a dunker has to lay it in.
+      tallFar: attempt(tall, 10, true, 0.9)
+    };
+
+    attempt(tall, 5, true, 0.9);
+    var tallBar = toMeter(tall);
+    attempt(mid, 5, true, 0.9);
+    var midBar = toMeter(mid);
+
+    /* The window on a dunk you DO have to time is a free throw's window —
+     * the same expression, not a number that merely looks similar. */
+    var win = {
+      dunk: S.greenWindowFor(70, 2, 'dunk', 0),
+      ft: S.greenWindowFor(70, 15, 'freethrow', 0),
+      contested: S.greenWindowFor(70, 2, 'dunk', 1),
+      jumper: S.greenWindowFor(70, 15, 'jumper', 0)
+    };
+
+    /* ---- the pose ---- */
+    var REACH = BB.Player.BONE.upperArm + BB.Player.BONE.forearm;
+    function sweep(p, action, n) {
+      p.shotType = 'dunk'; p.driving = true; p.jumping = true;
+      p.action = action;
+      if (action === A.METER) {
+        p.meter.start({ riseTime: 0.3, target: 0.94, greenWindow: 0.05, name: 'x' },
+                      { x: p.x, y: p.y, z: 0 });
+      }
+      var out = [];
+      for (var i = 0; i <= n; i++) {
+        if (action === A.DUNK) p.actionT = i / n * 0.55;
+        else p.meter.value = i / n;
+        p._updatePose(1 / 60);
+        var q = p.pose;
+        out.push({
+          // How far the solved wrist fell short of where the pose asked for
+          // it. Anything above zero is the IK clamping, which draws the arm
+          // locked straight with the elbow gone.
+          clamp: Math.max(
+            Math.hypot(q.elbowR.ex - q.handR.x, q.elbowR.ey - q.handR.y),
+            Math.hypot(q.elbowL.ex - q.handL.x, q.elbowL.ey - q.handL.y)),
+          side: Math.abs((q.handL.side || 0) - (q.handR.side || 0)),
+          split: Math.abs(q.handL.y - q.handR.y),
+          knee: -q.footL.y,
+          legSplit: Math.abs(q.footL.y - q.footR.y),
+          twist: q.handR.twist,
+          dR: Math.hypot(q.handR.x - BB.Player.BONE.shoulderW, q.handR.y - q.shoulderY),
+          dL: Math.hypot(q.handL.x + BB.Player.BONE.shoulderW, q.handL.y - q.shoulderY)
+        });
+      }
+      return out;
+    }
+    function worst(l, f) { return l.reduce(function (w, s) { return Math.max(w, f(s)); }, -1e9); }
+    function least(l, f) { return l.reduce(function (w, s) { return Math.min(w, f(s)); }, 1e9); }
+    /* A two-bone limb clamps at BOTH ends: too far and it locks straight, too
+     * close and it cannot fold that tight. Report the range so a failure says
+     * which end it hit. */
+    var MINR = Math.abs(BB.Player.BONE.upperArm - BB.Player.BONE.forearm);
+
+    var flush = sweep(build(84, 92, 85), A.DUNK, 16);
+    var rise = sweep(build(78, 78, 70), A.METER, 16);
+
+    // The same sweep for a jump shot, as the thing a dunk has to differ from.
+    var jp = build(84, 92, 85);
+    jp.shotType = 'jumper'; jp.jumping = true; jp.action = A.METER;
+    jp.meter.start({ riseTime: 0.3, target: 0.94, greenWindow: 0.05, name: 'x' },
+                   { x: jp.x, y: jp.y, z: 0 });
+    jp.meter.value = 0.85; jp._updatePose(1 / 60);
+    var jumper = {
+      side: Math.abs((jp.pose.handL.side || 0) - (jp.pose.handR.side || 0)),
+      split: Math.abs(jp.pose.handL.y - jp.pose.handR.y),
+      knee: -jp.pose.footL.y
+    };
+
+    /* ---- can a dunk miss? ----
+     * Outcome over a handful of tries is a coin-flip test; the aim error the
+     * model produces is the thing itself. A guaranteed release is capped at a
+     * fraction of an inch; a badly mistimed one has to be big enough for the
+     * rim to actually reject it. */
+    function spread(tierKey, n) {
+      var g = { tier: S.TIER[tierKey], error: tierKey === 'PERFECT' ? 0 : -0.30,
+                quality: S.TIER[tierKey].quality, late: false };
+      var errs = [];
+      for (var i = 0; i < n; i++) {
+        var sol = S.solveShot({
+          from: { x: HOOP.x - 1.5, y: HOOP.y, z: 11 }, hoop: HOOP,
+          grade: g, rating: 85, contest: 0, fatigue: 0, zone: 0, moving: 0, type: 'dunk'
+        });
+        errs.push(Math.hypot(sol.errX, sol.errY));
+      }
+      errs.sort(function (a, b) { return a - b; });
+      return +errs[Math.floor(n / 2)].toFixed(4);
+    }
+    var errGreen = spread('PERFECT', 200), errBad = spread('VERY_EARLY', 200);
+
+    /* ---- end to end, in the real scene ---- */
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene;
+    for (var i = 0; i < 60; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+    scene.ai.x = -80; scene.ai.y = -80; scene.ai.hasBall = false;
+
+    var pl = scene.player, hoop = scene.hoop;
+    // Make the human a dunker, using only the numbers the gate reads.
+    pl.heightIn = 84;
+    pl.ratings.vertical = 92; pl.ratings.drivingDunk = 88; pl.ratings.standingDunk = 88;
+    pl.phys = BB.Player.derivePhysical(pl.ratings);
+
+    var made = 0, tries = 0, sawDunk = 0, barEver = 0;
+    var handTop = 0, ballTop = 0, liftTop = 0;
+    for (var t = 0; t < 6; t++) {
+      var ball = scene.ball;
+      pl.placeAt(hoop.x - 6, hoop.y, 0);
+      pl.sprinting = true; pl.vx = pl.phys.maxSprint * 0.9; pl.vy = 0;
+      pl.z = 0; pl.jumping = false; pl.action = null; pl.armRaise = 0;
+      pl.visualLift = 0;
+      pl.giveBall(ball);
+      pl._beginShot();
+      if (pl.shotType === 'dunk') sawDunk++;
+      var scored = false;
+      var off = ball.events.on('score', function () { scored = true; });
+      for (var f = 0; f < 420; f++) {
+        scene.fixedUpdate(1 / 120);
+        if (pl.meter.active) barEver++;
+        if (pl.action === A.DUNK) {
+          /* handAt() answers with the WRIST — the solver's arm stops there.
+           * What has to clear a ten-foot ring is the hand on the end of it,
+           * so the bone's own length goes back on before comparing. */
+          handTop = Math.max(handTop,
+            pl.handAt({}).z + BB.Player.BONE.hand * pl.bodyScale);
+          ballTop = Math.max(ballTop, pl.handPosition({}).z);
+          liftTop = Math.max(liftTop, pl.visualLift);
+        }
+        if (scored) break;
+      }
+      if (typeof off === 'function') off();
+      ball.events.off && ball.events.off('score');
+      tries++; if (scored) made++;
+    }
+
+    return {
+      gate: gate,
+      tallBar: tallBar, midBar: midBar,
+      win: { dunk: +win.dunk.toFixed(4), ft: +win.ft.toFixed(4),
+             contested: +win.contested.toFixed(4), jumper: +win.jumper.toFixed(4) },
+      reach: +REACH.toFixed(4),
+      flushClamp: +worst(flush, function (s) { return s.clamp; }).toFixed(4),
+      riseClamp: +worst(rise, function (s) { return s.clamp; }).toFixed(4),
+      minReach: +MINR.toFixed(4),
+      flushFar: +worst(flush, function (s) { return Math.max(s.dR, s.dL); }).toFixed(4),
+      flushNear: +least(flush, function (s) { return Math.min(s.dR, s.dL); }).toFixed(4),
+      riseFar: +worst(rise, function (s) { return Math.max(s.dR, s.dL); }).toFixed(4),
+      riseNear: +least(rise, function (s) { return Math.min(s.dR, s.dL); }).toFixed(4),
+      flushSide: +worst(flush, function (s) { return s.side; }).toFixed(3),
+      flushSplit: +worst(flush, function (s) { return s.split; }).toFixed(3),
+      flushTwist: +worst(flush, function (s) { return s.twist; }).toFixed(3),
+      riseKnee: +worst(rise, function (s) { return s.knee; }).toFixed(3),
+      riseLegSplit: +worst(rise, function (s) { return s.legSplit; }).toFixed(3),
+      jumper: { side: +jumper.side.toFixed(3), split: +jumper.split.toFixed(3),
+                knee: +jumper.knee.toFixed(3) },
+      errGreen: errGreen, errBad: errBad,
+      made: made, tries: tries, sawDunk: sawDunk, barEver: barEver,
+      handTop: +handTop.toFixed(2), ballTop: +ballTop.toFixed(2),
+      liftTop: +liftTop.toFixed(2), rim: C.RIM_HEIGHT,
+      pageErr: window.__pageErr || null
+    };
+  `, 'dunk');
+  if (r.err) check('dunk probe ran', false, r.err);
+  const o = r.out || {}, g = o.gate || {}, w = o.win || {};
+
+  /* ---- the gate ---- */
+  check('a build with the height and the hops dunks off a drive',
+        g.tall && g.tall.type === 'dunk',
+        'got ' + (g.tall || {}).type + ', headroom ' + (g.tall || {}).head);
+  check('and clears the rim by enough that no bar appears',
+        g.tall && g.tall.auto === true && o.tallBar && o.tallBar.bar === false &&
+        o.tallBar.action === 'dunk',
+        'auto ' + (g.tall || {}).auto + ', bar ' + JSON.stringify(o.tallBar));
+  check('a build that only just gets there dunks WITH a bar',
+        g.mid && g.mid.type === 'dunk' && g.mid.auto === false &&
+        o.midBar && o.midBar.bar === true,
+        'got ' + (g.mid || {}).type + ' auto=' + (g.mid || {}).auto +
+        ' headroom ' + (g.mid || {}).head + ', bar ' + JSON.stringify(o.midBar));
+  /* The whole point of the change: no rating and no run-up gets a short
+   * player with no hops over a ten-foot rim. */
+  check('no height and no vertical means no dunk, however hard they drive',
+        g.small && g.small.type === 'layup',
+        'got ' + (g.small || {}).type + ', headroom ' + (g.small || {}).head);
+  check('the drive is worth real lift — it is what the marginal build needs',
+        g.midStand && g.midStand.type === 'layup' && g.mid && g.mid.type === 'dunk',
+        'standing ' + (g.midStand || {}).head + ' vs driving ' + (g.mid || {}).head);
+  check('a standing dunker still throws one down from under the rim',
+        g.tallStand && g.tallStand.type === 'dunk',
+        'got ' + (g.tallStand || {}).type + ', headroom ' + (g.tallStand || {}).head);
+  check('out past the takeoff window it is a layup again',
+        g.tallFar && g.tallFar.type === 'layup', 'from 10ft: ' + (g.tallFar || {}).type);
+
+  /* ---- the window ---- */
+  check("a timed dunk's green window IS a free throw's",
+        w.dunk > 0 && Math.abs(w.dunk - w.ft) < 1e-6,
+        'dunk ' + w.dunk + ' vs free throw ' + w.ft);
+  check('and a body at the rim still tightens it',
+        w.contested < w.dunk * 0.8 && w.contested > 0, 'contested ' + w.contested);
+
+  /* ---- the pose ---- */
+  /* An arm the IK had to clamp draws locked poker-straight with the elbow
+   * gone — the exact fault the jump-shot work went to some trouble to remove,
+   * and one the old dunk pose committed at both ends at once. */
+  check('the flush never asks the arm to do what an arm cannot',
+        o.flushClamp < 0.002,
+        'off by ' + o.flushClamp + '; reached ' + o.flushFar + ' of ' + o.reach +
+        ', folded to ' + o.flushNear + ' against a ' + o.minReach + ' minimum');
+  check('neither does the rise',
+        o.riseClamp < 0.002,
+        'off by ' + o.riseClamp + '; reached ' + o.riseFar + ' of ' + o.reach +
+        ', folded to ' + o.riseNear + ' against a ' + o.minReach + ' minimum');
+  /* The reference silhouette: one hand cocked back behind the head, the other
+   * thrown wide. Both halves have to be measurably true, and both have to
+   * separate it from a jump shot, which is a two-handed pose by definition. */
+  const jp = o.jumper || {};
+  check('the flush throws the off arm wide, which a jump shot never does',
+        o.flushSide > 0.2 && o.flushSide > jp.side * 2,
+        'dunk ' + o.flushSide + ' vs jumper ' + jp.side);
+  check('and puts the two hands nowhere near each other',
+        o.flushSplit > 0.35 && o.flushSplit > jp.split * 2,
+        'dunk ' + o.flushSplit + ' vs jumper ' + jp.split);
+  check('the palm rolls over the ball on the way down',
+        o.flushTwist > 1.0, 'peak twist ' + o.flushTwist);
+  check('the rise drives a knee up like a layup, not a jump shot',
+        o.riseKnee > 0.3 && o.riseKnee > jp.knee + 0.25,
+        'dunk knee ' + o.riseKnee + ' vs jumper ' + jp.knee);
+  check('and is asymmetric through the legs',
+        o.riseLegSplit > 0.4, 'legs ' + o.riseLegSplit + ' apart');
+
+  /* ---- can it miss? ---- */
+  /* The guaranteed path caps the along- and across-line error at 0.028ft each,
+   * so the magnitude of the two together can reach 0.04 — comparing it against
+   * a single axis's cap is a check that fails on its own arithmetic. Half an
+   * inch, against a rim with nine inches of radius to play with. */
+  check('a green or automatic dunk is aimed to within half an inch',
+        o.errGreen >= 0 && o.errGreen < 0.05, 'median error ' + o.errGreen + 'ft');
+  check('a badly mistimed one has something real to clang off',
+        o.errBad > 0.15, 'median error ' + o.errBad + 'ft');
+
+  /* ---- end to end ---- */
+  check('driving at the rim as a dunker actually produces dunks',
+        o.sawDunk === o.tries, o.sawDunk + ' of ' + o.tries);
+  check('and never puts a bar on screen while doing it',
+        o.barEver === 0, o.barEver + ' frames with an active meter');
+  check('the ball genuinely goes over the ring, not through the side',
+        o.ballTop > o.rim + 1, 'ball released from ' + o.ballTop + 'ft');
+  /* The trap this catches: the figure is drawn compressed while the rim is
+   * true scale, so a dunk can score with the drawn hand a foot under the
+   * ring — the ball goes in and the player is visibly nowhere near it. */
+  check('and the DRAWN hand gets to the ring with it',
+        o.handTop >= o.rim - 0.35,
+        'drawn hand peaked at ' + o.handTop + 'ft against a ' + o.rim + 'ft rim' +
+        ' (lift ' + o.liftTop + 'ft)');
+  check('automatic dunks go down', o.made === o.tries,
+        o.made + ' of ' + o.tries);
+  check('dunk probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[38] the replay shows the play that actually happened');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, C = BB.C;
+    if (!BB.Replay) return { missing: true };
+    var A = BB.Player.ACTION;
+
+    BB.Settings.set('instantReplay', true);
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene, pl = scene.player, hoop = scene.hoop, R = BB.Replay;
+
+    // A dunker, built the same way the gate reads one.
+    pl.heightIn = 84;
+    pl.ratings.vertical = 95; pl.ratings.drivingDunk = 90; pl.ratings.standingDunk = 90;
+    pl.phys = BB.Player.derivePhysical(pl.ratings);
+
+    var DT = 1 / 60;
+    function frame() {
+      scene.ai.x = -95; scene.ai.y = -95; scene.ai.hasBall = false;
+      BB.Input.beginFrame();
+      var frozen = R.beginFrame(DT, scene);
+      if (!frozen) {
+        scene.fixedUpdate(1 / 120); scene.fixedUpdate(1 / 120);
+        scene.update(DT, DT);
+      }
+      BB.Input.endFrame();
+      return frozen;
+    }
+    for (var i = 0; i < 120; i++) frame();
+
+    /* Throw one down, remembering the widest the LIVE pose ever got. */
+    pl.placeAt(hoop.x - 6, hoop.y, 0);
+    pl.sprinting = true; pl.vx = pl.phys.maxSprint * 0.9; pl.vy = 0;
+    pl.z = 0; pl.jumping = false; pl.action = null; pl.armRaise = 0;
+    pl.giveBall(scene.ball);
+    pl._beginShot();
+    var liveSide = 0, liveTuck = 0, liveLift = 0, dunked = pl.shotType === 'dunk';
+    for (var f = 0; f < 300; f++) {
+      if (frame()) break;
+      if (pl.action === A.DUNK) {
+        liveSide = Math.max(liveSide, Math.abs(pl.pose.handL.side || 0));
+        liveTuck = Math.max(liveTuck, Math.abs(pl.pose.armTuck || 0));
+        liveLift = Math.max(liveLift, pl.visualLift || 0);
+      }
+    }
+
+    /* Now watch it back. Every frame of playback rebuilds the figure from the
+     * recorded floats, so whatever the recording dropped shows up here as a
+     * zero the live play never had. */
+    var seenSide = 0, seenLift = 0, played = 0;
+    for (var g = 0; g < 600; g++) {
+      var frozen = frame();
+      if (frozen) {
+        played++;
+        seenSide = Math.max(seenSide, Math.abs(pl.pose.handL.side || 0));
+        seenLift = Math.max(seenLift, pl.visualLift || 0);
+      } else if (played > 0) break;
+    }
+
+    return {
+      dunked: dunked, played: played,
+      liveSide: +liveSide.toFixed(4), seenSide: +seenSide.toFixed(4),
+      liveLift: +liveLift.toFixed(4), seenLift: +seenLift.toFixed(4),
+      liveTuck: +liveTuck.toFixed(4),
+      pageErr: window.__pageErr || null
+    };
+  `, 'replaypose');
+  if (r.err) check('replay pose probe ran', false, r.err);
+  const o = r.out || {};
+  if (o.missing) {
+    check('replay pose probe ran', false, 'BB.Replay missing');
+  } else {
+    check('a dunk is worth a highlight and gets one', o.dunked && o.played > 0,
+          'dunked ' + o.dunked + ', ' + o.played + ' frozen frames');
+    /* The bug this catches: the pose solver works in one flat plane, and
+     * everything that leaves it — the lateral hand offsets, the arm tuck, the
+     * palm roll — was never written into the replay buffer. The skeleton was
+     * rebuilt correctly and then drawn square and flat, which is most obvious
+     * on the clip the highlight system rates highest. */
+    check('and the replay keeps the arm the dunk actually threw wide',
+          o.liveSide > 0.1 && o.seenSide > o.liveSide * 0.8,
+          'live ' + o.liveSide + ' vs replayed ' + o.seenSide);
+    check('and keeps the hand up at the ring rather than under it',
+          o.liveLift > 0.01 && o.seenLift > o.liveLift * 0.8,
+          'live ' + o.liveLift + 'ft vs replayed ' + o.seenLift + 'ft');
+    check('replay pose probe raised no errors', !o.pageErr, o.pageErr);
+  }
+}
+
+/**
+ * Setup source that drives a 1v1 scene to a dunk and stops `phase` of the way
+ * through the flush (0..1 across the DUNK action), so the frame captured is a
+ * chosen beat of the animation rather than whatever a tick count landed on.
+ */
+function dunkSetup(phase) {
+  return `
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var s = BB.Engine.scene, pl = s.player, hp = s.hoop;
+    var A = BB.Player.ACTION;
+    for (var w = 0; w < 60; w++) { s.fixedUpdate(1 / 120); if (w % 2 === 0) s.update(1 / 60, 1 / 60); }
+    s.ai.x = -95; s.ai.y = -95; s.ai.hasBall = false;
+    pl.heightIn = 84;
+    pl.ratings.vertical = 95; pl.ratings.drivingDunk = 92; pl.ratings.standingDunk = 92;
+    pl.phys = BB.Player.derivePhysical(pl.ratings);
+    pl.placeAt(hp.x - 7, hp.y, 0);
+    pl.sprinting = true; pl.vx = pl.phys.maxSprint * 0.92; pl.vy = 0;
+    pl.z = 0; pl.jumping = false; pl.action = null; pl.armRaise = 0;
+    pl.giveBall(s.ball);
+    pl._beginShot();
+    for (var d = 0; d < 400; d++) {
+      s.fixedUpdate(1 / 120);
+      if (d % 2 === 0) s.update(1 / 60, 1 / 60);
+      if (pl.action === A.DUNK && pl.actionT >= 0.55 * ${phase}) break;
+    }
+    /* Close in on the figure, so the shot is of the pose rather than of a
+     * court with somebody small in the middle of it. setMode first — it resets
+     * targetZoom — then reset() carries the zoom in, and no update() call
+     * afterwards to ease it back out again. Framed between the player and the
+     * ring, because the thing worth looking at is the two of them meeting. */
+    BB.Camera.setMode('tight');
+    BB.Camera.reset((pl.x + hp.x) * 0.5, (pl.y + hp.y) * 0.5, 3.4);
+    BB.Camera.snap();
+  `;
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[37] screenshots');
+  console.log('\n[39] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],
     ['play_5v5', "BB.Engine.setState('fiveVfive'); BB.Engine._applyPending();", 900],
-    ['shootaround', "BB.Engine.setState('shootaround'); BB.Engine._applyPending();", 420]
+    ['shootaround', "BB.Engine.setState('shootaround'); BB.Engine._applyPending();", 420],
+    /* The dunk, caught at the two beats worth looking at: the ball cocked back
+     * behind the head with the off arm thrown wide, and the flush itself.
+     * Driven to a phase rather than to a tick count, because how long a player
+     * spends in the air depends on how high they jump. */
+    ['dunk_cock', dunkSetup(0.30), 0],
+    ['dunk_flush', dunkSetup(0.62), 0]
   ];
   for (const [name, setup, ticks] of shots) {
     const f = screenshot(name, setup, ticks);

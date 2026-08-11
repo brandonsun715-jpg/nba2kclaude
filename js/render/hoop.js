@@ -75,6 +75,22 @@
     hitBoard(strength) {
       this.glass = Math.min(1, this.glass + strength);
     }
+    /**
+     * Dunked on. The ring wears the whole weight of it.
+     *
+     * Not swish(), which billows the net and leaves the rim untouched — that
+     * is a shot dropping through, and it is the wrong picture for a ball being
+     * carried down through the ring by hand. A slam bends the ring hard and
+     * snaps the net at the same time, which is the difference the eye actually
+     * reads between two points and a dunk.
+     */
+    slam(strength) {
+      const s = strength == null ? 1 : strength;
+      this.rimFlex = Math.min(1, this.rimFlex + s);
+      this.netEnergy = Math.min(1, this.netEnergy + s);
+      this.netPhase = 0;
+      this.scoreGlow = 1;
+    }
 
     update(dt) {
       this.netPhase += dt * 9.5;
@@ -229,6 +245,35 @@
     NET_TMP[3] = a;
     return NET_TMP;
   }
+
+  /**
+   * How the basket reacts to a made shot, and the sound it makes.
+   *
+   * Lives here rather than in each scene because three of them score baskets
+   * and a dunk has to look like a dunk in all three — the version that gets
+   * forgotten is the one that quietly plays a swish while somebody hangs off
+   * the ring.
+   *
+   * @param {object} e the ball's 'score' event
+   * @param {object} shooter who scored it
+   * @returns {boolean} whether that was a dunk, so the caller can say so
+   */
+  Hoop.scored = function (e, shooter) {
+    const dunk = !!(shooter && shooter.shotType === 'dunk');
+    const pan = BB.Camera ? BB.Camera.panFor(e.x) : 0;
+    if (dunk) {
+      e.hoop.slam(1);
+      if (BB.FX) BB.FX.ring(e.hoop.x, e.hoop.y, PAL.gold, 1.5);
+      if (BB.Audio) {
+        BB.Audio.play('rim', { pan, gain: 0.95 });
+        BB.Audio.play('net', { pan });
+      }
+    } else {
+      e.hoop.swish(e.clean ? 1 : 0.6);
+      if (BB.Audio) BB.Audio.play('swish', { pan });
+    }
+    return dunk;
+  };
 
   BB.Hoop = Hoop;
 })(typeof window !== 'undefined' ? window : globalThis);

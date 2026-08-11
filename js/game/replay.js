@@ -38,7 +38,7 @@
   const FRAMES = RATE * SECONDS;
   const MAX_PLAYERS = 10;
   const BALL_STRIDE = 6;
-  const PLAYER_STRIDE = 40;
+  const PLAYER_STRIDE = 48;
   const FRAME_STRIDE = BALL_STRIDE + MAX_PLAYERS * PLAYER_STRIDE;
 
   /* ----------------------------------------------------------- the timings
@@ -482,7 +482,25 @@
     a[o + 26] = s.kneeR.jx; a[o + 27] = s.kneeR.jy; a[o + 28] = s.kneeR.ex; a[o + 29] = s.kneeR.ey;
     a[o + 30] = s.elbowL.jx; a[o + 31] = s.elbowL.jy; a[o + 32] = s.elbowL.ex; a[o + 33] = s.elbowL.ey;
     a[o + 34] = s.elbowR.jx; a[o + 35] = s.elbowR.jy; a[o + 36] = s.elbowR.ex; a[o + 37] = s.elbowR.ey;
-    a[o + 38] = 0; a[o + 39] = 0;
+    /* The off-plane half of the pose, and it is not optional.
+     *
+     * The solver works in one flat plane per limb pair; everything that leaves
+     * that plane — how far the arms are drawn toward the centreline, the
+     * lateral offsets that put a guide hand on the side of the ball or throw a
+     * dunker's free arm wide, the palm roll — lives in these fields, and none
+     * of them were being recorded. draw() reads every one, so a replay was
+     * rebuilding the skeleton and then drawing it with all of that at zero:
+     * flat, square, palms forward. Most visible on the one clip the highlight
+     * system rates highest, a dunk, whose whole silhouette is off-plane.
+     *
+     * visualLift is here for the same reason — it is drawn height, so a replay
+     * without it puts the hand back under the rim. */
+    a[o + 38] = s.armTuck || 0;
+    a[o + 39] = s.footL.side || 0; a[o + 40] = s.footR.side || 0;
+    a[o + 41] = s.handL.side || 0; a[o + 42] = s.handR.side || 0;
+    a[o + 43] = s.handL.twist || 0; a[o + 44] = s.handR.twist || 0;
+    a[o + 45] = p.visualLift || 0;
+    a[o + 46] = 0; a[o + 47] = 0;
   }
 
   function readPlayer(a, o, p) {
@@ -499,6 +517,11 @@
     s.kneeR.jx = a[o + 26]; s.kneeR.jy = a[o + 27]; s.kneeR.ex = a[o + 28]; s.kneeR.ey = a[o + 29];
     s.elbowL.jx = a[o + 30]; s.elbowL.jy = a[o + 31]; s.elbowL.ex = a[o + 32]; s.elbowL.ey = a[o + 33];
     s.elbowR.jx = a[o + 34]; s.elbowR.jy = a[o + 35]; s.elbowR.ex = a[o + 36]; s.elbowR.ey = a[o + 37];
+    s.armTuck = a[o + 38];
+    s.footL.side = a[o + 39]; s.footR.side = a[o + 40];
+    s.handL.side = a[o + 41]; s.handR.side = a[o + 42];
+    s.handL.twist = a[o + 43]; s.handR.twist = a[o + 44];
+    p.visualLift = a[o + 45];
   }
 
   /** Same as readPlayer, blended between two frames. */
@@ -529,17 +552,29 @@
     s.handL.y = U.lerp(a[oA + 19], a[oB + 19], t);
     s.handR.x = U.lerp(a[oA + 20], a[oB + 20], t);
     s.handR.y = U.lerp(a[oA + 21], a[oB + 21], t);
-    for (let k = 22; k < 38; k++) TMP38[k] = U.lerp(a[oA + k], a[oB + k], t);
+    for (let k = 22; k < 46; k++) TMP38[k] = U.lerp(a[oA + k], a[oB + k], t);
     s.kneeL.jx = TMP38[22]; s.kneeL.jy = TMP38[23]; s.kneeL.ex = TMP38[24]; s.kneeL.ey = TMP38[25];
     s.kneeR.jx = TMP38[26]; s.kneeR.jy = TMP38[27]; s.kneeR.ex = TMP38[28]; s.kneeR.ey = TMP38[29];
     s.elbowL.jx = TMP38[30]; s.elbowL.jy = TMP38[31]; s.elbowL.ex = TMP38[32]; s.elbowL.ey = TMP38[33];
     s.elbowR.jx = TMP38[34]; s.elbowR.jy = TMP38[35]; s.elbowR.ex = TMP38[36]; s.elbowR.ey = TMP38[37];
+    s.armTuck = TMP38[38];
+    s.footL.side = TMP38[39]; s.footR.side = TMP38[40];
+    s.handL.side = TMP38[41]; s.handR.side = TMP38[42];
+    s.handL.twist = TMP38[43]; s.handR.twist = TMP38[44];
+    p.visualLift = TMP38[45];
   }
 
-  const TMP38 = new Float32Array(40);
+  const TMP38 = new Float32Array(PLAYER_STRIDE);
 
   Replay.RATE = RATE;
   Replay.SECONDS = SECONDS;
+  /* Exposed so the suite can check the buffer is preallocated and fixed
+   * without hard-coding the frame layout — the invariant worth guarding is
+   * "it never grows", not "a player is exactly N floats wide", and pinning
+   * the latter breaks every time the skeleton gains a field. */
+  Replay.MAX_PLAYERS = MAX_PLAYERS;
+  Replay.PLAYER_STRIDE = PLAYER_STRIDE;
+  Replay.BALL_STRIDE = BALL_STRIDE;
   Replay.THRESHOLD = THRESHOLD;
   Replay.PLAY_RATE = PLAY_RATE;
   Replay.PRE_ROLL = PRE_ROLL;

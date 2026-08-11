@@ -305,12 +305,12 @@
       BB.Commentary.make(p.name, three, !!e.clean);
       BB.Commentary.streak(p.stats.streak, p.name);
 
-      e.hoop.swish(e.clean ? 1 : 0.6);
-      BB.Audio.play('swish', { pan: BB.Camera.panFor(e.x) });
-      BB.Audio.crowdBurst(U.clamp01(0.45 + p.stats.streak * 0.08));
-      BB.Camera.addTrauma(0.12 * (BB.Settings.get('screenShake') || 1));
+      const slam = BB.Hoop.scored(e, p);
+      BB.Audio.crowdBurst(U.clamp01((slam ? 0.62 : 0.45) + p.stats.streak * 0.08));
+      BB.Camera.addTrauma((slam ? 0.20 : 0.12) * (BB.Settings.get('screenShake') || 1));
 
-      const label = e.clean ? (p._lastShotQuality > 0.9 ? 'SWISH!' : 'BUCKET!') : 'GOOD!';
+      const label = slam ? 'THROWN DOWN!'
+        : (e.clean ? (p._lastShotQuality > 0.9 ? 'SWISH!' : 'BUCKET!') : 'GOOD!');
       BB.FX.popup({
         x: e.hoop.x, y: e.hoop.y, z: C.RIM_HEIGHT + 1.5,
         text: label, sub: '+' + pts + (p.stats.streak > 2 ? '   ' + p.stats.streak + ' IN A ROW' : ''),
@@ -582,14 +582,13 @@
       BB.Commentary.streak(scorer.stats.streak, scorer.name);
       if (Math.max(this.score.you, this.score.cpu) >= this.target - 2) BB.Commentary.closeGame();
 
-      e.hoop.swish(e.clean ? 1 : 0.6);
-      BB.Audio.play('swish', { pan: BB.Camera.panFor(e.x) });
-      BB.Audio.crowdBurst(0.55);
-      BB.Camera.addTrauma(0.10 * (BB.Settings.get('screenShake') || 1));
+      const slam = BB.Hoop.scored(e, scorer);
+      BB.Audio.crowdBurst(slam ? 0.68 : 0.55);
+      BB.Camera.addTrauma((slam ? 0.18 : 0.10) * (BB.Settings.get('screenShake') || 1));
 
       BB.FX.popup({
         x: e.hoop.x, y: e.hoop.y, z: C.RIM_HEIGHT + 1.5,
-        text: e.clean ? 'SWISH!' : 'GOOD!',
+        text: slam ? 'THROWN DOWN!' : (e.clean ? 'SWISH!' : 'GOOD!'),
         sub: (scorer === this.player ? 'YOU' : 'CPU') + ' +' + pts,
         colour: e.three ? PAL.mint : PAL.gold, size: e.three ? 1.15 : 1.0, life: 1.3
       });

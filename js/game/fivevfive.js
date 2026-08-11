@@ -571,13 +571,12 @@
       BB.Commentary.make(scorer.name, !!e.three, !!e.clean);
       BB.Commentary.streak(scorer.stats.streak, scorer.name);
 
-      e.hoop.swish(e.clean ? 1 : 0.6);
-      BB.Audio.play('swish', { pan: BB.Camera.panFor(e.x) });
-      BB.Audio.crowdBurst(scorer.team === this.teamA ? 0.6 : 0.3);
-      BB.Camera.addTrauma(0.08 * (BB.Settings.get('screenShake') || 1));
+      const slam = BB.Hoop.scored(e, scorer);
+      BB.Audio.crowdBurst((scorer.team === this.teamA ? 0.6 : 0.3) + (slam ? 0.12 : 0));
+      BB.Camera.addTrauma((slam ? 0.15 : 0.08) * (BB.Settings.get('screenShake') || 1));
       BB.FX.popup({
         x: e.hoop.x, y: e.hoop.y, z: C.RIM_HEIGHT + 1.5,
-        text: e.clean ? 'SWISH!' : 'GOOD!',
+        text: slam ? 'THROWN DOWN!' : (e.clean ? 'SWISH!' : 'GOOD!'),
         sub: (scorer.team === this.teamA ? this.teamA.abbr : this.teamB.abbr) + ' +' + pts,
         colour: e.three ? PAL.mint : PAL.gold, size: e.three ? 1.15 : 1.0, life: 1.2
       });

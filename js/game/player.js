@@ -102,6 +102,23 @@
     return (-M.bind.footL[1][1] / M.height) * REF_STATURE;
   })();
 
+  /**
+   * How far the fingertips reach past the wrist, in skeleton units.
+   *
+   * The solver's arm stops at the wrist, but what has to clear a ten-foot rim
+   * is the hand — and on this build that is another fifth of a skeleton unit,
+   * enough to matter when the question is whether a dunk is on. Measured off
+   * the same bind skeleton as BONE.toe, for the same reason: derived from the
+   * mesh, so re-baking the model cannot silently move the rim out of reach.
+   */
+  BONE.hand = (function () {
+    const M = BB.PLAYER_MESH;
+    if (!M || !M.bind || !M.bind.handL) return 0.19;
+    const h = M.bind.handL;
+    const len = Math.hypot(h[1][0] - h[0][0], h[1][1] - h[0][1], h[1][2] - h[0][2]);
+    return (len / M.height) * REF_STATURE;
+  })();
+
   /* Limbs do not hang in a vertical plane straight off the joint they start at.
    * These are each joint's lateral offset as a fraction of the limb's root
    * width. The pose solver can't express any of this itself: it works in a
@@ -135,6 +152,40 @@
    * covers the rest in the air, so this has to be comfortably past it or the
    * shots that most want to be layups come out as jump shots. */
   const LAYUP_TAKEOFF = 11;
+
+  /* ------------------------------------------------------------------ dunking
+   * Whether a dunk is on is a question about a body and a ten-foot rim, not a
+   * dice roll: can this player's hand actually carry the ball over the ring?
+   * The answer comes from the two numbers the simulation already uses for
+   * exactly those two things — standing reach (from height) and jump height
+   * (from the vertical rating) — so the gate can never promise something the
+   * jump then fails to deliver.
+   *
+   * DUNK_CLEAR is how far ABOVE the ring the hand has to get. Level with the
+   * rim is a player hanging off it, not a player dunking on it.
+   *
+   * DUNK_EASY is the headroom past which the flush stops being in doubt. Below
+   * it you have the reach but not to spare, and the shot gets a meter; above
+   * it there is nothing left to time and the meter never appears.
+   *
+   * DUNK_DRIVE_LIFT is the extra lift a running takeoff converts out of its
+   * own momentum. It is used by BOTH dunkHeadroom() and _startJump(), and has
+   * to stay that way — the moment the gate predicts one number and the jump
+   * produces another, the gate is lying. */
+  const DUNK_CLEAR = 0.45;
+  const DUNK_EASY = 0.85;
+  const DUNK_DRIVE_LIFT = 1.10;
+  /* How far out a running dunk can leave the floor. Shorter than a layup's
+   * takeoff — you can float a layup in from distance, but a dunk has to arrive
+   * with the ball already above the rim. */
+  const DUNK_TAKEOFF = 7.5;
+  /* How far the wrist gets from the shoulder at the top of a dunk, in skeleton
+   * units. Full arm reach is upperArm + forearm; this stays just inside it,
+   * because a target the IK cannot reach comes back clamped and a clamped arm
+   * draws poker-straight with no elbow at all. Shared by the pose and by
+   * drawnReach() so the drawing and the maths cannot disagree about how high
+   * this player's hand actually gets. */
+  const DUNK_REACH = 0.56;
 
   // Nobody stands with locked knees, least of all somebody guarding you. The
   // hips ride this fraction lower than a fully extended leg would put them,
@@ -318,6 +369,8 @@
       this.meter = new BB.Shooting.ShotMeter();
       this.shotType = null;        // 'jumper' | 'layup' | 'dunk'
       this.pendingShot = null;
+      this.driving = false;        // set per attempt by _beginShot: arrived with real speed
+      this.dunkAuto = false;       // this dunk clears the rim easily enough to skip the meter
 
       /* -------------------------------------------------------- animation */
       this.stridePhase = 0;
@@ -325,6 +378,7 @@
       this.armRaise = 0;           // 0..1, hands up for a shot
       this.lean = 0;               // signed, forward lean from acceleration
       this.squash = 0;             // landing squash-and-stretch
+      this.visualLift = 0;         // DRAWN-only height, feet — see _frame()
 
       this.stats = { att: 0, made: 0, streak: 0, bestStreak: 0 };
       this.events = new U.Emitter();
@@ -410,7 +464,26 @@
 
     /* ------------------------------------------------------------- queries */
     get radius() { return 0.85; }
-    get handZ() { return U.remap(this.heightIn, 68, 90, 6.6, 8.6) + this.z; }
+    /** Fingertips of a flat-footed player with one arm straight up, in feet.
+     * The half of the dunk gate that comes from the body rather than the legs,
+     * and the same reach handZ has always been built on. */
+    get standingReach() { return U.remap(this.heightIn, 68, 90, 6.6, 8.6); }
+    get handZ() { return this.standingReach + this.z; }
+
+    /**
+     * The same fingertip reach, but for the figure that actually gets DRAWN —
+     * which is a different number, and that is the whole problem this solves.
+     *
+     * The court, the rim and the ball are true size; the figure is deliberately
+     * compressed to somewhere between 4.5 and 5.55 feet (HEIGHT_LO/HI), so its
+     * drawn hand sits well below where standingReach says the player's hand is.
+     * Everywhere else that gap is harmless — nothing else in the game asks a
+     * drawn limb to touch a true-scale object. A dunk asks exactly that, so the
+     * gap has to be a number rather than a surprise. See visualLift.
+     */
+    get drawnReach() {
+      return (REST_HIP + BONE.torso + DUNK_REACH + BONE.hand) * this.bodyScale;
+    }
     get eyeZ() { return U.remap(this.heightIn, 68, 90, 5.6, 7.4) + this.z; }
     get isBusyShooting() {
       return this.action === ACTION.GATHER || this.action === ACTION.METER ||
@@ -425,7 +498,14 @@
     /** Fills the shared FRAME with this player's body axes, scale and squash. */
     _frame() {
       const f = FRAME;
-      f.x = this.x; f.y = this.y; f.z = this.z;
+      /* visualLift is DRAWN height only, and only ever non-zero on a dunk.
+       *
+       * The simulation keeps using this.z for everything that matters —
+       * collisions, the contest, where the ball launches from — so nothing
+       * about the shot changes. What changes is that the compressed figure's
+       * hand actually arrives at the true-scale ring instead of swinging
+       * eight inches under it while the ball goes in anyway. */
+      f.x = this.x; f.y = this.y; f.z = this.z + this.visualLift;
       f.s = this.bodyScale;
       f.squash = 1 - this.squash * 0.22;
       f.stretch = 1 + this.squash * 0.16;
@@ -1137,6 +1217,32 @@
     }
 
     /* --------------------------------------------------------------- jump */
+
+    /**
+     * How far past the rim this player's hand gets, in feet. The whole dunk
+     * mechanic is this one number.
+     *
+     * Positive means the ball can physically be carried over the ring, so a
+     * dunk is on; negative means it cannot, and no amount of wanting it makes
+     * it happen — that attempt finishes as a layup instead. Past DUNK_EASY
+     * there is enough room to spare that the flush is a formality and the shot
+     * skips the meter entirely.
+     *
+     * Every term is a number the game already simulates: reach off height,
+     * lift off the vertical rating, the same stamina tax _startJump applies
+     * (a gassed player really does lose their dunk late in a game), and the
+     * same drive bonus the jump itself will use. The dunk RATING only nudges
+     * it — a great dunker gets to the rim off marginally less, but no rating
+     * lets a short player with no hops throw one down.
+     */
+    dunkHeadroom(driving) {
+      const staminaFactor = 0.72 + this.stamina * 0.28;
+      const lift = this.phys.jumpHeight * (driving ? DUNK_DRIVE_LIFT : 1) * staminaFactor;
+      const rating = driving ? this.ratings.drivingDunk : this.ratings.standingDunk;
+      const skillLift = U.remap(rating, 25, 99, -0.18, 0.18);
+      return this.standingReach + lift + skillLift - (C.RIM_HEIGHT + DUNK_CLEAR);
+    }
+
     _startJump(heightMul) {
       this.jumping = true;
       this.squash = 0;
@@ -1145,6 +1251,68 @@
       const staminaFactor = 0.72 + this.stamina * 0.28;
       const h = this.phys.jumpHeight * (heightMul == null ? 1 : heightMul) * staminaFactor;
       this.vz = Math.sqrt(2 * C.GRAVITY * h);
+      // How high this particular jump will actually get. The dunk's drawn lift
+      // is paced against it so the extra height arrives with the apex rather
+      // than on a timer that knows nothing about how high anybody jumps.
+      this._jumpApex = h;
+    }
+
+    /**
+     * The last two steps of a drive, where a dunker plants to ARRIVE at the
+     * rim rather than to keep going past it.
+     *
+     * A takeoff is not a fixed brake. Real players read the distance left and
+     * gather accordingly — hard from a step away, barely at all from seven
+     * feet out — and it is the one adjustment that decides whether the hand
+     * meets the ring or waves at it from a couple of feet short. A flat
+     * multiplier cannot do that: whatever it is tuned for, every other takeoff
+     * distance under- or overshoots, and the finish comes out either lobbing
+     * the ball the last stretch or flying under the backboard.
+     *
+     * So it is a solve, not a constant. The jump's own hang time is already
+     * known by the time this runs, and the distance still to cover is simply
+     * where the rim is, so the speed that lands the hand on the ring is a
+     * division. It only ever SLOWS them — a gather cannot make you faster —
+     * and it keeps a floor, because a drive that plants to a dead stop reads
+     * as somebody who tripped.
+     */
+    _gatherIntoDunk() {
+      const hoop = this.targetHoop;
+      if (!hoop) return;
+      const cur = Math.hypot(this.vx, this.vy);
+      if (cur < 0.5) return;
+      const tApex = Math.max(0.15, this.vz / C.GRAVITY);
+      // The hand reaches out ahead of the body, so the BODY is aimed short of
+      // the ring by about that much.
+      const togo = Math.max(0, U.dist(this.x, this.y, hoop.x, hoop.y) - 1.0);
+      const k = U.clamp((togo / tApex) / cur, 0.20, 1);
+      this.vx *= k; this.vy *= k;
+    }
+
+    /**
+     * Closes the gap between the drawn figure and the true-scale rim, for a
+     * dunk and nothing else.
+     *
+     * Paced by how far off the floor the player already is, not by a timer:
+     * that way it is exactly zero at takeoff (a figure that starts lifting
+     * while its feet are still down reads as floating), grows with the jump,
+     * peaks with it, and is back to zero on landing without needing to be
+     * told. What the eye sees is simply somebody who jumped high enough.
+     */
+    _updateVisualLift(dt) {
+      const dunking = this.shotType === 'dunk' &&
+        (this.action === ACTION.DUNK || this.action === ACTION.METER ||
+         this.action === ACTION.GATHER);
+      if (!dunking || !this.jumping) {
+        this.visualLift = U.approach(this.visualLift, 0, 14, dt);
+        return;
+      }
+      // Where the drawn fingertips would top out on this jump, against where
+      // the ring actually is. Zero for a figure already tall enough to get
+      // there on its own.
+      const apex = Math.max(0.4, this._jumpApex || 0);
+      const shortfall = Math.max(0, (C.RIM_HEIGHT + C.BALL_RADIUS) - (this.drawnReach + apex));
+      this.visualLift = U.approach(this.visualLift, shortfall * U.clamp01(this.z / apex), 16, dt);
     }
 
     updateJump(dt) {
@@ -1196,13 +1364,37 @@
       this._shotFouled = false;
 
       if (attacking || close) {
-        /* A dunker still throws one down, but only with the rim right there.
-         * Past that the finish is a layup, so a drive from the free-throw line
-         * cannot come out as a standing dunk on a coin flip. */
-        const atRim = dHoop <= C.RESTRICTED_R * 0.9;
-        const wantsDunk = atRim && U.rng.chance(this.phys.dunkChance * (driving ? 1 : 0.55));
-        this.shotType = wantsDunk ? 'dunk' : 'layup';
         this.driving = driving || attacking;
+
+        /* Dunk or layup is decided by the body, not by chance.
+         *
+         * The old rule rolled dice against a dunk rating, which meant height
+         * and vertical — the two things that actually decide whether somebody
+         * can dunk — had no say at all: a 5'10" player with no hops threw one
+         * down whenever the roll came up, and a seven-footer got denied.
+         *
+         * Now it is the question a real player's body asks. Can the hand carry
+         * the ball over a ten-foot rim from here? If not, the finish is a
+         * layup, and no rating overrides that. A running takeoff can leave the
+         * floor from out at DUNK_TAKEOFF, because a drive covers the last of
+         * that distance in the air; standing still, the rim has to be right
+         * there. */
+        const inDunkRange = this.driving
+          ? (headingAtRim && dHoop <= DUNK_TAKEOFF)
+          : dHoop <= C.RESTRICTED_R * 0.9;
+        const headroom = this.dunkHeadroom(this.driving);
+
+        /* The gate is physical for a human: they drove and asked for it, so if
+         * the body can do it they get it. A CPU still gets a say — a
+         * seven-footer with a 40 dunk rating should mostly lay it in rather
+         * than throw down every trip — which is the one job dunkChance has
+         * left. */
+        const willing = this.human || U.rng.chance(0.35 + this.phys.dunkChance * 0.65);
+        const wantsDunk = inDunkRange && headroom >= 0 && willing;
+
+        this.shotType = wantsDunk ? 'dunk' : 'layup';
+        // No meter once there is real room to spare: nothing is left to time.
+        this.dunkAuto = wantsDunk && headroom >= DUNK_EASY;
 
         // Finishing style: a euro step reads from driving at an angle across
         // the direct line to the rim (stepping around a defender); a hop
@@ -1222,6 +1414,7 @@
         }
       } else {
         this.shotType = 'jumper';
+        this.dunkAuto = false;
       }
     }
 
@@ -1234,6 +1427,7 @@
       this.armRaise = 0;
       this.shotType = 'freethrow';
       this.driving = false;
+      this.dunkAuto = false;
       this.layupStyle = 'standard';
       this._shotFouled = false;
     }
@@ -1265,7 +1459,32 @@
           // that lift is what carries a takeoff from outside the paint all
           // the way under the rim.
           if (this.shotType === 'layup') this._startJump(this.driving ? 0.88 : 0.7);
-          if (this.shotType === 'dunk') this._startJump(1.0);
+          if (this.shotType === 'dunk') {
+            // The same multiplier dunkHeadroom() predicted with. The moment
+            // the gate and the jump disagree, the gate is promising a rim the
+            // jump never reaches.
+            this._startJump(this.driving ? DUNK_DRIVE_LIFT : 1.0);
+            if (this.driving) this._gatherIntoDunk();
+          }
+
+          /* A dunk with room to spare has no meter at all.
+           *
+           * There is nothing left to time: the hand is going over the rim
+           * whatever happens between here and the apex, and putting a bar on
+           * screen would be asking the player to pass a test that cannot be
+           * failed. So the shot commits immediately on a synthesized perfect
+           * release and goes straight to the flush. The absence of the bar IS
+           * the feedback — it is how the game says "you're dunking on them".
+           *
+           * cancel() rather than simply not starting it: the meter object is
+           * long-lived and its post-release flash ring would otherwise still
+           * be fading in from whatever the previous shot did. */
+          if (this.shotType === 'dunk' && this.dunkAuto) {
+            this.meter.cancel();
+            this._commitShot(BB.Shooting.autoGrade());
+            return;
+          }
+
           const p = this.meterAnchor(TMP_V);
           const baseProfile = this._profileFor(this.shotType);
           const dist = this.targetHoop ? U.dist(this.x, this.y, this.targetHoop.x, this.targetHoop.y) : 0;
@@ -1377,10 +1596,39 @@
       ball.shotWasThree = sol.isThree && pending.type !== 'dunk' && pending.type !== 'freethrow';
       ball.isFreeThrow = pending.type === 'freethrow';
       const apex = pending.type === 'dunk' ? 0.6 : sol.apex;
-      if (pending.type === 'dunk' && dist < C.RIM_RADIUS + 1.3) {
-        // Point-blank slam: thrown straight down through the rim rather than
-        // arced, which is what sells the finish.
-        ball.launch((hoop.x - hand.x) * 1.8, (hoop.y - hand.y) * 1.8, -6, BB.Ball.STATE.SHOT);
+      /* A running dunk takes off well outside the restricted area and is still
+       * carrying that speed at the apex, so the old 1.3ft window was narrow
+       * enough that a real drive-and-slam would fall out of it and get thrown
+       * as an arced shot instead. */
+      if (pending.type === 'dunk' && dist < C.RIM_RADIUS + 2.5) {
+        /* Point-blank slam: thrown straight down through the rim rather than
+         * arced, which is what sells the finish.
+         *
+         * The aim error goes in too. Without it a dunk was the one shot in the
+         * game that physically could not miss, whatever the timing or the
+         * contest — the solved error was computed and then discarded. A
+         * guaranteed release (green, or the auto-dunk's synthesized perfect)
+         * has its error capped at a fraction of an inch and still drops every
+         * time; a badly mistimed one now has something to actually clang off. */
+        /* Aimed by solving the flight, not by a fixed multiplier.
+         *
+         * The old `× 1.8` assumed the hand was always a particular distance
+         * from the ring, which a running dunk is not: a drive that takes off
+         * at seven feet is still carrying that speed at the apex and can be
+         * anywhere from short of the rim to past it. Too fast and the ball
+         * sailed over, too slow and it fell in front — the one shot in the
+         * game whose aim did not depend on where it was thrown from.
+         *
+         * Falling from the hand to the ring with an initial -6 takes a known
+         * time, so the horizontal velocity that covers the gap in exactly that
+         * time is a solve rather than a guess. It comes out right from under
+         * the rim, from seven feet out, and from past the hoop — which is a
+         * reverse dunk, and now looks like one. */
+        const drop = Math.max(0.35, hand.z - C.RIM_HEIGHT);
+        const t = (Math.sqrt(36 + 2 * C.GRAVITY * drop) - 6) / C.GRAVITY;
+        ball.launch((hoop.x + sol.errX - hand.x) / t,
+                    (hoop.y + sol.errY - hand.y) / t,
+                    -6, BB.Ball.STATE.SHOT);
         ball.targetHoop = hoop;
       } else {
         ball.shootAt(hoop, apex, sol.errX, sol.errY, sol.errShort);
@@ -1400,13 +1648,32 @@
         if (this.actionT > 0.5 && !this.jumping) this.action = ACTION.IDLE;
       } else if (this.action === ACTION.LAYUP || this.action === ACTION.DUNK) {
         this.actionT += dt;
-        const fireAt = this.action === ACTION.DUNK ? 0.30 : 0.22;
-        if (this.pendingShot && this.actionT >= fireAt) {
+
+        /* A dunk goes through the rim at the TOP of the jump, not at a fixed
+         * time after the button.
+         *
+         * The old flat 0.30s could not know how high this particular player
+         * jumps: a big vertical takes past 0.45s to reach the apex, so the
+         * ball was being put through the ring while its owner was still on the
+         * way up — the one moment of the whole animation that has to line up,
+         * and it did not. Syncing to vz crossing zero makes it land right for
+         * every jump, which is the same trick the block contest already uses
+         * for its swat. The floor gives the arm time to swing back and come
+         * over; the ceiling is a backstop so a dunk released on the ground
+         * (nothing does this today) can never hang forever. */
+        let fireAt;
+        if (this.action === ACTION.DUNK) {
+          const atApex = !this.jumping || this.vz <= 0;
+          fireAt = (atApex && this.actionT >= 0.12) || this.actionT >= 0.55;
+        } else {
+          fireAt = this.actionT >= 0.22;
+        }
+        if (this.pendingShot && fireAt) {
           this._ballRef = ball;
           this._fireBall(this.pendingShot);
         }
         this.armRaise = this.action === ACTION.DUNK
-          ? U.clamp01(this.actionT / 0.3)
+          ? U.clamp01(this.actionT / 0.18)
           : U.approach(this.armRaise, 0.7, 5, dt);
         if (this.actionT > 0.65 && !this.jumping) {
           this.action = ACTION.IDLE;
@@ -1499,6 +1766,7 @@
         }
       }
 
+      this._updateVisualLift(dt);
       this._updatePose(dt);
     }
 
@@ -2264,6 +2532,61 @@
         hipLean = torsoLean * 0.4;
         shoulderY -= 0.05 * rise;         // stretch up through the finish
 
+      } else if (this.action === A.METER && this.shotType === 'dunk') {
+        /* The gather on a dunk, held on the meter.
+         *
+         * Without this branch a held dunk fell through to the jump shot below
+         * and animated as one: squared up, both hands cupping a ball in front
+         * of the forehead, feet together — a free throw taken while flying at
+         * the rim. Nobody has ever dunked that way.
+         *
+         * A dunk gathers like a layup and finishes like nothing else. The
+         * shape here is the layup's engine — inside knee driven up hard, the
+         * trailing leg stretched out behind — with the ball going somewhere
+         * completely different: not up in front of the face to be released,
+         * but swinging back and out on the strong side, away from the body, on
+         * its way behind the head. The off hand lets go early and opens out
+         * for balance, which is the first half of the splay the flush finishes.
+         */
+        const v = U.clamp01(this.meter.value);
+        const rise = U.ease.outCubic(v);
+        const drive = this.driving ? 1 : 0.78;
+
+        flX = -BONE.hipW + 0.12 * rise;
+        flY = -0.50 * drive * rise;
+        frX = BONE.hipW - 0.18 * rise;
+        frY = 0.05 + 0.20 * rise;
+
+        // The ball swings back and up, not forward and up. hrX going NEGATIVE
+        // past the shoulder is the wind-up starting: the hand is travelling
+        // behind the body while it climbs.
+        /* Both low targets are expressed as a fraction of ARM REACH rather
+         * than as an offset from the hip. The shoulder sits two thirds of a
+         * unit above the hip and the arm only reaches six tenths, so "hand at
+         * hip height" is a target the arm cannot get to — it comes back
+         * clamped and draws straight. reachY says the same thing in the one
+         * unit the limb actually has. */
+        /* The hand stays out in front of the shoulder the whole way up. Let
+         * the fore/aft offset fall to nothing while the hand is climbing past
+         * shoulder height and the wrist passes straight THROUGH the shoulder
+         * joint, which the solver reports as a fold tighter than the arm can
+         * make — the ball has to swing around the joint, not through it. The
+         * wind-up behind the head is the flush's job, and it picks up from
+         * exactly where this leaves off. */
+        hrX = shR + U.lerp(0.14, 0.10, rise);
+        hrY = U.lerp(reachY(shoulderY, 0.86), shoulderY - 0.34, rise);
+        hrSide = -0.02 - 0.05 * rise;
+        // Off hand comes off the ball and opens away from the body.
+        hlX = shL + U.lerp(0.12, 0.08, rise);
+        hlY = U.lerp(reachY(shoulderY, 0.90), shoulderY + 0.22, rise);
+        hlSide = U.lerp(0.02, 0.14, rise);
+        armRoll = 0.26 * (1 - rise);      // two hands on it early, one late
+        armTuck = 0;
+
+        torsoLean = U.lerp(0.18, 0.02, rise);
+        hipLean = torsoLean * 0.4;
+        shoulderY -= 0.05 * rise;         // stretch up through the takeoff
+
       } else if (this.action === A.METER) {
         /* The jump shot, in the two beats a jump shot actually has.
          *
@@ -2396,7 +2719,11 @@
           flY = -0.13 * (1 - k);
           frX = U.lerp(0.28, -0.14, step1) + step2 * 0.38;
           frY = 0.07 + step2 * 0.15;
-          hrX = shR + U.lerp(-0.02, 0.16, k); hrY = U.lerp(hipY + 0.24, shoulderY - 0.66, k);
+          // 0.56, not 0.66: the arm reaches 0.60 and the IK clamps anything
+          // past it, which draws the finish with a locked, elbowless arm — the
+          // same fault the jump shot's own comments warn about. Unchanged in
+          // shape, just brought inside what the limb can actually do.
+          hrX = shR + U.lerp(-0.02, 0.16, k); hrY = U.lerp(hipY + 0.24, shoulderY - 0.56, k);
           hlX = shL + 0.02; hlY = shoulderY - 0.08;
           torsoLean = 0.08 - k * 0.13 + Math.sin(k * Math.PI) * 0.08;
           hipLean = torsoLean * 0.5;
@@ -2408,7 +2735,7 @@
           const rise = U.clamp01((k - 0.4) / 0.6);
           flX = U.lerp(-0.18, -0.09, gather); flY = -0.06 * gather - rise * 0.26;
           frX = U.lerp(0.22, 0.09, gather); frY = -0.06 * gather - rise * 0.26;
-          hrX = shR + U.lerp(0.02, 0.14, k); hrY = U.lerp(hipY + 0.20, shoulderY - 0.68, k);
+          hrX = shR + U.lerp(0.02, 0.14, k); hrY = U.lerp(hipY + 0.20, shoulderY - 0.56, k);
           hlX = shL + 0.06; hlY = shoulderY - 0.10;
           torsoLean = 0.05 - k * 0.12;
 
@@ -2435,19 +2762,76 @@
         }
 
       } else if (this.action === A.DUNK) {
-        const k = U.clamp01(this.actionT / 0.45);
-        const cock = k < 0.55 ? U.ease.outCubic(k / 0.55) : 1;
-        const thrust = k > 0.55 ? U.ease.inCubic((k - 0.55) / 0.45) : 0;
-        // A much bigger wind-up (the ball goes way back and high) and a full
-        // overhead extension on the thrust, off-arm driving up too for a
-        // real two-arm power slam silhouette instead of one hand poking up.
-        flX = -BONE.hipW - 0.03; flY = -0.40 * (1 - thrust * 0.5);
-        frX = BONE.hipW - 0.03; frY = -0.40 * (1 - thrust * 0.5);
-        hrX = shR + U.lerp(-0.06, 0.10, thrust);
-        hrY = U.lerp(shoulderY - 0.22 - cock * 0.46, shoulderY - 0.95 + thrust * 0.62, thrust);
-        hlX = shL + U.lerp(0.10, 0.04, thrust);
-        hlY = shoulderY - 0.58 - cock * 0.26 - thrust * 0.30;
-        torsoLean = -0.14 - cock * 0.06 - thrust * 0.16;
+        /* The flush, built to the reference: ONE hand, cocked back high behind
+         * the head, the off arm thrown wide for balance, legs trailing.
+         *
+         * The old shape was a symmetric two-arm power slam, and it was broken
+         * two different ways. It asked for hands 0.68 and 1.14 above the
+         * shoulder against an arm that reaches 0.60 — so the IK clamped both,
+         * and what actually drew was a figure with two rigid straight arms and
+         * no elbows. And a two-handed overhead slam fights the centreline
+         * clamp in draw(), because both hands want the middle of the rim.
+         *
+         * One hand fixes both. Nothing here passes DUNK_REACH, so the arm keeps
+         * a real elbow all the way through; and the two hands are on opposite
+         * sides of the body by design, which is what the lateral axis is for
+         * and what gives the pose its silhouette. The off arm is not decoration
+         * — a dunker's free arm swings out precisely because the other one is
+         * behind their head, and it is most of what reads as effort.
+         *
+         * Three beats: COCK the ball back and up, FLUSH it down through the
+         * ring, then let the arm come off the rim and the legs down to LAND. */
+        const k = U.clamp01(this.actionT / 0.55);
+        const cock = U.ease.outCubic(U.clamp01(k / 0.42));
+        const flush = U.ease.inCubic(U.clamp01((k - 0.42) / 0.28));
+        const land = U.ease.inOutSine(U.clamp01((k - 0.70) / 0.30));
+
+        /* Legs. Tucked and split under the body on the way up — a dunker's
+         * knees come up and apart, they do not hang straight down — then
+         * dropping back underneath to take the landing. */
+        flX = -BONE.hipW + 0.10 - 0.10 * land;
+        flY = (-0.44 - cock * 0.10) * (1 - land * 0.94);
+        frX = BONE.hipW - 0.14 + 0.14 * land;
+        frY = (-0.16 + flush * 0.10) * (1 - land * 0.9) + land * 0.04;
+
+        /* The dunking hand. Back BEHIND the shoulder through the cock (hrX
+         * negative of shR), climbing to just under full reach, then driving
+         * forward and down through the ring on the flush. */
+        const cockY = shoulderY - U.lerp(0.30, DUNK_REACH, cock);
+        const flushY = shoulderY - DUNK_REACH + 0.04;
+        // Starts where the rise left the hand (+0.10, out in front), swings
+        // back behind the shoulder through the cock, then drives forward over
+        // the ring. Continuous with the rise, so letting go of the meter does
+        // not teleport the ball across the body.
+        const cockX = U.lerp(0.10, -0.12, cock);
+        hrX = shR + U.lerp(cockX, 0.16, flush) - land * 0.14;
+        hrY = U.lerp(cockY, flushY, flush) + land * 0.30;
+        hrSide = U.lerp(-0.07, -0.02, flush);
+        // Palm rolls over the top of the ball as it goes through the rim.
+        hrTwist = U.lerp(0.85, 1.55, cock) - flush * 0.45;
+
+        /* The off arm, thrown wide. `side` is the only axis that can do this —
+         * pushing it out through hlX would come out as forward reach instead. */
+        hlX = shL + U.lerp(0.08, 0.12, cock) + land * 0.06;
+        /* Out to the side and a little below the shoulder, not raised
+         * overhead. In the reference the free arm is a counterweight to the
+         * one behind the head, and held roughly level is what puts the two
+         * hands most of a unit apart — the silhouette the eye actually reads.
+         *
+         * It also has to stay clear of the shoulder in the SOLVER's plane. A
+         * two-bone arm cannot fold its wrist closer to the shoulder than the
+         * difference between its bones, so an off hand tucked into the armpit
+         * comes back clamped just as surely as one reaching too far — the
+         * same fault at the other end of the range. The lateral splay is what
+         * carries this arm out; the plane only has to keep it reachable. */
+        hlY = U.lerp(shoulderY + 0.26, shoulderY + 0.14, cock) + land * 0.24;
+        hlSide = U.lerp(0.14, 0.30, cock) * (1 - land * 0.7);
+        armRoll = 0;
+        armTuck = 0;
+
+        // Chest opens up and back through the cock, then pitches over the rim.
+        torsoLean = U.lerp(-0.12, 0.10, flush) - land * 0.06;
+        hipLean = torsoLean * 0.35;
 
       } else if (this.action === A.BLOCK) {
         // A real contest has phases, not one held shape: a quick athletic

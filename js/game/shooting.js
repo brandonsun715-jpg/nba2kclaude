@@ -97,7 +97,11 @@
       return g;
     }
 
-    cancel() { this.active = false; this.result = null; }
+    /* Takes the bar away entirely, flash included. A cancelled shot is one
+     * that is not happening — a foul, a travel, a dunk that never needed
+     * timing — and leaving the release ring fading on screen would report a
+     * release that never occurred. */
+    cancel() { this.active = false; this.result = null; this.flash = 0; }
 
     /**
      * Decays the post-release flash ring only. Unlike update(), this is safe
@@ -284,6 +288,22 @@
       return Math.max(0.05, w * (1 - c * 0.55));
     }
 
+    /* A dunk you have to time gets a FREE THROW's window — literally `base`,
+     * the same expression the freethrow branch above returns, not a number
+     * that merely resembles it.
+     *
+     * The reasoning is the same one that makes a layup's window enormous, just
+     * less extreme. You only ever see this bar when your reach clears the rim
+     * but not by much (see Player#dunkHeadroom); the hard part was getting up
+     * there, and what is left is a comfortable, practised release rather than
+     * a sixtieth-of-a-second test. Clear the rim easily and there is no bar at
+     * all. Contest still tightens it — a body at the rim is the one thing that
+     * can still make a dunk a bad idea. */
+    if (type === 'dunk') {
+      const c = U.clamp01(contest || 0);
+      return Math.max(0.010, base * (1 - c * 0.40));
+    }
+
     const difficulty = U.clamp01(U.remap(dist, 9, 32, 0, 1));
     const shrink = difficulty * U.lerp(0.82, 0.22, skill);
     let w = Math.max(0.006, base * (1 - shrink));
@@ -325,6 +345,20 @@
     if (tier !== TIER.PERFECT && a <= g * 1.5) tier = TIER.EXCELLENT;
 
     return { tier, error: err, quality: tier.quality, late };
+  }
+
+  /**
+   * The grade a shot gets when there was never a meter to time.
+   *
+   * A dunk with real room over the rim skips the bar entirely (see
+   * Player#dunkHeadroom), and something still has to be handed to solveShot.
+   * Synthesizing a PERFECT here rather than passing null routes it down the
+   * existing `guaranteed` path — zero systematic bias, capped spread — which
+   * is exactly the promise being made by not showing a meter in the first
+   * place. Passing null instead would quietly grade it as a mediocre 0.62.
+   */
+  function autoGrade() {
+    return { tier: TIER.PERFECT, error: 0, quality: TIER.PERFECT.quality, late: false };
   }
 
   /* ==========================================================================
@@ -388,6 +422,7 @@
     const isSlightly = !!(p.grade && p.grade.tier &&
       (p.grade.tier.key === 'SLIGHTLY_EARLY' || p.grade.tier.key === 'SLIGHTLY_LATE'));
     const isLayup = p.type === 'layup';
+    const isDunk = p.type === 'dunk';
 
     let quality;
     if (isGreen || isExcellent || isSlightly) {
@@ -397,6 +432,21 @@
       // two lighter-green halos drawn just outside it (see draw()) - all
       // three read as "green" to the player, so all three are automatic.
       quality = 1.0;
+    } else if (isDunk) {
+      /* A dunk is the highest-percentage shot in basketball, and the model
+       * should say so: the ball is being carried through the ring by hand
+       * from a few inches away, so there is very little for physics to get
+       * wrong. The floor is high and comes off the dunk rating.
+       *
+       * What can still ruin it is a body in the way — contest bites harder
+       * here than on a layup, because a dunk commits you completely and there
+       * is no adjusting once you have left the floor — and a genuinely bad
+       * release, which matters more than on a layup (you are trying to put
+       * the ball in a specific place at a specific height, not float it off
+       * the glass) but nowhere near as much as on a jump shot. */
+      const ratingFactor = U.remap(rating, 25, 99, 0.74, 0.97);
+      quality = U.clamp01(ratingFactor - contest * 0.30
+        - U.clamp01(p.fatigue || 0) * 0.06 - (1 - timing) * 0.22);
     } else if (isLayup) {
       // A layup's real difficulty is getting all the way to the rim, not
       // split-second timing — even a mistimed release should still be a
@@ -435,7 +485,7 @@
     // guaranteed, it's guaranteed: zero systematic bias too.
     const guaranteed = isGreen || isExcellent || isSlightly;
     const timingBias = p.grade
-      ? -p.grade.error * (guaranteed ? 0 : (three ? 7.0 : (isLayup ? 1.6 : 4.6)))
+      ? -p.grade.error * (guaranteed ? 0 : (three ? 7.0 : (isLayup ? 1.6 : (isDunk ? 1.2 : 4.6))))
       : rng.gauss(0, 0.35);
 
     // A tiny sigma still has a real tail — an unlucky draw a couple standard
@@ -502,7 +552,7 @@
   }
 
   BB.Shooting = {
-    TIER, ShotMeter, grade, solveShot, arcHeight,
+    TIER, ShotMeter, grade, autoGrade, solveShot, arcHeight,
     makeReleaseProfile, profileFromRatings, greenWindowFor
   };
 })(typeof window !== 'undefined' ? window : globalThis);

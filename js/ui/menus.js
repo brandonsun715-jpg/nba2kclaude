@@ -642,7 +642,8 @@
         lessons: [
           ['shoot', 'Shoot', 'Hold to rise into the shot, release to let it go. Release inside the green window for the best chance the shot has.'],
           [null, 'The green window', 'A narrow band near the top of the meter. Better ratings widen it. A perfect release is worth far more than an open look with bad timing.'],
-          [null, 'Layups and dunks', 'Close to the rim the same button becomes a layup, or a dunk if you have the rating and the run-up for it.'],
+          [null, 'Layups', 'Hold Sprint, drive at the rim and press Shoot. Close in, the shoot button becomes a layup — the window is huge, so getting there is the hard part, not the timing.'],
+          [null, 'Dunking', 'Same move, but you only get one if your body can actually put the ball over a ten-foot rim: it is decided by your height and your Vertical, not by a dice roll. Clear the rim comfortably and there is no meter at all — it just goes down. Only just clear it and you get a meter, with a green window as forgiving as a free throw. Too short, too little hops, and it stays a layup however hard you drive.'],
           [null, 'Range and contest', 'Distance hurts your chances and so does a hand in your face. A defender who is set, square and close takes a shot from makeable to bad.']
         ]
       },
