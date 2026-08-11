@@ -150,7 +150,16 @@ function fitSkeleton(positions) {
     const L = Math.hypot(n[0], n[1], n[2]) || 1;
     axis = [n[0] / L, n[1] / L, n[2] / L];
   }
-  if (axis[2] > 0) axis = [-axis[0], -axis[1], -axis[2]]; // point it down the arm
+  /* Point the axis OUTBOARD, along +x, since +x is the side being traced.
+   *
+   * This used to orient by the axis's z component — "point it down the arm" —
+   * which only identifies the outboard end on a pose whose arms droop. On a
+   * T-pose the arm is horizontal, z is nothing but noise, and the test picked
+   * a direction at random: tMin then landed on the fingertip and the whole
+   * chain was built backwards, with the shoulder out past the hand and the
+   * wrist inside the ribcage. Outboard is unambiguous in both poses, because
+   * an arm attached at the shoulder can only extend away from the body. */
+  if (axis[0] < 0) axis = [-axis[0], -axis[1], -axis[2]];
   let tMin = 1e9, tMax = -1e9;
   for (const p of arm) {
     const t = (p[0] - c[0]) * axis[0] + (p[1] - c[1]) * axis[1] + (p[2] - c[2]) * axis[2];
@@ -820,31 +829,83 @@ console.log('  parsed      ' + raw.positions.length + ' vertices, ' +
             raw.tris.length + ' triangles' + (raw.normals.length ? ', with normals' : '') +
             (raw.meshes ? ', ' + raw.meshes + ' mesh node(s)' : ''));
 
-/* Stand the figure on the floor, centred left-to-right.
+/* Put the figure where the rest of this file assumes it already is.
  *
- * fitSkeleton measures stature from the vertex extents and then places every
- * landmark as a fraction of it, which silently assumes the feet are at z=0 and
- * the spine is on x=0 — true of the original OBJ and true of nothing else. A
- * glTF exported with the origin at the hips, or off to one side, would have
- * its whole skeleton fitted at that offset. Cheap to normalise here, once,
- * rather than to make every measurement downstream defensive about it.
+ * Everything downstream measures stature from the vertex extents and places
+ * landmarks as a fraction of it, which silently assumes the feet are at z=0
+ * and the spine on x=0 — true of the original OBJ and of nothing else. A glTF
+ * exported with its origin at the hips has its whole skeleton fitted at that
+ * offset.
  *
- * Only the two axes with a defensible canonical value are touched: the floor
- * and the plane of symmetry. Forward/back is left alone — there is no
- * equivalent "correct" y, and guessing one would move the figure relative to
- * the arm-axis fit that follows. */
+ * The scale matters just as much and is easier to miss, because it looks like
+ * it should not: proportions are all relative. But a handful of tolerances are
+ * necessarily absolute, and they were chosen against a 178-unit figure. Hand a
+ * 1.7-unit one to the same code and every one of them is a hundred times too
+ * coarse or too fine. Normalising to the stature the tool was tuned at costs
+ * nothing — the runtime scales the whole mesh by its own reported height, so
+ * the number itself is arbitrary — and removes the entire class of bug.
+ *
+ * Forward/back is deliberately left alone: there is no defensible canonical y,
+ * and inventing one would shift the figure relative to the arm fit. */
+const STATURE = 178;
 {
-  let lo = 1e30, minX = 1e30, maxX = -1e30;
+  let lo = 1e30, hi = -1e30, minX = 1e30, maxX = -1e30;
   for (const p of raw.positions) {
     if (p[2] < lo) lo = p[2];
+    if (p[2] > hi) hi = p[2];
     if (p[0] < minX) minX = p[0];
     if (p[0] > maxX) maxX = p[0];
   }
   const midX = (minX + maxX) * 0.5;
-  if (Math.abs(lo) > 1e-6 || Math.abs(midX) > 1e-6) {
-    for (const p of raw.positions) { p[0] -= midX; p[2] -= lo; }
-    console.log('  recentred   floor ' + lo.toFixed(2) + ' -> 0, midline ' +
-                midX.toFixed(2) + ' -> 0');
+  const s = hi - lo > 1e-9 ? STATURE / (hi - lo) : 1;
+  if (Math.abs(lo) > 1e-6 || Math.abs(midX) > 1e-6 || Math.abs(s - 1) > 1e-6) {
+    for (const p of raw.positions) {
+      p[0] = (p[0] - midX) * s; p[1] *= s; p[2] = (p[2] - lo) * s;
+    }
+    console.log('  normalised  stature ' + (hi - lo).toFixed(3) + ' -> ' + STATURE +
+                ', floor ' + lo.toFixed(3) + ' -> 0, midline ' + midX.toFixed(3) + ' -> 0');
+  }
+}
+
+/* Weld coincident positions.
+ *
+ * Simplification is edge collapse, and an edge only exists where two triangles
+ * share a vertex. An OBJ gets that sharing for free from its own `v` indices,
+ * which is the only reason this step was never needed: the source model
+ * arrived welded. A GLB usually does not — an FBX conversion in particular
+ * emits three unique vertices per triangle — and on that topology every
+ * triangle is an island with no edges to collapse, so the simplifier dutifully
+ * collapses each one to a point and returns a mesh of nothing at all.
+ *
+ * The tolerance is a fraction of stature rather than an absolute distance, so
+ * it means the same thing on any model. It is small enough to merge only
+ * genuine duplicates: at a millimetre on a 178-unit figure, two vertices that
+ * were separate in the source stay separate. */
+{
+  const TOL = STATURE * 1e-5;
+  const key = new Map();
+  const remap = new Int32Array(raw.positions.length);
+  const kept = [];
+  const q = (v) => Math.round(v / TOL);
+  for (let i = 0; i < raw.positions.length; i++) {
+    const p = raw.positions[i];
+    const k = q(p[0]) + ',' + q(p[1]) + ',' + q(p[2]);
+    let at = key.get(k);
+    if (at === undefined) { at = kept.length; kept.push(p); key.set(k, at); }
+    remap[i] = at;
+  }
+  if (kept.length < raw.positions.length) {
+    for (const t of raw.tris) for (const c of t) c[0] = remap[c[0]];
+    console.log('  welded      ' + raw.positions.length + ' -> ' + kept.length + ' positions');
+    raw.positions = kept;
+    /* Drop triangles that welding made degenerate — two corners on the same
+     * point have no area, no normal, and nothing downstream can do with them. */
+    const before = raw.tris.length;
+    raw.tris = raw.tris.filter((t) =>
+      t[0][0] !== t[1][0] && t[1][0] !== t[2][0] && t[2][0] !== t[0][0]);
+    if (raw.tris.length < before) {
+      console.log('  degenerate  dropped ' + (before - raw.tris.length) + ' triangles');
+    }
   }
 }
 

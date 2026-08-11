@@ -185,7 +185,7 @@
    * draws poker-straight with no elbow at all. Shared by the pose and by
    * drawnReach() so the drawing and the maths cannot disagree about how high
    * this player's hand actually gets. */
-  const DUNK_REACH = 0.56;
+  const DUNK_REACH = 0.93;
 
   // Nobody stands with locked knees, least of all somebody guarding you. The
   // hips ride this fraction lower than a fully extended leg would put them,
@@ -482,7 +482,8 @@
      * gap has to be a number rather than a surprise. See visualLift.
      */
     get drawnReach() {
-      return (REST_HIP + BONE.torso + DUNK_REACH + BONE.hand) * this.bodyScale;
+      return (REST_HIP + BONE.torso +
+              (BONE.upperArm + BONE.forearm) * DUNK_REACH + BONE.hand) * this.bodyScale;
     }
     get eyeZ() { return U.remap(this.heightIn, 68, 90, 5.6, 7.4) + this.z; }
     get isBusyShooting() {
@@ -2523,9 +2524,9 @@
 
         // Ball up on the shooting side, off hand peeling away as it goes.
         hrX = shR + U.lerp(0.10, 0.20, rise);
-        hrY = U.lerp(hipY + 0.16, shoulderY - 0.56, rise);
+        hrY = U.lerp(reachY(shoulderY, 0.88), upY(shoulderY, 0.93), rise);
         hlX = shL + U.lerp(0.12, 0.00, rise);
-        hlY = U.lerp(hipY + 0.06, shoulderY + 0.10, rise);
+        hlY = U.lerp(reachY(shoulderY, 0.92), reachY(shoulderY, 0.17), rise);
         armRoll = 0.24 * (1 - rise);      // two hands on it early, one late
 
         torsoLean = U.lerp(0.16, 0.03, rise);
@@ -2574,11 +2575,11 @@
          * wind-up behind the head is the flush's job, and it picks up from
          * exactly where this leaves off. */
         hrX = shR + U.lerp(0.14, 0.10, rise);
-        hrY = U.lerp(reachY(shoulderY, 0.86), shoulderY - 0.34, rise);
+        hrY = U.lerp(reachY(shoulderY, 0.86), upY(shoulderY, 0.57), rise);
         hrSide = -0.02 - 0.05 * rise;
         // Off hand comes off the ball and opens away from the body.
         hlX = shL + U.lerp(0.12, 0.08, rise);
-        hlY = U.lerp(reachY(shoulderY, 0.90), shoulderY + 0.22, rise);
+        hlY = U.lerp(reachY(shoulderY, 0.90), reachY(shoulderY, 0.37), rise);
         hlSide = U.lerp(0.02, 0.14, rise);
         armRoll = 0.26 * (1 - rise);      // two hands on it early, one late
         armTuck = 0;
@@ -2625,14 +2626,14 @@
          * Both hands rise by the same 0.14, so the gap between them — which
          * has to stay inside one ball, and the suite checks it — is a pure
          * translation and cannot change. */
-        const setRY = U.lerp(reachY(shoulderY, 0.60), shoulderY - 0.30, set);
+        const setRY = U.lerp(reachY(shoulderY, 0.60), upY(shoulderY, 0.50), set);
         const setLX = U.lerp(0.13, 0.21, set);
-        const setLY = U.lerp(reachY(shoulderY, 0.60), shoulderY - 0.27, set);
+        const setLY = U.lerp(reachY(shoulderY, 0.60), upY(shoulderY, 0.45), set);
 
         hrX = shR + U.lerp(setRX, 0.15, ext);
-        hrY = U.lerp(setRY, shoulderY - 0.52, ext);
+        hrY = U.lerp(setRY, upY(shoulderY, 0.87), ext);
         hlX = shL + U.lerp(setLX, 0.17, ext);
-        hlY = U.lerp(setLY, shoulderY - 0.20, ext);
+        hlY = U.lerp(setLY, upY(shoulderY, 0.33), ext);
 
         // Hands together on the ball through the set, then opening back out a
         // little as the shooting arm goes up over the shooting-side eye rather
@@ -2681,10 +2682,10 @@
          * thing this whole change is about. Full extension here is nine
          * tenths of the way out, not ten. */
         hrX = shR + U.lerp(0.15, 0.24, snap) - relax * 0.03;
-        hrY = shoulderY - U.lerp(0.52, 0.49, snap) - relax * 0.02;
+        hrY = upY(shoulderY, U.lerp(0.87, 0.82, snap) + relax * 0.03);
         // The guide hand is left up around where the ball was, not dropped.
         hlX = shL + U.lerp(0.17, 0.21, relax);
-        hlY = shoulderY - U.lerp(0.20, 0.15, relax);
+        hlY = upY(shoulderY, U.lerp(0.33, 0.25, relax));
         // The guide hand comes off the ball sideways as the shot leaves, which
         // is the separation the eye reads as a release rather than a push.
         hlSide = U.lerp(0.08, 0.15, relax);
@@ -2723,8 +2724,8 @@
           // past it, which draws the finish with a locked, elbowless arm — the
           // same fault the jump shot's own comments warn about. Unchanged in
           // shape, just brought inside what the limb can actually do.
-          hrX = shR + U.lerp(-0.02, 0.16, k); hrY = U.lerp(hipY + 0.24, shoulderY - 0.56, k);
-          hlX = shL + 0.02; hlY = shoulderY - 0.08;
+          hrX = shR + U.lerp(-0.02, 0.16, k); hrY = U.lerp(reachY(shoulderY, 0.80), upY(shoulderY, 0.93), k);
+          hlX = shL + 0.02; hlY = upY(shoulderY, 0.13);
           torsoLean = 0.08 - k * 0.13 + Math.sin(k * Math.PI) * 0.08;
           hipLean = torsoLean * 0.5;
 
@@ -2735,8 +2736,8 @@
           const rise = U.clamp01((k - 0.4) / 0.6);
           flX = U.lerp(-0.18, -0.09, gather); flY = -0.06 * gather - rise * 0.26;
           frX = U.lerp(0.22, 0.09, gather); frY = -0.06 * gather - rise * 0.26;
-          hrX = shR + U.lerp(0.02, 0.14, k); hrY = U.lerp(hipY + 0.20, shoulderY - 0.56, k);
-          hlX = shL + 0.06; hlY = shoulderY - 0.10;
+          hrX = shR + U.lerp(0.02, 0.14, k); hrY = U.lerp(reachY(shoulderY, 0.85), upY(shoulderY, 0.93), k);
+          hlX = shL + 0.06; hlY = upY(shoulderY, 0.17);
           torsoLean = 0.05 - k * 0.12;
 
         } else {
@@ -2750,11 +2751,11 @@
 
           // Full extension, then the wrist rolls over the ball and the arm
           // rides back down as the body comes out of the air.
-          const reach = shoulderY - 0.56 - 0.02 * flip;
+          const reach = upY(shoulderY, 0.93 + 0.03 * flip);
           hrX = shR + U.lerp(0.20, 0.26, flip) - 0.20 * down;
           hrY = U.lerp(reach, reachY(shoulderY, 0.70), down);
           hlX = shL + 0.00 + 0.10 * down;
-          hlY = U.lerp(shoulderY + 0.10, reachY(shoulderY, 0.80), down);
+          hlY = U.lerp(reachY(shoulderY, 0.17), reachY(shoulderY, 0.80), down);
           armRoll = 0;
 
           torsoLean = 0.03 + 0.06 * down;
@@ -2797,8 +2798,8 @@
         /* The dunking hand. Back BEHIND the shoulder through the cock (hrX
          * negative of shR), climbing to just under full reach, then driving
          * forward and down through the ring on the flush. */
-        const cockY = shoulderY - U.lerp(0.30, DUNK_REACH, cock);
-        const flushY = shoulderY - DUNK_REACH + 0.04;
+        const cockY = upY(shoulderY, U.lerp(0.50, DUNK_REACH, cock));
+        const flushY = upY(shoulderY, DUNK_REACH - 0.07);
         // Starts where the rise left the hand (+0.10, out in front), swings
         // back behind the shoulder through the cock, then drives forward over
         // the ring. Continuous with the rise, so letting go of the meter does
@@ -2824,7 +2825,7 @@
          * comes back clamped just as surely as one reaching too far — the
          * same fault at the other end of the range. The lateral splay is what
          * carries this arm out; the plane only has to keep it reachable. */
-        hlY = U.lerp(shoulderY + 0.26, shoulderY + 0.14, cock) + land * 0.24;
+        hlY = U.lerp(reachY(shoulderY, 0.43), reachY(shoulderY, 0.23), cock) + land * 0.24;
         hlSide = U.lerp(0.14, 0.30, cock) * (1 - land * 0.7);
         armRoll = 0;
         armTuck = 0;
@@ -2862,12 +2863,12 @@
         flX = -BONE.hipW + 0.01 - load * 0.03; flY = -legTuck;
         frX = BONE.hipW + 0.01 + load * 0.03; frY = -legTuck;
 
-        const reachY = shoulderY - 0.10 - rise * 0.90 - load * 0.08 + absorb * 0.55;
+        const reachTop = upY(shoulderY, 0.17 + rise * 0.76 + load * 0.13) + absorb * 0.55;
         // Straight overhead as the arms extend, so a contest is a wall rather
         // than one hand in front of the face and one behind the head.
         const reachX = 0.04 - rise * 0.03;
-        hrX = shR + reachX + swat * 0.26; hrY = reachY + swat * 0.34;
-        hlX = shL + reachX - swat * 0.05; hlY = reachY + swat * 0.10;
+        hrX = shR + reachX + swat * 0.26; hrY = reachTop + swat * 0.34;
+        hlX = shL + reachX - swat * 0.05; hlY = reachTop + swat * 0.10;
 
         torsoLean = 0.05 + load * 0.09 + rise * 0.08 - swat * 0.08 - absorb * 0.10;
 
@@ -3003,6 +3004,27 @@
    */
   function reachY(shoulderY, frac) {
     return shoulderY + (BONE.upperArm + BONE.forearm) * frac;
+  }
+
+  /**
+   * A hand target ABOVE the shoulder, as a fraction of the arm's real reach.
+   *
+   * The mirror of reachY, and it exists for the same reason: an arm's length
+   * is a property of the MODEL, not a constant. Every overhead target used to
+   * be an absolute number in skeleton units — 0.56 above the shoulder for a
+   * dunk, 0.52 for a jump shot — tuned against the one figure the game
+   * shipped with, whose arm happened to reach 0.600. Swap in a model whose
+   * arm reaches 0.558 and every one of those numbers is asking for something
+   * past the end of the limb, so the IK clamps and the arm draws locked
+   * straight with no elbow: the shot, the dunk and the block all quietly stop
+   * being poses and become semaphore.
+   *
+   * Expressed as a fraction, the same pose means the same thing on any build.
+   * 1.0 is a fully locked-out arm, so real poses stay below it — a shooter's
+   * follow-through is not a hyperextension.
+   */
+  function upY(shoulderY, frac) {
+    return shoulderY - (BONE.upperArm + BONE.forearm) * frac;
   }
 
   /**
