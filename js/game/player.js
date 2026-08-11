@@ -1640,9 +1640,25 @@
         // elbows still out either side of it.
         const tuckW = 1 - p.armTuck;
         const tuckE = 1 - p.armTuck * 0.45;
+
+        /* The third axis.
+         *
+         * The solver works in ONE flat plane per limb pair, and everything
+         * lateral has been mirrored: armRoll rotates both arms out by the same
+         * angle in opposite directions, so whatever it does to one hand it
+         * does to the other. That is fine for a stance and useless for a jump
+         * shot, where the whole point is that the two hands are doing
+         * DIFFERENT things — one under the ball, one on the side of it.
+         *
+         * `side` is a per-hand lateral offset off the plane entirely, exactly
+         * the mechanism the feet already carry for the defensive slide. The
+         * elbow follows at a fraction of it so the forearm swings across
+         * rather than the wrist detaching from it. */
+        const hand = arm.side < 0 ? p.handL : p.handR;
+        const out = hand.side || 0;
         posePoint(A, f, 0, p.shoulderY, 0, w, torsoLean);
-        posePoint(B, f, el.jx, el.jy, w, w * SPLAY.elbow * tuckE, torsoLean, roll, pivot);
-        posePoint(D, f, el.ex, el.ey, w, w * SPLAY.wrist * tuckW, torsoLean, roll, pivot);
+        posePoint(B, f, el.jx, el.jy, w, w * SPLAY.elbow * tuckE + out * 0.42, torsoLean, roll, pivot);
+        posePoint(D, f, el.ex, el.ey, w, w * SPLAY.wrist * tuckW + out, torsoLean, roll, pivot);
 
         // The solver stops at the wrist; the hand carries on the way the
         // forearm was already pointing.
@@ -2003,6 +2019,9 @@
        * isGuarding, since those all require states this excludes anyway. */
       const guardTarget = (this.isGuarding && !this.jumping && !this.hasBall && !this.isBusyShooting) ? 1 : 0;
       this._guardBlend = U.approach(this._guardBlend, guardTarget, 7, dt);
+      /* Per-hand lateral offset, off the pose plane. Zero for everything that
+       * wants the old mirrored behaviour; the shot and the carry set it. */
+      let hlSide = 0, hrSide = 0;
       let armRoll = 0;
       /* How far the arms are drawn in toward the body's centreline, 0..1.
        *
@@ -2248,7 +2267,16 @@
         // Hands together on the ball through the set, then opening back out a
         // little as the shooting arm goes up over the shooting-side eye rather
         // than over the middle of the head.
-        armTuck = U.lerp(0.35, 0.62, set) * (1 - ext * 0.36);
+        /* Now that a hand can leave the plane on its own, the shape stops
+         * being a mirror. The guide hand comes ACROSS onto the side of the
+         * ball; the shooting hand stays just inside its own shoulder so the
+         * ball finishes over the shooting eyebrow rather than over the middle
+         * of the head. armTuck used to have to do this job by pulling BOTH
+         * hands toward the centreline, which is what put them in front of the
+         * face — with a real lateral axis it barely has to do anything. */
+        hlSide = U.lerp(0.03, 0.085, set) * (1 - ext * 0.30);
+        hrSide = U.lerp(-0.01, -0.035, set);
+        armTuck = U.lerp(0.28, 0.42, set) * (1 - ext * 0.42);
         armRoll = U.lerp(0.08, 0.16, set);
 
         if (this.jumping) {
@@ -2287,7 +2315,11 @@
         // The guide hand is left up around where the ball was, not dropped.
         hlX = shL + U.lerp(0.17, 0.21, relax);
         hlY = shoulderY - U.lerp(0.20, 0.15, relax);
-        armTuck = 0.40 * (1 - relax * 0.35);
+        // The guide hand comes off the ball sideways as the shot leaves, which
+        // is the separation the eye reads as a release rather than a push.
+        hlSide = U.lerp(0.08, 0.15, relax);
+        hrSide = -0.03;
+        armTuck = 0.24 * (1 - relax * 0.35);
         armRoll = 0.16;
         // Toe point — the plant foot stretches down through extension.
         flX = -BONE.hipW; frX = BONE.hipW;
@@ -2450,6 +2482,7 @@
       p.hipLean = hipLean == null ? torsoLean : hipLean;
       p.footL.x = flX; p.footL.y = flY; p.footL.pitch = pitchL; p.footL.side = sideL;
       p.footR.x = frX; p.footR.y = frY; p.footR.pitch = pitchR; p.footR.side = sideR;
+      p.handL.side = hlSide; p.handR.side = hrSide;
       p.handL.x = hlX; p.handL.y = hlY;
       p.handR.x = hrX; p.handR.y = hrY;
 
