@@ -4455,8 +4455,232 @@ console.log('\n[40] the knee bends the way a knee bends');
   check('knee probe raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[41] the body keeps its shape through every motion');
+{
+  /* The suite could measure a jump shot and a run cycle and still not notice
+   * that the figure was a different SIZE in each of them, or that its neck grew
+   * a fifth on every shot, or that four of its eighteen poses drew the arms as
+   * rigid poles. All three shipped green, because every check here sampled one
+   * action at a time and asked about that action's own shape.
+   *
+   * So this sweeps every pose the player can be in — the ACTION enum, plus the
+   * dribble moves, the guard stance, the airborne tuck and METER's three
+   * separate branches, which are states rather than actions — and asks the
+   * questions that are about the BODY rather than about the move. */
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U;
+    var BONE = BB.Player.BONE, A = BB.Player.ACTION;
+    var pl = new BB.Player({ height: 79 });
+    pl.placeAt(20, 25, 0);
+    pl.facing = pl.moveFacing = 0;
+
+    var reach = BONE.upperArm + BONE.forearm;
+    var neckLo = 1e9, neckHi = -1e9, torsoLo = 1e9, torsoHi = -1e9;
+    var statLo = 1e9, statHi = -1e9;
+    var armClamp = 0, legClamp = 0, armWorst = '', legWorst = '';
+
+    function sample(label) {
+      var p = pl.pose;
+      var neck = p.shoulderY - p.headY;
+      var torso = p.hipY - p.shoulderY;
+      var stat = -p.headY + BONE.headR;
+      if (neck < neckLo) neckLo = neck;
+      if (neck > neckHi) neckHi = neck;
+      if (torso < torsoLo) torsoLo = torso;
+      if (torso > torsoHi) torsoHi = torso;
+      if (stat < statLo) statLo = stat;
+      if (stat > statHi) statHi = stat;
+      var a = Math.max(Math.hypot(p.elbowL.ex - p.handL.x, p.elbowL.ey - p.handL.y),
+                       Math.hypot(p.elbowR.ex - p.handR.x, p.elbowR.ey - p.handR.y));
+      var l = Math.max(Math.hypot(p.kneeL.ex - p.footL.x, p.kneeL.ey - p.footL.y),
+                       Math.hypot(p.kneeR.ex - p.footR.x, p.kneeR.ey - p.footR.y));
+      if (a > armClamp) { armClamp = a; armWorst = label; }
+      if (l > legClamp) { legClamp = l; legWorst = label; }
+    }
+
+    /** Puts the player back to a known state between poses. */
+    function reset() {
+      pl.vx = 0; pl.vy = 0; pl.z = 0;
+      pl.sprinting = false; pl.jumping = false; pl.hasBall = false;
+      pl.action = null; pl.actionT = 0; pl.moveState = null; pl.moveT = 0;
+      pl.isGuarding = false; pl._guardBlend = 0; pl.driving = false;
+      pl.armRaise = 0; pl.stridePhase = 0; pl.layupStyle = null;
+    }
+    /** Drives one pose across its whole span and samples throughout. */
+    function sweep(label, steps, set) {
+      reset();
+      for (var s = 0; s <= steps; s++) { set(s / steps); pl._updatePose(1 / 60); sample(label); }
+    }
+
+    sweep('idle', 30, function () {});
+    sweep('walk', 24, function (t) { pl.vx = pl.phys.maxSpeed * 0.35; pl.stridePhase = t * Math.PI * 2; });
+    sweep('run', 24, function (t) { pl.vx = pl.phys.maxSpeed; pl.stridePhase = t * Math.PI * 2; });
+    sweep('sprint', 24, function (t) {
+      pl.sprinting = true; pl.vx = pl.phys.maxSprint; pl.stridePhase = t * Math.PI * 2; });
+    sweep('carry', 24, function (t) { pl.hasBall = true; pl.dribblePhase = t * Math.PI * 2; });
+    sweep('guard', 80, function () { pl.isGuarding = true; });
+    sweep('airborne', 10, function () { pl.jumping = true; pl.z = 1.2; });
+
+    var MOVES = { crossover: 0.30, behindBack: 0.36, spin: 0.46, hesitation: 0.42 };
+    for (var m in MOVES) {
+      (function (name, dur) {
+        sweep(name, 20, function (t) { pl.hasBall = true; pl.moveState = name; pl.moveT = t * dur; });
+      })(m, MOVES[m]);
+    }
+
+    sweep('gather', 12, function (t) { pl.hasBall = true; pl.action = A.GATHER; pl.actionT = t * 0.10; });
+    var SHOTS = ['jumper', 'layup', 'dunk'];
+    for (var i = 0; i < SHOTS.length; i++) {
+      (function (kind) {
+        reset();
+        pl.hasBall = true; pl.action = A.METER; pl.shotType = kind; pl.driving = true;
+        pl.meter.start({ riseTime: 0.4, target: 0.94, greenWindow: 0.2, name: 'x' },
+                       { x: pl.x, y: pl.y, z: 0 });
+        for (var s = 0; s <= 20; s++) { pl.meter.value = s / 20; pl._updatePose(1 / 60); sample('meter_' + kind); }
+      })(SHOTS[i]);
+    }
+    sweep('release', 12, function (t) { pl.action = A.RELEASE; pl.actionT = t * 0.30; });
+    var STYLES = [null, 'euro', 'hop'];
+    for (var j = 0; j < STYLES.length; j++) {
+      (function (st) {
+        sweep('layup_' + (st || 'driving'), 16, function (t) {
+          pl.action = A.LAYUP; pl.layupStyle = st; pl.driving = true;
+          pl.jumping = true; pl.z = 1.1; pl.actionT = t * 0.60;
+        });
+      })(STYLES[j]);
+    }
+    sweep('dunk', 16, function (t) { pl.action = A.DUNK; pl.jumping = true; pl.z = 2.4; pl.actionT = t * 0.45; });
+    sweep('block', 16, function (t) { pl.action = A.BLOCK; pl.jumping = true; pl.z = 1.8; pl.actionT = t * 0.45; });
+    sweep('steal', 16, function (t) { pl.action = A.STEAL; pl.actionT = t * 0.30; });
+    // armRaise is a separate axis: it used to be subtracted straight out of the
+    // neck, so it needs sampling on its own rather than only inside a shot.
+    sweep('armRaise', 10, function (t) { pl.armRaise = t; });
+
+    return {
+      reach: reach,
+      neckLo: neckLo, neckHi: neckHi, neckSpread: (neckHi - neckLo) / Math.max(1e-6, neckLo),
+      torsoLo: torsoLo, torsoHi: torsoHi, torsoSpread: (torsoHi - torsoLo) / Math.max(1e-6, torsoLo),
+      statLo: statLo, statHi: statHi, statSpread: (statHi - statLo) / Math.max(1e-6, statLo),
+      armClamp: armClamp, armWorst: armWorst, legClamp: legClamp, legWorst: legWorst,
+      pageErr: window.__pageErr || null
+    };
+  `, 'body');
+  if (r.err) check('body probe ran', false, r.err);
+  const o = r.out || {};
+
+  /* THE one that was missing. A hand target past full reach comes back clamped
+   * and the limb draws as a rigid pole with no elbow in it. Measured before the
+   * central cap: the hesitation move asked for 185% of the arm and missed its
+   * own target by 0.53 skeleton units — most of an arm — while every check in
+   * this file passed, because none of them sampled a dribble move. */
+  check('no pose asks an arm for more than the arm has',
+        (o.armClamp == null ? 9 : o.armClamp) < 0.005,
+        'worst shortfall ' + (o.armClamp || 0).toFixed(4) + ' in "' + (o.armWorst || '?') +
+        '" (an arm reaches ' + (o.reach || 0).toFixed(3) + ')');
+  check('and no pose asks that of a leg either',
+        (o.legClamp == null ? 9 : o.legClamp) < 0.005,
+        'worst shortfall ' + (o.legClamp || 0).toFixed(4) + ' in "' + (o.legWorst || '?') + '"');
+
+  /* A neck is a bone. It used to carry the armRaise fudge, which stretched it
+   * 22% on every shot, dunk and contest — and since headY also fed the model
+   * scale, the whole figure grew with it. */
+  check('the neck is the same length in every pose',
+        (o.neckSpread == null ? 9 : o.neckSpread) < 0.02,
+        'neck runs ' + (o.neckLo || 0).toFixed(4) + '..' + (o.neckHi || 0).toFixed(4) +
+        ', a ' + ((o.neckSpread || 0) * 100).toFixed(1) + '% stretch');
+  /* draw() lays all three spine bones along the hip-to-shoulder line, so
+   * whatever this number is, the torso mesh is stretched to match it.
+   *
+   * Two effects in the tree are deliberate and are inside this bound: the idle
+   * breath lifts the shoulder alone by 0.014 (+2.2% of the trunk) and the
+   * crossover's shoulder dip drops it by 0.030 (-4.8%), which is the fake the
+   * whole move is built on. Together they span about 7%.
+   *
+   * The bound sits above those and below the thing it is here to catch: a
+   * branch that moves shoulderY WITHOUT hipY to raise the body. Two of those
+   * existed, each worth another 8% on its own, and both read as the trunk
+   * growing rather than the player rising. */
+  check('and the trunk keeps its length within a few per cent',
+        (o.torsoSpread == null ? 9 : o.torsoSpread) < 0.10,
+        'trunk runs ' + (o.torsoLo || 0).toFixed(4) + '..' + (o.torsoHi || 0).toFixed(4) +
+        ', a ' + ((o.torsoSpread || 0) * 100).toFixed(1) + '% change');
+
+  /* The figure's own height. A crouch legitimately lowers the head, so this is
+   * a loose bound — it is here to catch a pose that has quietly resized the
+   * player, not to forbid bending. What it must never again be is the input to
+   * the model scale, which is checked in [42]. */
+  check('nobody changes height by more than a crouch explains',
+        (o.statSpread == null ? 9 : o.statSpread) < 0.20,
+        'posed stature runs ' + (o.statLo || 0).toFixed(3) + '..' + (o.statHi || 0).toFixed(3) +
+        ', a ' + ((o.statSpread || 0) * 100).toFixed(1) + '% swing');
+  check('body probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[42] the drawn figure is one consistent size');
+{
+  /* The model-to-world scale used to be computed from p.headY — a pose
+   * quantity — so girth, shoulder width, head size and shoe size all breathed
+   * with the pose. Measured: a 6'7" figure came out 7.0% shorter in a
+   * defensive stance and 2.7% taller mid-shot. Nothing in the suite could see
+   * it: [4] allows the drawn body to be anywhere from 4% to 60% of viewport
+   * height, which is about fifteen times too loose.
+   *
+   * Reproduced here the way draw() computes it, so the two cannot drift. */
+  const r = runInPage(`
+    var BB = window.BB, A = BB.Player.ACTION;
+    var BONE = BB.Player.BONE, Skin = BB.Skin;
+    var pl = new BB.Player({ height: 79 });
+    pl.placeAt(20, 25, 0);
+    pl.facing = pl.moveFacing = 0;
+
+    /* draw() does: g = (REF_HEIGHT * bodyScale) / Skin.height. REF_HEIGHT is
+     * module-private, so it is reconstructed from the same parts. */
+    var REST_HIP = (BONE.thigh + BONE.shin) * (1 - 0.05);
+    var REF_HEIGHT = REST_HIP + BONE.torso + BONE.neck + BONE.headR;
+    var gExpect = (REF_HEIGHT * pl.bodyScale) / Skin.height;
+
+    var lo = 1e9, hi = -1e9;
+    function look() {
+      // What draw() would compute if it still read the pose. Kept as the
+      // counter-example: this is the number that used to be the scale.
+      var statP = -pl.pose.headY + BONE.headR;
+      var gPose = (statP * pl.bodyScale) / Skin.height;
+      if (gPose < lo) lo = gPose;
+      if (gPose > hi) hi = gPose;
+    }
+    pl.vx = 0; for (var i = 0; i < 30; i++) { pl._updatePose(1 / 60); }
+    look();
+    pl.isGuarding = true; for (var i = 0; i < 80; i++) { pl._updatePose(1 / 60); }
+    look();
+    pl.isGuarding = false; pl._guardBlend = 0; pl.armRaise = 1;
+    pl._updatePose(1 / 60); look();
+
+    return {
+      gExpect: gExpect, poseLo: lo, poseHi: hi,
+      poseSwing: (hi - lo) / Math.max(1e-9, lo),
+      meshHeight: Skin.height, bodyScale: pl.bodyScale,
+      pageErr: window.__pageErr || null
+    };
+  `, 'scale');
+  if (r.err) check('scale probe ran', false, r.err);
+  const o = r.out || {};
+
+  check('the mesh scale is a real number', (o.gExpect || 0) > 1e-6,
+        'g = ' + (o.gExpect || 0).toFixed(6) + ' feet per model unit');
+  /* The point of the check: the pose-derived number still swings, and the
+   * scale must no longer be it. If these two are ever equal again, draw() has
+   * gone back to scaling the mesh off the pose. */
+  check('and it is NOT the pose-derived one that used to swing',
+        (o.poseSwing || 0) > 0.03 &&
+        Math.abs((o.gExpect || 0) - (o.poseLo || 0)) > 1e-9 &&
+        Math.abs((o.gExpect || 0) - (o.poseHi || 0)) > 1e-9,
+        'the pose-derived scale still moves ' + ((o.poseSwing || 0) * 100).toFixed(1) +
+        '% between a stance and a shot; the drawn scale must not follow it');
+  check('scale probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[41] screenshots');
+  console.log('\n[43] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],

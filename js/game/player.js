@@ -133,7 +133,15 @@
    * 0.081, both well inside a chest that reaches 0.100 — which is why the
    * arms read as melted into the jersey and tore the deltoid open. Hanging
    * them all but straight down off the joint, converging only slightly, keeps
-   * the limb outside the torso with its surface just brushing it. */
+   * the limb outside the torso with its surface just brushing it.
+   *
+   * NOT the bind pose's own lateral spread, which is a tempting thing to adopt
+   * and is wrong: the mesh is bound in an A-pose with the arms held out, so its
+   * elbow sits 1.41 shoulder-widths wide and its wrist 1.72. Feeding those to a
+   * runtime that HANGS the arms pins the hands out at bind width whatever the
+   * solver does with the rest of the limb, and the figure stands like a
+   * scarecrow. The bind spread describes the pose the model was drawn in; these
+   * describe the pose the game puts it in. */
   /* How fast a shooter squares up to the basket, in "fraction closed per
    * second". Fixed rather than scaled off the player's agility: squaring up
    * for a jump shot is not an athletic feat, and scaling it would mean the
@@ -146,6 +154,19 @@
     elbow: 1.06, wrist: 1.02,
     knee: 1.08, ankle: 1.23
   };
+
+  /* How much of an arm's reach a pose is allowed to spend. Just inside full
+   * extension, because an arm at exactly 1.0 is locked out with no elbow in it,
+   * and one past 1.0 comes back clamped and draws as a pole. Applied centrally
+   * to every hand target — see the cap at the end of _updatePose. */
+  const ARM_CAP = 0.97;
+  /* The same for a leg, but tighter: a push-off really does straighten the leg
+   * almost fully, and a knee that never quite extends reads as a crouch that
+   * will not finish. */
+  const LEG_CAP = 0.99;
+  /* And how far past the tightest possible fold to stay, on the same argument
+   * from the other end. Just outside it, so the solver never has to push back. */
+  const FOLD_CAP = 1.06;
 
   /* How far from the rim a sprinting drive can still take off for a layup, in
    * feet. A real drive leaves the floor outside the restricted area (4ft) and
@@ -1820,10 +1841,20 @@
 
       const A = TMP_P0, B = TMP_P1, D = TMP_P2, E = TMP_P3, F = TMP_P4;
 
-      /* Model units to world feet. The mesh is authored at its own stature, so
-       * everything scales off the ratio between that and the posed figure. */
-      const statP = -p.headY + BONE.headR;
-      const g = (statP * f.s) / Skin.height;
+      /* Model units to world feet.
+       *
+       * This is a property of the BUILD, not of what the player is doing. It
+       * used to be derived from p.headY — a pose quantity — so the whole mesh
+       * breathed with the pose: girth, shoulder width, head size and shoe size
+       * all scaled together. Measured, a 6'7" figure came out 7.0% SHORTER the
+       * moment it dropped into a defensive stance and 2.7% TALLER while it was
+       * shooting, because a crouch lowers the head and armRaise lifted it. A
+       * player is not smaller for crouching; their legs are bent, which is
+       * what setBone's along-bone stretch is already for.
+       *
+       * REF_HEIGHT * bodyScale is exactly the figure's drawn height in feet, so
+       * this is "drawn feet per model unit" and it cannot move mid-pose. */
+      const g = (REF_HEIGHT * f.s) / Skin.height;
       const ref = REF_DIR;
       ref[0] = f.fx; ref[1] = f.fy; ref[2] = 0;
 
@@ -1832,12 +1863,19 @@
        * the runtime places them by measuring the same fractions along the posed
        * body rather than by guessing which joint each one belongs to. Hip and
        * shoulder are the two known points; everything else rides that line and
-       * therefore inherits the lean and the crouch for free. */
+       * therefore inherits the lean and the crouch for free.
+       *
+       * The two ends of that line are the MESH's own hip and shoulder, not the
+       * posed ones. Reading them off the pose meant the mapping's origin and
+       * span drifted with every crouch, so the bind hip no longer landed on the
+       * posed hip and every spine bone was stretched by the difference on every
+       * frame. Against the mesh's landmarks the bind hip maps to exactly the
+       * posed hip and the bind shoulder to exactly the posed shoulder, which is
+       * the only version of this that is not approximately wrong. */
       posePoint(HIP, f, 0, p.hipY, 0, 0, hipLean);
       posePoint(SHO, f, 0, p.shoulderY, 0, 0, torsoLean);
-      const hipH = -p.hipY / statP;
-      const span = (-p.shoulderY / statP) - hipH;
-      const spineAt = (out, h) => mixPt(out, HIP, SHO, span > 1e-6 ? (h - hipH) / span : 0);
+      const spineAt = (out, h) =>
+        mixPt(out, HIP, SHO, SPINE_SPAN > 1e-6 ? (h - SPINE_HIP) / SPINE_SPAN : 0);
 
       for (const name of SPINE_BONES) {
         const seg = Skin.bind[name];
@@ -2531,7 +2569,11 @@
 
         torsoLean = U.lerp(0.16, 0.03, rise);
         hipLean = torsoLean * 0.4;
-        shoulderY -= 0.05 * rise;         // stretch up through the finish
+        // Extend through the finish. The hip comes with it: moving the
+        // shoulder alone does not raise the body, it lengthens the spine, and
+        // draw() places all three spine bones along the hip-to-shoulder line so
+        // the trunk mesh stretches by exactly the difference.
+        hipY -= 0.05 * rise; shoulderY -= 0.05 * rise;
 
       } else if (this.action === A.METER && this.shotType === 'dunk') {
         /* The gather on a dunk, held on the meter.
@@ -2586,7 +2628,9 @@
 
         torsoLean = U.lerp(0.18, 0.02, rise);
         hipLean = torsoLean * 0.4;
-        shoulderY -= 0.05 * rise;         // stretch up through the takeoff
+        // Extend through the takeoff — hip and shoulder together, so the body
+        // rises instead of the spine growing. See the layup branch above.
+        hipY -= 0.05 * rise; shoulderY -= 0.05 * rise;
 
       } else if (this.action === A.METER) {
         /* The jump shot, in the two beats a jump shot actually has.
@@ -2909,13 +2953,113 @@
       p.shoulderY = shoulderY;
       p.armRoll = armRoll;
       p.armTuck = armTuck;
-      p.headY = shoulderY - BONE.neck - this.armRaise * 0.05;
+      /* A neck is a bone, not a spring. This used to subtract armRaise * 0.05
+       * as well, to lift the head a little when the arms went up — but headY is
+       * the only thing that says where the head IS, so the whole of that fudge
+       * came out of the neck: measured, it ran 0.223 to 0.273 pose units, a 22%
+       * stretch, on every shot, dunk and contest. It also fed the model scale
+       * (see draw()), so the figure grew as well. If the head should rise on a
+       * shot, the spine should extend and carry it. */
+      p.headY = shoulderY - BONE.neck;
       p.torsoLean = torsoLean;
       p.hipLean = hipLean == null ? torsoLean : hipLean;
-      p.footL.x = flX; p.footL.y = flY; p.footL.pitch = pitchL; p.footL.side = sideL;
-      p.footR.x = frX; p.footR.y = frY; p.footR.pitch = pitchR; p.footR.side = sideR;
+      p.footL.pitch = pitchL; p.footL.side = sideL;
+      p.footR.pitch = pitchR; p.footR.side = sideR;
       p.handL.side = hlSide; p.handR.side = hrSide;
       p.handL.twist = hlTwist; p.handR.twist = hrTwist;
+
+      /* Nothing may ask an arm for more than the arm has.
+       *
+       * A target past full reach comes back from solveIK2 CLAMPED: the hand
+       * stops short, the elbow vanishes, and the limb draws as a rigid pole
+       * pointing at somewhere it never got to. Every branch above was supposed
+       * to stay inside reach by hand-tuning, and most do — but the ones written
+       * as "hand at hip height" cannot, by construction, because this figure's
+       * torso (0.626) is LONGER than its arm (0.611), so the hip is already out
+       * of reach of the shoulder before any offset is added. Measured, the
+       * hesitation move asked for 185% of the arm, the dribble moves and the
+       * steal for 111-145%, on this model and on the one the game shipped with.
+       *
+       * Capping centrally rather than per branch is deliberate, and is the same
+       * argument as the keep() clamp in draw(): a limit every pose has to
+       * remember is a limit the next pose forgets. Direction is preserved, so a
+       * capped pose still reaches the way it meant to, just not through its own
+       * elbow.
+       *
+       * The cap is on the THREE-dimensional target. The solver only ever sees a
+       * flat plane, but draw() adds a lateral offset afterwards, so a hand can
+       * be inside reach in-plane and outside it in the round — which is exactly
+       * how a pose passes an in-plane clamp check and still draws straight. */
+      const armReach = (BONE.upperArm + BONE.forearm) * ARM_CAP;
+      /* An arm has a shortest length as well as a longest one: folded right up,
+       * the hand still cannot get closer to the shoulder than the difference
+       * between the two bones. A target inside that is the wrist trying to pass
+       * THROUGH the shoulder joint — the euro-step layup asked for 0.062
+       * against a fold of 0.073 — and the solver deals with it by shoving the
+       * hand back out, which is a pose nobody asked for. */
+      const armFold = Math.abs(BONE.upperArm - BONE.forearm) * FOLD_CAP;
+      const capHand = (hx, hy, shx, lateral) => {
+        const dx = hx - shx, dy = hy - shoulderY;
+        const d = Math.hypot(dx, dy, lateral);
+        if (d < 1e-6) return [shx, shoulderY + armFold];
+        if (d > armReach) {
+          // Pull straight back along the line to the shoulder. The lateral part
+          // is fixed by draw(), so the plane components absorb the whole excess.
+          const flat = Math.hypot(dx, dy);
+          const room = Math.sqrt(Math.max(0, armReach * armReach - lateral * lateral));
+          const s = flat > 1e-6 ? Math.min(1, room / flat) : 0;
+          return [shx + dx * s, shoulderY + dy * s];
+        }
+        if (d < armFold) {
+          const s = armFold / d;
+          return [shx + dx * s, shoulderY + dy * s];
+        }
+        return null;
+      };
+      // The wrist's lateral offset from its own shoulder, mirroring draw().
+      const latL = -BONE.shoulderW * (SPLAY.wrist * (1 - armTuck) - 1) + hlSide;
+      const latR = BONE.shoulderW * (SPLAY.wrist * (1 - armTuck) - 1) + hrSide;
+      const cl = capHand(hlX, hlY, shL, latL);
+      if (cl) { hlX = cl[0]; hlY = cl[1]; }
+      const cr = capHand(hrX, hrY, shR, latR);
+      if (cr) { hrX = cr[0]; hrY = cr[1]; }
+
+      /* And the same for the legs, for the same reason.
+       *
+       * A leg runs out of length exactly as an arm does, and when it does the
+       * shin and thigh MESH is stretched to span the gap — setBone scales each
+       * bone along its own length to reach whatever the solver was asked for.
+       * Measured on the dunk's gather, the trailing leg was asked to reach 1.183
+       * against a leg of 0.915: 129%, drawn as a rigid stretched stilt with no
+       * knee in it, on every dunk in the game.
+       *
+       * The allowance is tighter than the arms' because a push-off genuinely
+       * does straighten the leg most of the way, and a knee that never quite
+       * extends reads as a crouch that will not finish. */
+      const legReach = (BONE.thigh + BONE.shin) * LEG_CAP;
+      const capFoot = (fx, fy, hx, lateral) => {
+        const dx = fx - hx, dy = fy - hipY;
+        const d = Math.hypot(dx, dy, lateral);
+        if (d <= legReach || d < 1e-6) return null;
+        const flat = Math.hypot(dx, dy);
+        const room = Math.sqrt(Math.max(0, legReach * legReach - lateral * lateral));
+        const s = flat > 1e-6 ? Math.min(1, room / flat) : 0;
+        return [hx + dx * s, hipY + dy * s];
+      };
+      // The ankle's lateral offset from its own hip, mirroring draw().
+      const legLat = BONE.stance - BONE.hipW;
+      const fl = capFoot(flX, flY, -BONE.hipW, -legLat + sideL);
+      if (fl) { flX = fl[0]; flY = fl[1]; }
+      const fr = capFoot(frX, frY, BONE.hipW, legLat + sideR);
+      if (fr) { frX = fr[0]; frY = fr[1]; }
+
+      /* Recorded AFTER the caps, so pose.footL/handL is the target the solver
+       * was actually given. Recording it before meant every check that compared
+       * the two was measuring the shortfall against a target that had already
+       * been withdrawn — it would have reported a clamp that no longer existed. */
+      p.footL.x = flX; p.footL.y = flY;
+      p.footR.x = frX; p.footR.y = frY;
+
       p.handL.x = hlX; p.handL.y = hlY;
       p.handR.x = hrX; p.handR.y = hrY;
 
@@ -3149,6 +3293,14 @@
   /* Bones baked at fixed fractions of the model's height, placed by measuring
    * the same fractions along the posed body. */
   const SPINE_BONES = ['pelvis', 'torso', 'head'];
+
+  /* The mesh's own hip and shoulder, as fractions of its stature — the two ends
+   * of the line every spine bone is placed along. Constants, because they are
+   * facts about the model rather than about the pose. */
+  const SPINE_HIP = (BB.PLAYER_MESH && BB.PLAYER_MESH.landmarks
+    ? BB.PLAYER_MESH.landmarks.hip : 0.480);
+  const SPINE_SPAN = (BB.PLAYER_MESH && BB.PLAYER_MESH.landmarks
+    ? BB.PLAYER_MESH.landmarks.shoulder - BB.PLAYER_MESH.landmarks.hip : 0.352);
   const HIP = [0, 0, 0], SHO = [0, 0, 0];
   const REF_DIR = [1, 0, 0];
   const HREF = [1, 0, 0];
