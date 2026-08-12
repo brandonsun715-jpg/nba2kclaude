@@ -1855,6 +1855,11 @@
        * REF_HEIGHT * bodyScale is exactly the figure's drawn height in feet, so
        * this is "drawn feet per model unit" and it cannot move mid-pose. */
       const g = (REF_HEIGHT * f.s) / Skin.height;
+      /* Published so the scale the mesh is ACTUALLY drawn at can be measured
+       * from outside. Without it a check can only recompute what it thinks
+       * draw() should be doing, which is exactly the kind of check that agrees
+       * with itself while the renderer does something else. */
+      p.drawScale = g;
       const ref = REF_DIR;
       ref[0] = f.fx; ref[1] = f.fy; ref[2] = 0;
 

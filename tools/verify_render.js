@@ -4627,55 +4627,74 @@ console.log('\n[42] the drawn figure is one consistent size');
    *
    * Reproduced here the way draw() computes it, so the two cannot drift. */
   const r = runInPage(`
-    var BB = window.BB, A = BB.Player.ACTION;
-    var BONE = BB.Player.BONE, Skin = BB.Skin;
-    var pl = new BB.Player({ height: 79 });
-    pl.placeAt(20, 25, 0);
+    var BB = window.BB, A = BB.Player.ACTION, BONE = BB.Player.BONE;
+    BB.Engine.setState('shootaround');
+    BB.Engine._applyPending();
+    BB.Engine.stop();
+    var scene = BB.Engine.scene;
+    for (var i = 0; i < 20; i++) {
+      if (scene.fixedUpdate) scene.fixedUpdate(1 / 120);
+      if (i % 2 === 0 && scene.update) scene.update(1 / 60, 1 / 60);
+    }
+    var pl = scene.player || (scene.players && scene.players[0]);
+    pl.placeAt(47, 25, 0);
     pl.facing = pl.moveFacing = 0;
 
-    /* draw() does: g = (REF_HEIGHT * bodyScale) / Skin.height. REF_HEIGHT is
-     * module-private, so it is reconstructed from the same parts. */
-    var REST_HIP = (BONE.thigh + BONE.shin) * (1 - 0.05);
-    var REF_HEIGHT = REST_HIP + BONE.torso + BONE.neck + BONE.headR;
-    var gExpect = (REF_HEIGHT * pl.bodyScale) / Skin.height;
-
-    var lo = 1e9, hi = -1e9;
+    /* Read the scale the renderer actually used, by rendering. Recomputing
+     * what draw() ought to do would pass whatever draw() does. */
+    var lo = 1e9, hi = -1e9, poseLo = 1e9, poseHi = -1e9, n = 0;
     function look() {
-      // What draw() would compute if it still read the pose. Kept as the
-      // counter-example: this is the number that used to be the scale.
+      pl._updatePose(1 / 60);
+      scene.render(0);
+      var g = pl.pose.drawScale;
+      if (g == null) return;
+      n++;
+      if (g < lo) lo = g;
+      if (g > hi) hi = g;
+      // The number the scale USED to be, kept as the counter-example.
       var statP = -pl.pose.headY + BONE.headR;
-      var gPose = (statP * pl.bodyScale) / Skin.height;
-      if (gPose < lo) lo = gPose;
-      if (gPose > hi) hi = gPose;
+      var gPose = (statP * pl.bodyScale) / BB.Skin.height;
+      if (gPose < poseLo) poseLo = gPose;
+      if (gPose > poseHi) poseHi = gPose;
     }
-    pl.vx = 0; for (var i = 0; i < 30; i++) { pl._updatePose(1 / 60); }
+
+    pl.vx = 0; pl.vy = 0; pl.hasBall = false;
+    for (var i = 0; i < 30; i++) pl._updatePose(1 / 60);
     look();
-    pl.isGuarding = true; for (var i = 0; i < 80; i++) { pl._updatePose(1 / 60); }
+    pl.isGuarding = true;
+    for (var i = 0; i < 80; i++) pl._updatePose(1 / 60);
     look();
-    pl.isGuarding = false; pl._guardBlend = 0; pl.armRaise = 1;
-    pl._updatePose(1 / 60); look();
+    pl.isGuarding = false; pl._guardBlend = 0;
+    pl.armRaise = 1; look();
+    pl.armRaise = 0; pl.jumping = true; pl.z = 2.4;
+    pl.action = A.DUNK; pl.actionT = 0.2; look();
 
     return {
-      gExpect: gExpect, poseLo: lo, poseHi: hi,
-      poseSwing: (hi - lo) / Math.max(1e-9, lo),
-      meshHeight: Skin.height, bodyScale: pl.bodyScale,
+      samples: n, lo: lo, hi: hi,
+      swing: lo < 1e8 ? (hi - lo) / Math.max(1e-9, lo) : -1,
+      poseSwing: poseLo < 1e8 ? (poseHi - poseLo) / Math.max(1e-9, poseLo) : -1,
       pageErr: window.__pageErr || null
     };
   `, 'scale');
   if (r.err) check('scale probe ran', false, r.err);
   const o = r.out || {};
 
-  check('the mesh scale is a real number', (o.gExpect || 0) > 1e-6,
-        'g = ' + (o.gExpect || 0).toFixed(6) + ' feet per model unit');
-  /* The point of the check: the pose-derived number still swings, and the
-   * scale must no longer be it. If these two are ever equal again, draw() has
-   * gone back to scaling the mesh off the pose. */
-  check('and it is NOT the pose-derived one that used to swing',
-        (o.poseSwing || 0) > 0.03 &&
-        Math.abs((o.gExpect || 0) - (o.poseLo || 0)) > 1e-9 &&
-        Math.abs((o.gExpect || 0) - (o.poseHi || 0)) > 1e-9,
-        'the pose-derived scale still moves ' + ((o.poseSwing || 0) * 100).toFixed(1) +
-        '% between a stance and a shot; the drawn scale must not follow it');
+  check('the renderer reports the scale it drew at', (o.samples || 0) >= 4,
+        (o.samples || 0) + ' of 4 poses reported a scale');
+  /* The whole check. Idle, a defensive stance, a raised arm and a dunk must
+   * all draw the mesh at the same size. Before this, they did not: measured
+   * -7.0% in the stance and +2.7% mid-shot, and nothing here could see it —
+   * [4] allows the drawn body to be anywhere from 4% to 60% of viewport
+   * height, about fifteen times too loose. */
+  check('and it is the same in a stance, a shot and a dunk as at rest',
+        (o.swing == null ? 9 : o.swing) < 0.001,
+        'drawn scale moves ' + ((o.swing || 0) * 100).toFixed(2) + '% across poses' +
+        ' (' + (o.lo || 0).toFixed(6) + '..' + (o.hi || 0).toFixed(6) + ' feet per model unit)');
+  /* And the pose-derived number it used to be is still swinging, so the check
+   * above is genuinely holding something down rather than restating a constant. */
+  check('while the pose it used to be read from still moves',
+        (o.poseSwing || 0) > 0.03,
+        'the pose-derived scale swings ' + ((o.poseSwing || 0) * 100).toFixed(1) + '%');
   check('scale probe raised no errors', !o.pageErr, o.pageErr);
 }
 
