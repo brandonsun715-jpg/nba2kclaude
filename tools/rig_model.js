@@ -459,29 +459,35 @@ function gatePenalty(name, p, J, seg) {
     /* And nothing hanging UNDER the armpit.
      *
      * Between the two gates above there was a gap the size of a ribcage. The
-     * quadratic one holds the CHEST, measured across the body; the one above
-     * holds everything over the shoulder. Neither says anything about the flank
-     * — the side of the trunk, level with the ribs and a shade inboard of the
-     * shoulder — and that is where the two candidate bones are hardest to tell
-     * apart: the torso bone is a stick on the midline about eighteen units
-     * away, and the upper arm passes down the outside of the ribs at about
-     * eighteen units as well, so inverse-square weighting split the flank
-     * nearly evenly between them.
+     * quadratic one holds the CHEST; the one above holds everything over the
+     * shoulder. Neither says anything about the flank — the side of the trunk,
+     * level with the ribs — and that is where the two candidate bones are
+     * hardest to tell apart: the torso bone is a stick on the midline about
+     * eighteen units away, and the upper arm runs down the outside of the ribs
+     * at about eighteen units as well, so inverse-square weighting split the
+     * flank nearly evenly. Measured, 88 jersey vertices between 0.73 and 0.78
+     * of stature carried a mean 41% upper-arm weight. The upper arm swings
+     * about 150 degrees in a contest, so that panel of vest went with it: both
+     * arms overhead drew two blue wings the size of the torso.
      *
-     * Measured on the bake this replaces: 88 jersey vertices between 0.73 and
-     * 0.78 of stature carried a mean 41% upper-arm weight and a worst of 63%.
-     * The upper arm swings about 150 degrees from bind in a contest or a jump
-     * shot, so that whole panel of vest went with it — both arms overhead drew
-     * two blue wings the size of the torso hanging off the ribs, which is the
-     * single most deformed thing the figure did.
+     * Gated on DISTANCE FROM THE BONE, not on a lateral position. Two lateral
+     * measures were tried and both cut the limb rather than the trunk. Against
+     * the shoulder's x: an A-pose arm travels outward as it descends, so most
+     * of the arm reads as "inboard of the shoulder" and a gate strong enough to
+     * hold the ribs throws the upper arm onto the torso — where it stays in
+     * bind pose while the rest of the limb moves, drawing a ghost arm hanging
+     * off the shoulder beside the real one. Against the bone's own line: that
+     * splits the limb down its length, penalising the medial half and leaving
+     * the arm as a sheet stretched between the raised limb and a static trunk.
      *
-     * Linear in how far below the shoulder the vertex sits, and gated on being
-     * inboard at all, so the deltoid cap right at the joint is barely touched
-     * (it needs to stay shared, or the shoulder tears open) while the flank a
-     * few units down is decisively the trunk's. Nothing outboard of the
-     * shoulder is affected, which is the arm itself. */
+     * Distance has neither failure. Every part of an arm is within an arm's
+     * radius of its own bone, medial and lateral alike, so the limb is untouched
+     * by construction; the flank is twice that away and is decisively the
+     * trunk's. The allowance is the limb's own thickness, as a fraction of
+     * stature, so it travels to another build. */
     const under = J.shoulderL[2] - p[2];
-    if (under > 0 && inboard > 0) pen += under * 2.5;
+    const outside = distToSegment(p, seg[0], seg[1]) - H * 0.055;
+    if (under > 0 && outside > 0) pen += outside * 4.0;
   } else if (/^(thigh|shin|foot)/.test(name)) {
     // Legs own only what lies below the hip. No midline gate here: the inner
     // face of the shorts has to travel with the leg it wraps, and holding it
@@ -855,6 +861,90 @@ function simplify(pos, faces, zone, target) {
     outTris.push([a, b, c]);
   }
   return { pos: outPos, tris: outTris, src: outSrc };
+}
+
+/**
+ * Squeezes the hands into the shape of a hand.
+ *
+ * The model's hand is a splayed fan: 17.8 units long, **15.8 wide** and 5.3
+ * thick, against a forearm 8.1 by 6.9. It is nearly as broad as it is long and
+ * thinner than a shoe sole, so it reads as a claw from the front and as a blade
+ * from the side — and no amount of posing changes that, because it is the
+ * geometry. It is the last thing on this figure that does not look human, and
+ * it is the thing you notice, because it is on the end of the arm carrying the
+ * ball. A real hand is roughly half as broad as it is long, and about a third
+ * as thick as it is broad.
+ *
+ * Only the two cross-bone axes move; the length is untouched, so the reach the
+ * solver computes from `BONE.hand` is unchanged and the wrist still meets the
+ * forearm exactly where it did. The axes come from the hand cloud's own
+ * principal directions rather than from a guess at which way the fingers point,
+ * so this works on a hand modelled in any orientation.
+ *
+ * Runs on the WELDED positions, before simplification, so the new volume is
+ * what the decimator sees and preserves. The weights and zones are already
+ * assigned by the time this runs and are keyed by index, so neither moves.
+ */
+function reshapeHands(positions, skinOf, segs) {
+  const NARROW = 0.60;      // 15.8 -> 9.5, about the forearm's own breadth
+  const THICKEN = 1.34;     //  5.3 -> 7.1, so it stops being a blade
+  for (const name of ['handL', 'handR']) {
+    const idx = BONE_INDEX[name];
+    const mine = [];
+    for (let i = 0; i < positions.length; i++) if (skinOf[i][0] === idx) mine.push(i);
+    if (mine.length < 12) continue;
+
+    const s = segs[name], a = s[0], b = s[1];
+    const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const L = Math.hypot(d[0], d[1], d[2]) || 1;
+    const u = [d[0] / L, d[1] / L, d[2] / L];
+
+    /* Each vertex's offset from the bone's own axis. What is left after taking
+     * the along-bone part out is the cross-section this is reshaping. */
+    const off = mine.map((i) => {
+      const p = positions[i];
+      const r = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+      const t = r[0] * u[0] + r[1] * u[1] + r[2] * u[2];
+      return [r[0] - u[0] * t, r[1] - u[1] * t, r[2] - u[2] * t];
+    });
+
+    /* The widest direction across the hand, by power iteration on the 3x3
+     * covariance of those offsets — that is the finger splay, whichever way the
+     * model happens to hold it. The thin axis is then the remaining one. */
+    const C = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    for (const o of off) for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) C[r * 3 + c] += o[r] * o[c];
+    let e1 = [1, 0, 0];
+    for (let it = 0; it < 48; it++) {
+      const v = [
+        C[0] * e1[0] + C[1] * e1[1] + C[2] * e1[2],
+        C[3] * e1[0] + C[4] * e1[1] + C[5] * e1[2],
+        C[6] * e1[0] + C[7] * e1[1] + C[8] * e1[2]
+      ];
+      // Kept perpendicular to the bone every step, or it converges onto the
+      // bone axis itself — which is the one direction that must not move.
+      const t = v[0] * u[0] + v[1] * u[1] + v[2] * u[2];
+      const w = [v[0] - u[0] * t, v[1] - u[1] * t, v[2] - u[2] * t];
+      const n = Math.hypot(w[0], w[1], w[2]);
+      if (n < 1e-9) break;
+      e1 = [w[0] / n, w[1] / n, w[2] / n];
+    }
+    const e2 = [
+      u[1] * e1[2] - u[2] * e1[1],
+      u[2] * e1[0] - u[0] * e1[2],
+      u[0] * e1[1] - u[1] * e1[0]
+    ];
+
+    mine.forEach((i, k) => {
+      const o = off[k];
+      const w1 = o[0] * e1[0] + o[1] * e1[1] + o[2] * e1[2];
+      const w2 = o[0] * e2[0] + o[1] * e2[1] + o[2] * e2[2];
+      const d1 = w1 * (NARROW - 1), d2 = w2 * (THICKEN - 1);
+      const p = positions[i];
+      p[0] += e1[0] * d1 + e2[0] * d2;
+      p[1] += e1[1] * d1 + e2[1] * d2;
+      p[2] += e1[2] * d1 + e2[2] * d2;
+    });
+  }
 }
 
 /**
@@ -1271,6 +1361,7 @@ const segs = boneSegments(J);
 const skinOf = raw.positions.map((p) => skinVertex(p, segs, J));
 const zoneAt = new Int32Array(raw.positions.length);
 raw.positions.forEach((p, i) => { zoneAt[i] = zoneOf(p, BONES[skinOf[i][0]], J); });
+reshapeHands(raw.positions, skinOf, segs);
 
 const posTris = raw.tris.map((t) => [t[0][0], t[1][0], t[2][0]]);
 console.log('  welded      ' + raw.positions.length + ' positions, ' + posTris.length + ' triangles');
@@ -1320,7 +1411,65 @@ simplified.pos.forEach((p, i) => {
   dense[i * nb + sk[0]] = sk[2];
   dense[i * nb + sk[1]] = sk[3];
 });
-const posSmoothed = smoothWeights(simplified.pos.length, simplified.tris, nb, dense, 26);
+
+/* A bone may not carry geometry that is nowhere near it.
+ *
+ * Inverse-square weighting says this already, and then the best-two selection
+ * throws it away: a vertex on the flank of the ribcage is about eighteen units
+ * from the torso bone — a stick on the midline — and ten to sixteen from the
+ * upper arm running down beside it, so the arm is one of the two survivors and
+ * takes a third to a half of the vertex whatever its absolute distance was. No
+ * amount of gate tuning fixes that robustly, because the gate is competing with
+ * a comparison that has already discarded the scale.
+ *
+ * The arm swings about 150 degrees from bind in a contest or a jump shot, and
+ * dual-quaternion skinning rotates a blended vertex rigidly about the joint
+ * rather than collapsing it — so a half-weighted vertex sixteen units out
+ * sweeps a sixteen-unit arc and the vest balloons into a wing at the shoulder.
+ * The vertices that may legitimately be blended are the ones NEAR the joint,
+ * where the arc is short.
+ *
+ * So the falloff is stated outright, in the limb's own lengths. It runs on
+ * BOTH sides of the smoothing pass, and both are needed: before, so the
+ * diffusion starts from a field that is already correct; after, because
+ * diffusion is exactly a process that carries weight back outward again, and on
+ * its own the pre-pass came out barely changed — 0.47 mean arm weight on the
+ * flank against 0.44. Being a smoothstep rather than a cut, applying it last
+ * still leaves the field graded.
+ *
+ * Only the arms need it: the leg bones lie inside the leg, and the trunk bones
+ * are the ones being protected.
+ */
+function limitArmReach(w, count, positions) {
+  const NEAR = 0.32, FAR = 0.58;         // in upper-arm lengths from the chain
+  for (const side of ['L', 'R']) {
+    const chain = ['upperArm' + side, 'forearm' + side, 'hand' + side];
+    const armLen = dist3(segs['upperArm' + side][0], segs['upperArm' + side][1]) || 1;
+    for (let i = 0; i < count; i++) {
+      const p = positions[i];
+      let d = Infinity;
+      for (const b of chain) d = Math.min(d, distToSegment(p, segs[b][0], segs[b][1]));
+      const t = (d / armLen - NEAR) / (FAR - NEAR);
+      if (t <= 0) continue;
+      const k = t >= 1 ? 0 : 1 - t * t * (3 - 2 * t);      // smoothstep, 1 -> 0
+      for (const b of chain) w[i * nb + BONE_INDEX[b]] *= k;
+    }
+  }
+  /* A vertex the falloff has emptied belongs to the trunk — it was only ever on
+   * an arm because the best-two comparison had thrown the scale away. Giving it
+   * back to the torso keeps every row normalisable. */
+  for (let i = 0; i < count; i++) {
+    let sum = 0;
+    for (let b = 0; b < nb; b++) sum += w[i * nb + b];
+    if (sum <= 1e-6) w[i * nb + BONE_INDEX.torso] = 1;
+  }
+  return w;
+}
+limitArmReach(dense, simplified.pos.length, simplified.pos);
+
+const posSmoothed = limitArmReach(
+  smoothWeights(simplified.pos.length, simplified.tris, nb, dense, 8),
+  simplified.pos.length, simplified.pos);
 const smoothed = new Float32Array(shaded.pos.length * nb);
 for (let i = 0; i < shaded.pos.length; i++) {
   const from = shaded.src[i] * nb, to = i * nb;
