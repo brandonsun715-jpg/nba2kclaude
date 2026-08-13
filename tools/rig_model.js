@@ -1465,10 +1465,125 @@ function limitArmReach(w, count, positions) {
   }
   return w;
 }
+/**
+ * Two bones may only SHARE a vertex near the joint between them.
+ *
+ * This is the one that draws the bulge, and it is a property of dual-quaternion
+ * skinning specifically. A vertex split between two bones is placed by the
+ * blended rotation, applied rigidly about the joint — so it stays at its full
+ * distance from that joint and swings through an arc of that radius. Linear
+ * blending collapses the same vertex toward the joint instead, which is the
+ * candy-wrapper artefact DQS was adopted to remove; the price is that a
+ * badly-placed blend now sticks OUT rather than caving in, and sticking out is
+ * the one the eye sees.
+ *
+ * Measured on the bake this replaces: jersey vertices **28 units from the
+ * shoulder joint** — a sixth of the figure's whole height — carried 27-37% of
+ * the upper arm. The arm swings about 150 degrees in a contest, so they swept a
+ * 28-unit arc and the vest ballooned out past the shoulder, which is exactly
+ * where it was reported.
+ *
+ * Near a joint, blending is what makes the joint bend and it has to stay.
+ * Far from it, a blend is a bone dragging geometry it has nothing to do with,
+ * whatever the distance-based weighting thought. So the blend fraction alone is
+ * faded out with distance from the shared joint, pushed into whichever bone
+ * already dominates — which bone owns what does not change, only how far the
+ * sharing is allowed to reach.
+ */
+function limitJointBlend(w, count, positions) {
+  /* Where two adjacent bones meet: the closest pair of their endpoints. Read
+   * off the bind skeleton rather than listed by hand, so a rig with different
+   * bones still gets the right joints. */
+  const joint = {};
+  for (const a of BONES) {
+    for (const b of BONES) {
+      if (a === b) continue;
+      let best = Infinity, pt = null;
+      for (const p of segs[a]) {
+        for (const q of segs[b]) {
+          const d = dist3(p, q);
+          if (d < best) { best = d; pt = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2, (p[2] + q[2]) / 2]; }
+        }
+      }
+      // Adjacent means their ends actually meet, not merely that both exist.
+      if (best < J.height * 0.05) joint[a + '|' + b] = pt;
+    }
+  }
+  const NEAR = J.height * 0.075, FAR = J.height * 0.14;
+  for (let i = 0; i < count; i++) {
+    const o = i * nb;
+    let b0 = -1, w0 = -1, b1 = -1, w1 = -1;
+    for (let b = 0; b < nb; b++) {
+      const v = w[o + b];
+      if (v > w0) { b1 = b0; w1 = w0; b0 = b; w0 = v; }
+      else if (v > w1) { b1 = b; w1 = v; }
+    }
+    if (b1 < 0 || w1 <= 1e-6) continue;
+    const j = joint[BONES[b0] + '|' + BONES[b1]];
+    if (!j) continue;
+    const p = positions[i];
+    const d = Math.hypot(p[0] - j[0], p[1] - j[1], p[2] - j[2]);
+    const t = (d - NEAR) / (FAR - NEAR);
+    if (t <= 0) continue;
+    const k = t >= 1 ? 0 : 1 - t * t * (3 - 2 * t);      // smoothstep, 1 -> 0
+    // Fade the sharing itself: the lesser bone gives its ground to the greater.
+    w[o + b0] += w[o + b1] * (1 - k);
+    w[o + b1] *= k;
+  }
+  return w;
+}
+
+/**
+ * A sleeveless vest is trunk clothing, and only the shoulder of it is not.
+ *
+ * Distance to a bone cannot tell the vest's SIDE PANEL from the arm, because in
+ * the bind A-pose the arm lies flat against the ribs — the panel is about as
+ * far from the upper-arm bone as the arm's own far surface is. So it came out
+ * on the arm, and rotating the arm overhead swung a whole panel of jersey out
+ * past the shoulder. That is the bulge, and every distance-based gate tried on
+ * it either missed it or took the arm with it.
+ *
+ * The zone classification already knows the answer. This kit has no sleeve: its
+ * armhole is a hole, and what a real armhole does when you raise your arm is
+ * stay with the shirt while the arm slides through it. So jersey is trunk,
+ * except within a shoulder's radius of the joint where the cap genuinely has to
+ * ride up with the deltoid or the seam tears open.
+ *
+ * Distance is measured from the SHOULDER JOINT rather than from the bone: that
+ * is the point the arm rotates about, so it is the radius of the arc any
+ * vertex left on the arm will sweep, which is the thing being bounded.
+ */
+function limitGarmentToTrunk(w, count, positions, srcOf) {
+  const NEAR = J.height * 0.028, FAR = J.height * 0.072;
+  for (let i = 0; i < count; i++) {
+    if (zoneAt[srcOf[i]] !== ZONE.JERSEY) continue;
+    const p = positions[i];
+    for (const side of ['L', 'R']) {
+      const sh = J['shoulder' + side];
+      const d = Math.hypot(p[0] - sh[0], p[1] - sh[1], p[2] - sh[2]);
+      const t = (d - NEAR) / (FAR - NEAR);
+      if (t <= 0) continue;
+      const k = t >= 1 ? 0 : 1 - t * t * (3 - 2 * t);
+      for (const b of ['upperArm' + side, 'forearm' + side, 'hand' + side]) {
+        w[i * nb + BONE_INDEX[b]] *= k;
+      }
+    }
+  }
+  for (let i = 0; i < count; i++) {
+    let sum = 0;
+    for (let b = 0; b < nb; b++) sum += w[i * nb + b];
+    if (sum <= 1e-6) w[i * nb + BONE_INDEX.torso] = 1;
+  }
+  return w;
+}
+
 limitArmReach(dense, simplified.pos.length, simplified.pos);
 
-const posSmoothed = limitArmReach(
-  smoothWeights(simplified.pos.length, simplified.tris, nb, dense, 8),
+const posSmoothed = limitJointBlend(
+  limitGarmentToTrunk(
+    limitArmReach(smoothWeights(simplified.pos.length, simplified.tris, nb, dense, 8),
+                  simplified.pos.length, simplified.pos),
+    simplified.pos.length, simplified.pos, simplified.src),
   simplified.pos.length, simplified.pos);
 const smoothed = new Float32Array(shaded.pos.length * nb);
 for (let i = 0; i < shaded.pos.length; i++) {
