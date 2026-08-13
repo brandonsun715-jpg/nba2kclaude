@@ -164,9 +164,41 @@
    * almost fully, and a knee that never quite extends reads as a crouch that
    * will not finish. */
   const LEG_CAP = 0.99;
-  /* And how far past the tightest possible fold to stay, on the same argument
-   * from the other end. Just outside it, so the solver never has to push back. */
-  const FOLD_CAP = 1.06;
+  /* And the limit at the other end, which is an ANGLE rather than a distance.
+   *
+   * This used to be 1.06 times the difference between the two arm bones — the
+   * closest a bare two-bone hinge can put its end on its own root. That is
+   * geometry, not anatomy: it corresponds to 176 degrees of elbow flexion, an
+   * arm folded flat with the forearm lying along the upper arm. AAOS puts
+   * normal elbow flexion at about 150; the forearm stops against the biceps.
+   *
+   * The difference is not academic. Measured across every pose, seven of them
+   * sat at or near the old limit — all three layup finishes were pinned at
+   * exactly it — and at that fold the upper arm and forearm meshes occupy the
+   * same space and skin into one smooth lobe hanging off the shoulder. That is
+   * the balloon arm in the layup and the follow-through.
+   *
+   * Stated as the third side of a triangle with the two bones and the included
+   * angle the joint actually allows, so it retunes with the model.
+   *
+   * The knee has no counterpart here, and deliberately: measured across every
+   * pose the deepest knee is 141 degrees of flexion on a dunk's gather and
+   * everything else is under 129, against an AAOS normal of about 135 — so
+   * there is nothing to clamp. It would also be a number computed from
+   * BONE.shin, which currently means floor-to-knee rather than knee-to-ankle
+   * (see the stride stretch), so a limit written against it would be measuring
+   * the wrong bone.
+   */
+  const ELBOW_FLEX_MAX = 150 * Math.PI / 180;
+
+  /**
+   * How close a two-bone limb's end can get to its own root, given the tightest
+   * the joint between them actually bends: the law of cosines on the two bones
+   * and the angle left between them at full flexion.
+   */
+  function fold(a, b, flexMax) {
+    return Math.sqrt(a * a + b * b - 2 * a * b * Math.cos(Math.PI - flexMax));
+  }
 
   /* How far from the rim a sprinting drive can still take off for a layup, in
    * feet. A real drive leaves the floor outside the restricted area (4ft) and
@@ -473,7 +505,12 @@
         // expressed in the solver's single flat plane.
         footL: { x: 0, y: 0, pitch: 0, side: 0 },
         footR: { x: 0, y: 0, pitch: 0, side: 0 },
-        handL: { x: 0, y: 0 }, handR: { x: 0, y: 0 },
+        /* `side` nudges a wrist off the pose plane; `lat` and `elbowLat`
+         * place it outright, in skeleton units, positive toward the player's
+         * right. Null means "derive it from SPLAY and the tuck", which is what
+         * every pose except the shot does — see wristWidth(). */
+        handL: { x: 0, y: 0, side: 0, twist: 0, lat: null, elbowLat: null },
+        handR: { x: 0, y: 0, side: 0, twist: 0, lat: null, elbowLat: null },
         kneeL: { jx: 0, jy: 0, ex: 0, ey: 0 }, kneeR: { jx: 0, jy: 0, ex: 0, ey: 0 },
         elbowL: { jx: 0, jy: 0, ex: 0, ey: 0 }, elbowR: { jx: 0, jy: 0, ex: 0, ey: 0 }
       };
@@ -553,8 +590,9 @@
       const el = s < 0 ? p.elbowL : p.elbowR;
       const w = s * BONE.shoulderW;
       const lean = p.torsoLean * 0.45 + this.lean * 0.16;
-      posePoint(TMP_P0, f, el.ex, el.ey, w,
-                w * SPLAY.wrist * (1 - p.armTuck), lean,
+      // Through wristWidth, so this is the hand the renderer draws rather than
+      // a second guess at it — this answer is where the carried ball is put.
+      posePoint(TMP_P0, f, el.ex, el.ey, w, wristWidth(p, s), lean,
                 s * p.armRoll, -p.shoulderY * f.stretch);
       out.x = TMP_P0[0]; out.y = TMP_P0[1]; out.z = TMP_P0[2];
       return out;
@@ -1944,14 +1982,10 @@
       for (const arm of ARMS) {
         const el = arm.side < 0 ? p.elbowL : p.elbowR;
         const sfx = arm.side < 0 ? 'L' : 'R';
+        const hand = arm.side < 0 ? p.handL : p.handR;
         const w = arm.side * BONE.shoulderW;
         const roll = arm.side * p.armRoll;
         const pivot = -p.shoulderY * f.stretch;
-        // The elbows come in about half as far as the hands do, which is what
-        // a real player does carrying a ball in two hands: wrists together,
-        // elbows still out either side of it.
-        const tuckW = 1 - p.armTuck;
-        const tuckE = 1 - p.armTuck * 0.45;
 
         /* The third axis.
          *
@@ -1962,31 +1996,14 @@
          * shot, where the whole point is that the two hands are doing
          * DIFFERENT things — one under the ball, one on the side of it.
          *
-         * `side` is a per-hand lateral offset off the plane entirely, exactly
-         * the mechanism the feet already carry for the defensive slide. The
-         * elbow follows at a fraction of it so the forearm swings across
-         * rather than the wrist detaching from it. */
-        const hand = arm.side < 0 ? p.handL : p.handR;
-        const out = hand.side || 0;
-        /* A hand may reach the centreline. It may not cross to the far side.
-         *
-         * Tuck and `side` both pull inward, and nothing stopped them summing
-         * past zero — so with both spent on the same shot the left hand came
-         * out right of centre and the right hand left of it, forearms folded
-         * horizontally into an X across the face for the whole motion. It
-         * reads as broken because it IS anatomically impossible, not because
-         * the numbers were merely large.
-         *
-         * Clamped here rather than by tuning each pose down, because every
-         * pose that ever wants tuck and side together would otherwise have to
-         * rediscover the same limit, and the one that forgets ships the X. A
-         * small allowance past centre stays, since a real guide hand does
-         * cross slightly onto the ball. */
-        const cross = BONE.shoulderW * 0.14;
-        const keep = (lat) => (arm.side < 0 ? Math.min(lat, cross) : Math.max(lat, -cross));
+         * wristWidth/elbowWidth answer where across the body each joint goes:
+         * a nudge off the plane for most poses, an outright placement for the
+         * ones (the shot) that have to hold two hands a measured distance
+         * apart. Both live outside draw() so handAt() and the reach cap read
+         * the same answer the renderer draws. */
         posePoint(A, f, 0, p.shoulderY, 0, w, torsoLean);
-        posePoint(B, f, el.jx, el.jy, w, keep(w * SPLAY.elbow * tuckE + out * 0.42), torsoLean, roll, pivot);
-        posePoint(D, f, el.ex, el.ey, w, keep(w * SPLAY.wrist * tuckW + out), torsoLean, roll, pivot);
+        posePoint(B, f, el.jx, el.jy, w, elbowWidth(p, arm.side), torsoLean, roll, pivot);
+        posePoint(D, f, el.ex, el.ey, w, wristWidth(p, arm.side), torsoLean, roll, pivot);
 
         // The solver stops at the wrist; the hand carries on the way the
         // forearm was already pointing.
@@ -2365,6 +2382,12 @@
       /* Per-hand lateral offset, off the pose plane. Zero for everything that
        * wants the old mirrored behaviour; the shot and the carry set it. */
       let hlSide = 0, hrSide = 0;
+      /* Outright lateral placement for a wrist and its elbow, in skeleton units
+       * across the body. Null leaves it to SPLAY and the tuck. A pose that has
+       * to hold two hands a MEASURED distance apart — a ball's width — cannot
+       * get there by nudging, because the tuck and the roll both move the pair
+       * together and neither of them knows how big a ball is. */
+      let hlLat = null, hrLat = null, elLatL = null, elLatR = null;
       /* Palm rotation about the forearm, mirrored per side. The resting value
        * turns the palms in toward the thighs, which is where a hanging arm
        * actually leaves them; poses that need a different palm say so. */
@@ -2662,7 +2685,6 @@
         const set = U.ease.outCubic(U.clamp01(v / 0.55));
         const ext = U.ease.inOutSine(U.clamp01((v - 0.55) / 0.45));
 
-        const setRX = U.lerp(0.13, 0.24, set);
         /* The ball rides ABOVE the brow, not across the eyes.
          *
          * The set used to finish with the hands 0.16 above the shoulder, which
@@ -2676,28 +2698,79 @@
          * has to stay inside one ball, and the suite checks it — is a pure
          * translation and cannot change. */
         const setRY = U.lerp(reachY(shoulderY, 0.60), upY(shoulderY, 0.50), set);
-        const setLX = U.lerp(0.13, 0.21, set);
         const setLY = U.lerp(reachY(shoulderY, 0.60), upY(shoulderY, 0.45), set);
+        /* The ball ARCS up to the set point; it does not travel there in a
+         * straight line.
+         *
+         * Both hands start well below the shoulder and finish well above it, so
+         * halfway up they are level with it — and a wrist that passes its own
+         * shoulder at the shoulder's own fore/aft is a wrist passing THROUGH
+         * the joint. Measured, both elbows folded to 142 degrees a tenth of the
+         * way into the meter and unfolded again over the next three tenths,
+         * which draws as the arms collapsing into the chest and springing back
+         * out — a shrug in the middle of a jump shot. The dunk's wind-up
+         * already carries a note about this exact failure; the jumper had it
+         * too and nothing was measuring the fold.
+         *
+         * The bulge is a half-sine, so it is largest at the halfway point where
+         * the hands have the least room and exactly zero at both ends, which
+         * leaves the carry position and the set point untouched. */
+        const swing = Math.sin(set * Math.PI) * 0.11;
+        const setRX = U.lerp(0.13, 0.24, set) + swing;
+        const setLX = U.lerp(0.13, 0.21, set) + swing;
 
         hrX = shR + U.lerp(setRX, 0.15, ext);
         hrY = U.lerp(setRY, upY(shoulderY, 0.87), ext);
-        hlX = shL + U.lerp(setLX, 0.17, ext);
-        hlY = U.lerp(setLY, upY(shoulderY, 0.33), ext);
+        /* The guide hand comes off the ball; it does not collapse onto the
+         * shoulder. These used to finish 0.17 in front and a third of a reach
+         * up, which puts the wrist 43% of an arm from its own shoulder — 141
+         * degrees of elbow flexion, inside the anatomical limit only because
+         * the limit is 150. At that fold the upper arm and forearm meshes sit
+         * inside each other and the whole arm draws as a smooth blue lobe with
+         * the hand appearing at the chin. Held out at about three fifths of a
+         * reach instead, which is an arm with an elbow in it. */
+        hlX = shL + U.lerp(setLX, 0.22, ext);
+        hlY = U.lerp(setLY, upY(shoulderY, 0.50), ext);
 
-        // Hands together on the ball through the set, then opening back out a
-        // little as the shooting arm goes up over the shooting-side eye rather
-        // than over the middle of the head.
-        /* Now that a hand can leave the plane on its own, the shape stops
-         * being a mirror. The guide hand comes ACROSS onto the side of the
-         * ball; the shooting hand stays just inside its own shoulder so the
-         * ball finishes over the shooting eyebrow rather than over the middle
-         * of the head. armTuck used to have to do this job by pulling BOTH
-         * hands toward the centreline, which is what put them in front of the
-         * face — with a real lateral axis it barely has to do anything. */
-        hlSide = U.lerp(0.03, 0.085, set) * (1 - ext * 0.30);
-        hrSide = U.lerp(-0.01, -0.035, set);
-        armTuck = U.lerp(0.28, 0.42, set) * (1 - ext * 0.42);
-        armRoll = U.lerp(0.08, 0.16, set);
+        /* Two hands on one ball — and a ball is a measured object, not a matter
+         * of taste.
+         *
+         * This pose used to close the hands with `armTuck`, borrowed from the
+         * dribble carry. draw() applies the tuck HARDER to the wrists than to
+         * the elbows, which is right for a carry (wrists together on the ball
+         * at the waist, elbows still out either side) and exactly backwards for
+         * a shot, where the hands have to stay a ball apart while the shooting
+         * elbow comes in underneath. Measured on the shipped build, the two
+         * wrists closed to 0.19 of a ball's width at the top of the set: the
+         * hands were inside each other and inside the ball, the guide hand had
+         * crossed the nose, and the guide forearm was drawn 12% over length
+         * getting there. That is the crumpled mass by the face.
+         *
+         * `armRoll` was making it worse from the other side. It is a rotation
+         * about SHOULDER height, so it swings a hanging arm out but a raised
+         * one IN — and a jump shot is the pose where both hands are highest.
+         *
+         * So the shot names where its hands go instead of nudging them, and it
+         * names it in ball radii. The two hands are not symmetric about the
+         * ball: the shooting hand slides UNDER it (near its centre-line) while
+         * the guide hand stays on the SIDE of it, a radius away. Before the set
+         * they are both on the sides, carrying it up, so they start a full ball
+         * apart and close to about half of one. */
+        const ballR = C.BALL_RADIUS / this.bodyScale;
+        const ballC = BONE.shoulderW * U.lerp(0.06, 0.30, set);
+        const shootOff = ballR * U.lerp(0.92, 0.10, set);
+        const guideOff = ballR * U.lerp(0.92, 0.98, set);
+        // Through the extension the ball leaves: the shooting hand finishes up
+        // over its own shoulder, the guide hand falls back under its own.
+        hlLat = U.lerp(ballC - guideOff, -BONE.shoulderW * 0.62, ext);
+        hrLat = U.lerp(ballC + shootOff, BONE.shoulderW * 0.86, ext);
+        /* The shooting elbow travels under the ball while the guide elbow stays
+         * out on its own side. That is the one shape a tuck cannot make, since
+         * a tuck moves both arms by the same fraction. */
+        elLatL = -BONE.shoulderW * U.lerp(0.88, 1.02, ext);
+        elLatR = BONE.shoulderW * U.lerp(U.lerp(0.95, 0.52, set), 0.86, ext);
+        armTuck = 0;
+        armRoll = 0;
 
         if (this.jumping) {
           flX = -BONE.hipW + 0.02; frX = BONE.hipW + 0.02;
@@ -2752,12 +2825,25 @@
          * the old timing the guide hand stayed parked on a ball that had
          * already gone for the first half of the release. It comes off with
          * the shot. */
-        hlX = shL + U.lerp(0.17, 0.21, relax);
-        hlY = upY(shoulderY, U.lerp(0.33, 0.12, snap));
-        hlSide = U.lerp(0.08, -0.04, snap);
-        hrSide = -0.03;
-        armTuck = 0.24 * (1 - relax * 0.35);
-        armRoll = 0.16;
+        /* Picks up exactly where the extension left off and then falls, out in
+         * front, to about chest height — an arm at rather more than half its
+         * reach the whole way. It used to end at 0.12 of a reach above the
+         * shoulder and 0.21 in front, which is the wrist almost on the
+         * shoulder: the guide arm finished the shot folded flat with the hand
+         * back up beside the chin. */
+        hlX = shL + U.lerp(0.22, 0.30, snap);
+        hlY = U.lerp(upY(shoulderY, 0.50), reachY(shoulderY, 0.26), snap);
+        /* Laterally this starts EXACTLY where the extension left off — the same
+         * two numbers the jumper branch finishes on at ext = 1 — and then opens
+         * from there. The seam used to jump: the shot ended with the pair 1.19
+         * ball-widths apart and the follow-through opened at 1.65 on its first
+         * frame, which is both hands snapping sideways in a single tick. */
+        hlLat = -BONE.shoulderW * U.lerp(0.62, 0.88, snap);
+        hrLat = BONE.shoulderW * U.lerp(0.86, 0.92, snap);
+        elLatL = -BONE.shoulderW * U.lerp(1.02, 1.08, snap);
+        elLatR = BONE.shoulderW * U.lerp(0.86, 0.94, snap);
+        armTuck = 0;
+        armRoll = 0;
         // Toe point — the plant foot stretches down through extension.
         flX = -BONE.hipW; frX = BONE.hipW;
         flY = frY = this.jumping ? -0.09 - snap * 0.03 : U.lerp(-0.05, 0.01, k);
@@ -2892,7 +2978,15 @@
          * same fault at the other end of the range. The lateral splay is what
          * carries this arm out; the plane only has to keep it reachable. */
         hlY = U.lerp(reachY(shoulderY, 0.43), reachY(shoulderY, 0.23), cock) + land * 0.24;
-        hlSide = U.lerp(0.14, 0.30, cock) * (1 - land * 0.7);
+        /* `side` is measured along the player's RIGHT, so a positive value on
+         * the LEFT hand pulls it ACROSS the body. This ran to +0.30 — half a
+         * shoulder width past the centreline — and keepInboard() then pinned
+         * the hand on the midline for the whole flush. The free arm was folded
+         * across the chest rather than held out as the counterweight described
+         * above, and the forearm was drawn up to 14% over its own length
+         * getting there. Placed outright now, out on its own side. */
+        hlLat = -BONE.shoulderW * U.lerp(1.06, 1.34, cock) * (1 - land * 0.42);
+        elLatL = -BONE.shoulderW * U.lerp(1.02, 1.16, cock) * (1 - land * 0.30);
         armRoll = 0;
         armTuck = 0;
 
@@ -2988,6 +3082,8 @@
       p.footL.pitch = pitchL; p.footL.side = sideL;
       p.footR.pitch = pitchR; p.footR.side = sideR;
       p.handL.side = hlSide; p.handR.side = hrSide;
+      p.handL.lat = hlLat; p.handR.lat = hrLat;
+      p.handL.elbowLat = elLatL; p.handR.elbowLat = elLatR;
       p.handL.twist = hlTwist; p.handR.twist = hrTwist;
 
       /* Nothing may ask an arm for more than the arm has.
@@ -3013,13 +3109,14 @@
        * be inside reach in-plane and outside it in the round — which is exactly
        * how a pose passes an in-plane clamp check and still draws straight. */
       const armReach = (BONE.upperArm + BONE.forearm) * ARM_CAP;
-      /* An arm has a shortest length as well as a longest one: folded right up,
-       * the hand still cannot get closer to the shoulder than the difference
-       * between the two bones. A target inside that is the wrist trying to pass
-       * THROUGH the shoulder joint — the euro-step layup asked for 0.062
-       * against a fold of 0.073 — and the solver deals with it by shoving the
-       * hand back out, which is a pose nobody asked for. */
-      const armFold = Math.abs(BONE.upperArm - BONE.forearm) * FOLD_CAP;
+      /* An arm has a shortest length as well as a longest one, and it is set by
+       * the elbow rather than by the two bones: at full flexion the forearm
+       * stops against the biceps, not against the upper arm's far end. A target
+       * inside that is a pose asking for an arm folded flat — the euro-step
+       * layup asked for 0.062 against a bone-difference minimum of 0.073 and
+       * an anatomical one of 0.173 — and what it draws is the two limb meshes
+       * inside each other, one smooth lobe with no elbow anywhere in it. */
+      const armFold = fold(BONE.upperArm, BONE.forearm, ELBOW_FLEX_MAX);
       const capHand = (hx, hy, shx, lateral) => {
         const dx = hx - shx, dy = hy - shoulderY;
         const d = Math.hypot(dx, dy, lateral);
@@ -3033,14 +3130,26 @@
           return [shx + dx * s, shoulderY + dy * s];
         }
         if (d < armFold) {
-          const s = armFold / d;
+          /* Same shape as the branch above, and for the same reason: the
+           * lateral part is fixed by draw() and cannot be scaled, so the plane
+           * components have to make up the whole of the difference. Scaling all
+           * three (which is what this used to do) leaves the result short of
+           * the fold by exactly the lateral it ignored — measured on the dunk's
+           * rise, a request 4% inside the limit came out of the cap still 4%
+           * inside it. If the lateral alone already clears the fold there is
+           * nothing left for the plane to do. */
+          const flat = Math.hypot(dx, dy);
+          const room = Math.sqrt(Math.max(0, armFold * armFold - lateral * lateral));
+          if (flat < 1e-6) return [shx + room, shoulderY];
+          const s = room / flat;
           return [shx + dx * s, shoulderY + dy * s];
         }
         return null;
       };
-      // The wrist's lateral offset from its own shoulder, mirroring draw().
-      const latL = -BONE.shoulderW * (SPLAY.wrist * (1 - armTuck) - 1) + hlSide;
-      const latR = BONE.shoulderW * (SPLAY.wrist * (1 - armTuck) - 1) + hrSide;
+      // The wrist's lateral offset from its own shoulder. Through the same
+      // function draw() places it with, so the two cannot drift apart.
+      const latL = wristWidth(p, -1) + BONE.shoulderW;
+      const latR = wristWidth(p, 1) - BONE.shoulderW;
       const cl = capHand(hlX, hlY, shL, latL);
       if (cl) { hlX = cl[0]; hlY = cl[1]; }
       const cr = capHand(hrX, hrY, shR, latR);
@@ -3103,8 +3212,34 @@
        * as a real elbow travels through a jump shot. */
       solveIK2(-BONE.hipW, hipY, flX, flY, BONE.thigh, BONE.shin, -1, p.kneeL);
       solveIK2(BONE.hipW, hipY, frX, frY, BONE.thigh, BONE.shin, -1, p.kneeR);
-      solveIK2(-BONE.shoulderW, shoulderY, hlX, hlY, BONE.upperArm, BONE.forearm, 1, p.elbowL);
-      solveIK2(BONE.shoulderW, shoulderY, hrX, hrY, BONE.upperArm, BONE.forearm, 1, p.elbowR);
+      /* An arm solves in a plane and then draw() moves its joints sideways, so
+       * the lateral travel is length the DRAWN bone has to find from somewhere
+       * — and setBone finds it by stretching the mesh along the bone. Hand the
+       * solver the projected lengths instead: what is left of each bone once
+       * its own lateral travel is taken out. Then the drawn limb comes out at
+       * exactly the length the model was built with.
+       *
+       * Only for the poses that place their joints outright, because only they
+       * know the lateral before the solve runs. Everywhere else the offsets are
+       * a couple of hundredths and the roll — which is applied after, inside
+       * posePoint — would make the projection a guess rather than a fact.
+       *
+       * The three-dimensional reach cap above already guarantees these are
+       * reachable: if hypot(fwd, up, lat) fits inside upperArm + forearm, then
+       * the flat part fits inside the two projected lengths. */
+      const inPlane = (bone, dLat) => Math.sqrt(Math.max(bone * bone * 0.09, bone * bone - dLat * dLat));
+      let upL = BONE.upperArm, foreL = BONE.forearm;
+      let upR = BONE.upperArm, foreR = BONE.forearm;
+      if (hlLat != null && elLatL != null) {
+        upL = inPlane(BONE.upperArm, elLatL + BONE.shoulderW);
+        foreL = inPlane(BONE.forearm, hlLat - elLatL);
+      }
+      if (hrLat != null && elLatR != null) {
+        upR = inPlane(BONE.upperArm, elLatR - BONE.shoulderW);
+        foreR = inPlane(BONE.forearm, hrLat - elLatR);
+      }
+      solveIK2(-BONE.shoulderW, shoulderY, hlX, hlY, upL, foreL, 1, p.elbowL);
+      solveIK2(BONE.shoulderW, shoulderY, hrX, hrY, upR, foreR, 1, p.elbowR);
     }
   }
 
@@ -3157,6 +3292,56 @@
     out[1] = f.y + (fwd * f.fy + side * f.ry) * f.s * f.squash;
     out[2] = f.z + up * f.s;
     return out;
+  }
+
+  /**
+   * How far past the body's centreline a hand may come.
+   *
+   * Tuck and `side` both pull inward and nothing stopped them summing past
+   * zero, so with both spent on the same shot the left hand came out right of
+   * centre and the right hand left of it — forearms folded into an X across the
+   * face for the whole motion. It reads as broken because it IS anatomically
+   * impossible, not because the numbers were merely large. A small allowance
+   * past centre stays, since a real guide hand does cross slightly onto the
+   * ball.
+   */
+  function keepInboard(side, lat) {
+    const cross = BONE.shoulderW * 0.14;
+    return side < 0 ? Math.min(lat, cross) : Math.max(lat, -cross);
+  }
+
+  /**
+   * Where an arm's wrist sits across the body — the lateral width draw() hands
+   * to posePoint, in skeleton units, positive toward the player's right.
+   *
+   * This lived in three places (draw(), handAt() and the reach cap) and two of
+   * the three disagreed with the one that draws: handAt() dropped the per-hand
+   * lateral offset entirely, so the carried ball was placed beside the hand
+   * holding it, and the cap dropped it as well, so a hand could be capped
+   * against a lateral it was never going to be drawn at. A number that decides
+   * where a limb goes can only have one definition, or the checks measure a
+   * body the renderer never draws.
+   *
+   * @param {object} p a pose
+   * @param {number} side -1 for the left arm, +1 for the right
+   */
+  function wristWidth(p, side) {
+    const hand = side < 0 ? p.handL : p.handR;
+    if (hand.lat != null) return hand.lat;
+    return keepInboard(side,
+      side * BONE.shoulderW * SPLAY.wrist * (1 - p.armTuck) + (hand.side || 0));
+  }
+
+  /**
+   * The same for the elbow, which comes in about half as far as the hand does —
+   * what a real player does carrying a ball in two hands: wrists together,
+   * elbows still out either side of it.
+   */
+  function elbowWidth(p, side) {
+    const hand = side < 0 ? p.handL : p.handR;
+    if (hand.elbowLat != null) return hand.elbowLat;
+    return keepInboard(side,
+      side * BONE.shoulderW * SPLAY.elbow * (1 - p.armTuck * 0.45) + (hand.side || 0) * 0.42);
   }
 
   /**
@@ -3371,6 +3556,12 @@
    * real anatomical proportions rather than trusting the constants by eye. */
   Player.BONE = BONE;
   Player.GIRTH = GIRTH;
+  /* Exposed for the same reason: where a wrist and elbow sit across the body is
+   * the one part of the arm the pose solver never sees, so a check that
+   * re-derives it is checking its own arithmetic. These are the functions
+   * draw() places the joints with. */
+  Player.wristWidth = wristWidth;
+  Player.elbowWidth = elbowWidth;
   Player.RATING_KEYS = RATING_KEYS;
   Player.TENDENCY_KEYS = TENDENCY_KEYS;
   Player.computeOverall = computeOverall;

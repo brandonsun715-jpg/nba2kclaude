@@ -456,6 +456,32 @@ function gatePenalty(name, p, J, seg) {
     if (inboard > 0) pen += inboard * inboard / Math.max(1e-6, shoulderX) * 11.5;
     const above = p[2] - J.shoulderL[2];
     if (above > 0) pen += above * 4.0;
+    /* And nothing hanging UNDER the armpit.
+     *
+     * Between the two gates above there was a gap the size of a ribcage. The
+     * quadratic one holds the CHEST, measured across the body; the one above
+     * holds everything over the shoulder. Neither says anything about the flank
+     * — the side of the trunk, level with the ribs and a shade inboard of the
+     * shoulder — and that is where the two candidate bones are hardest to tell
+     * apart: the torso bone is a stick on the midline about eighteen units
+     * away, and the upper arm passes down the outside of the ribs at about
+     * eighteen units as well, so inverse-square weighting split the flank
+     * nearly evenly between them.
+     *
+     * Measured on the bake this replaces: 88 jersey vertices between 0.73 and
+     * 0.78 of stature carried a mean 41% upper-arm weight and a worst of 63%.
+     * The upper arm swings about 150 degrees from bind in a contest or a jump
+     * shot, so that whole panel of vest went with it — both arms overhead drew
+     * two blue wings the size of the torso hanging off the ribs, which is the
+     * single most deformed thing the figure did.
+     *
+     * Linear in how far below the shoulder the vertex sits, and gated on being
+     * inboard at all, so the deltoid cap right at the joint is barely touched
+     * (it needs to stay shared, or the shoulder tears open) while the flank a
+     * few units down is decisively the trunk's. Nothing outboard of the
+     * shoulder is affected, which is the arm itself. */
+    const under = J.shoulderL[2] - p[2];
+    if (under > 0 && inboard > 0) pen += under * 2.5;
   } else if (/^(thigh|shin|foot)/.test(name)) {
     // Legs own only what lies below the hip. No midline gate here: the inner
     // face of the shorts has to travel with the leg it wraps, and holding it

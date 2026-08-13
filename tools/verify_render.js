@@ -2340,23 +2340,56 @@ console.log('\n[25] the jump shot is a jump shot');
     var REACH = BONE.upperArm + BONE.forearm;
     var BALL = C.BALL_RADIUS * 2;
 
-    /* Where a wrist ends up in the world, worked out here rather than asked
-     * of the player, so this measures the same way on a build that has no
-     * notion of drawing the two hands together. Mirrors what draw() does: the
-     * pose plane gives forward and up, the lateral offset is a constant per
-     * side, and the roll turns the pair about shoulder height. */
-    function wristOf(p, side) {
+    /* Where a wrist and its elbow end up in the world.
+     *
+     * The lateral part comes from BB.Player.wristWidth — the function draw()
+     * itself places the joint with — rather than being re-derived here. The
+     * previous version of this probe rebuilt the formula from armTuck and the
+     * splay and quietly left out the per-hand offset, so it was measuring a
+     * body the renderer never drew: it reported the hands a comfortable
+     * distance apart while the build had them at 0.19 of a ball's width, inside
+     * each other and inside the ball. A check that re-derives what it is
+     * checking is checking its own arithmetic. */
+    function jointOf(p, side, lx, ly, width) {
       var w = side * BONE.shoulderW;
-      var el = side < 0 ? p.elbowL : p.elbowR;
-      var width = w * 1.02 * (1 - (p.armTuck || 0));
       var roll = side * (p.armRoll || 0);
       var rollUp = -p.shoulderY;
-      var dUp = -el.ey - rollUp;
+      var dUp = -ly - rollUp;
       var up = rollUp + dUp * Math.cos(roll);
       var lat = width - dUp * Math.sin(roll);
-      var fwd = (el.ex - w) + up * (p.torsoLean * 0.45);
+      var fwd = (lx - w) + up * (p.torsoLean * 0.45);
       var s = pl.bodyScale;
       return { fwd: fwd * s, lat: lat * s, up: up * s };
+    }
+    function wristOf(p, side) {
+      var el = side < 0 ? p.elbowL : p.elbowR;
+      return jointOf(p, side, el.ex, el.ey, BB.Player.wristWidth(p, side));
+    }
+    function elbowOf(p, side) {
+      var el = side < 0 ? p.elbowL : p.elbowR;
+      return jointOf(p, side, el.jx, el.jy, BB.Player.elbowWidth(p, side));
+    }
+    function shoulderOf(p, side) {
+      var s = pl.bodyScale, up = -p.shoulderY;
+      return { fwd: up * (p.torsoLean * 0.45) * s, lat: side * BONE.shoulderW * s, up: up * s };
+    }
+    function span(a, b) { return Math.hypot(a.fwd - b.fwd, a.lat - b.lat, a.up - b.up); }
+
+    /* How long each arm bone is actually DRAWN, against the bone it is drawn
+     * from. The solver works in a flat plane and draw() moves the joints
+     * sideways afterwards, so any lateral travel the solver never saw is length
+     * the drawn limb has to find from somewhere — and setBone finds it by
+     * stretching the mesh along the bone. */
+    function stretch(p) {
+      var w = 0;
+      for (var i = 0; i < 2; i++) {
+        var side = i ? 1 : -1;
+        var sh = shoulderOf(p, side), eb = elbowOf(p, side), wr = wristOf(p, side);
+        var s = pl.bodyScale;
+        w = Math.max(w, Math.abs(span(sh, eb) / (BONE.upperArm * s) - 1));
+        w = Math.max(w, Math.abs(span(eb, wr) / (BONE.forearm * s) - 1));
+      }
+      return w;
     }
 
     function sample() {
@@ -2369,7 +2402,8 @@ console.log('\n[25] the jump shot is a jump shot');
         wristUp: -(p.elbowR.ey - p.shoulderY),
         clamp: Math.max(Math.hypot(p.elbowR.ex - p.handR.x, p.elbowR.ey - p.handR.y),
                         Math.hypot(p.elbowL.ex - p.handL.x, p.elbowL.ey - p.handL.y)),
-        gap: Math.hypot(a.fwd - b.fwd, a.lat - b.lat, a.up - b.up),
+        gap: span(a, b),
+        stretch: stretch(p),
         wristZ: -p.elbowR.ey * pl.bodyScale,
         crown: (-p.headY + BONE.headR) * pl.bodyScale
       };
@@ -2403,6 +2437,13 @@ console.log('\n[25] the jump shot is a jump shot');
     return {
       ball: BALL, reach: REACH,
       gapThroughSet: worst(meter.slice(5, 14), function (s) { return s.gap; }),
+      gapFloor: best(gather.concat(meter.slice(0, 15)), function (s) { return s.gap; }),
+      // How far the separation moves ACROSS an action boundary — the one frame
+      // no per-action check can see, because the two sides of it are sampled in
+      // different loops against differently-tuned poses.
+      seamStep: Math.max(Math.abs(meter[0].gap - gather[gather.length - 1].gap),
+                         Math.abs(release[0].gap - meter[meter.length - 1].gap)),
+      worstStretch: worst(gather.concat(shot), function (s) { return s.stretch; }),
       setElbowBelowWrist: set.wristUp - set.elbowUp,
       setForearmTilt: Math.atan2(Math.abs(set.wristFwd - set.elbowFwd),
                                  Math.max(1e-6, set.wristUp - set.elbowUp)) * 57.3,
@@ -2424,6 +2465,34 @@ console.log('\n[25] the jump shot is a jump shot');
   check('both hands stay on the ball through the set',
         o.gapThroughSet < o.ball * 0.9,
         'hands were ' + (o.gapThroughSet / o.ball).toFixed(2) + ' ball-widths apart at worst');
+  /* And the other end of it, which is the half this check was missing.
+   *
+   * It asserted a ceiling only, so hands at ZERO separation passed — and that
+   * is close to what shipped: the set closed them to 0.19 of a ball's width,
+   * two hands and two forearms interpenetrating each other and the ball they
+   * were meant to be holding, right in front of the face. A ball has a width
+   * and two hands on it cannot be closer together than a fraction of it. */
+  check('and are never closer together than the ball is wide',
+        o.gapFloor > o.ball * 0.45,
+        'hands closed to ' + ((o.gapFloor || 0) / o.ball).toFixed(2) + ' ball-widths');
+  /* The separation is allowed to change — the shooting hand slides under the
+   * ball at the set, the guide hand comes off at the release — but it has to
+   * travel there. A gather, a rise and a follow-through are three separately
+   * tuned poses played back to back, and nothing checked that they agreed at
+   * the joins: the rise finished with the hands 1.19 ball-widths apart and the
+   * follow-through opened at 1.65 on its very first frame, which is both hands
+   * snapping outward in a single tick. */
+  check('and hand off between the gather, the rise and the follow-through',
+        o.seamStep < o.ball * 0.20,
+        'separation stepped ' + ((o.seamStep || 0) / o.ball).toFixed(2) +
+        ' ball-widths across an action boundary');
+  /* The drawn arm against the modelled arm. The solver never sees the lateral
+   * axis, so a pose that carries a hand across the body pays for it in mesh:
+   * the guide forearm was drawn 12% over length through every set, and the free
+   * arm on a dunk 14%. */
+  check('and neither arm is drawn longer than the arm actually is',
+        o.worstStretch < 0.06,
+        'worst drawn bone was ' + (((o.worstStretch || 0)) * 100).toFixed(1) + '% off its own length');
   /* The one thing every coach says: elbow under the ball. In this rig that is
    * a forearm standing near vertical with the elbow well below the wrist. */
   check('the shooting elbow is under the ball at the set point',
@@ -3963,7 +4032,12 @@ console.log('\n[37] a dunk is decided by the body, not a dice roll');
           clamp: Math.max(
             Math.hypot(q.elbowR.ex - q.handR.x, q.elbowR.ey - q.handR.y),
             Math.hypot(q.elbowL.ex - q.handL.x, q.elbowL.ey - q.handL.y)),
-          side: Math.abs((q.handL.side || 0) - (q.handR.side || 0)),
+          /* How far outside its own shoulder the off arm's wrist is DRAWN, in
+           * shoulder-widths. It used to read handL.side — the nudge, not the
+           * result — and so it could not see that keepInboard() was pinning the
+           * hand on the centreline: the value it measured said "thrown a third
+           * of a unit wide" while the arm was drawn folded across the chest. */
+          off: Math.abs(BB.Player.wristWidth(q, -1)) / BB.Player.BONE.shoulderW,
           split: Math.abs(q.handL.y - q.handR.y),
           knee: -q.footL.y,
           legSplit: Math.abs(q.footL.y - q.footR.y),
@@ -3991,7 +4065,7 @@ console.log('\n[37] a dunk is decided by the body, not a dice roll');
                    { x: jp.x, y: jp.y, z: 0 });
     jp.meter.value = 0.85; jp._updatePose(1 / 60);
     var jumper = {
-      side: Math.abs((jp.pose.handL.side || 0) - (jp.pose.handR.side || 0)),
+      off: Math.abs(BB.Player.wristWidth(jp.pose, -1)) / BB.Player.BONE.shoulderW,
       split: Math.abs(jp.pose.handL.y - jp.pose.handR.y),
       knee: -jp.pose.footL.y
     };
@@ -4074,12 +4148,12 @@ console.log('\n[37] a dunk is decided by the body, not a dice roll');
       flushNear: +least(flush, function (s) { return Math.min(s.dR, s.dL); }).toFixed(4),
       riseFar: +worst(rise, function (s) { return Math.max(s.dR, s.dL); }).toFixed(4),
       riseNear: +least(rise, function (s) { return Math.min(s.dR, s.dL); }).toFixed(4),
-      flushSide: +worst(flush, function (s) { return s.side; }).toFixed(3),
+      flushOff: +worst(flush, function (s) { return s.off; }).toFixed(3),
       flushSplit: +worst(flush, function (s) { return s.split; }).toFixed(3),
       flushTwist: +worst(flush, function (s) { return s.twist; }).toFixed(3),
       riseKnee: +worst(rise, function (s) { return s.knee; }).toFixed(3),
       riseLegSplit: +worst(rise, function (s) { return s.legSplit; }).toFixed(3),
-      jumper: { side: +jumper.side.toFixed(3), split: +jumper.split.toFixed(3),
+      jumper: { off: +jumper.off.toFixed(3), split: +jumper.split.toFixed(3),
                 knee: +jumper.knee.toFixed(3) },
       errGreen: errGreen, errBad: errBad,
       made: made, tries: tries, sawDunk: sawDunk, barEver: barEver,
@@ -4141,9 +4215,9 @@ console.log('\n[37] a dunk is decided by the body, not a dice roll');
    * thrown wide. Both halves have to be measurably true, and both have to
    * separate it from a jump shot, which is a two-handed pose by definition. */
   const jp = o.jumper || {};
-  check('the flush throws the off arm wide, which a jump shot never does',
-        o.flushSide > 0.2 && o.flushSide > jp.side * 2,
-        'dunk ' + o.flushSide + ' vs jumper ' + jp.side);
+  check('the flush throws the off arm outside its own shoulder, which a jump shot never does',
+        o.flushOff > 1.10 && jp.off < 0.95,
+        'dunk ' + o.flushOff + ' shoulder-widths out vs jumper ' + jp.off);
   check('and puts the two hands nowhere near each other',
         o.flushSplit > 0.35 && o.flushSplit > jp.split * 2,
         'dunk ' + o.flushSplit + ' vs jumper ' + jp.split);
@@ -4220,11 +4294,18 @@ console.log('\n[38] the replay shows the play that actually happened');
     pl.z = 0; pl.jumping = false; pl.action = null; pl.armRaise = 0;
     pl.giveBall(scene.ball);
     pl._beginShot();
+    /* The DRAWN lateral of the off hand, through wristWidth — the same value
+     * the renderer places it at. Reading the raw nudge field instead would
+     * miss the whole class of bug this check exists for: a pose can switch
+     * which field carries its lateral (the dunk moved from the nudge to an
+     * outright placement) and a recording that dropped the new one would still
+     * report a matching pair of zeroes. */
+    function offWide(p) { return Math.abs(BB.Player.wristWidth(p.pose, -1)); }
     var liveSide = 0, liveTuck = 0, liveLift = 0, dunked = pl.shotType === 'dunk';
     for (var f = 0; f < 300; f++) {
       if (frame()) break;
       if (pl.action === A.DUNK) {
-        liveSide = Math.max(liveSide, Math.abs(pl.pose.handL.side || 0));
+        liveSide = Math.max(liveSide, offWide(pl));
         liveTuck = Math.max(liveTuck, Math.abs(pl.pose.armTuck || 0));
         liveLift = Math.max(liveLift, pl.visualLift || 0);
       }
@@ -4238,7 +4319,7 @@ console.log('\n[38] the replay shows the play that actually happened');
       var frozen = frame();
       if (frozen) {
         played++;
-        seenSide = Math.max(seenSide, Math.abs(pl.pose.handL.side || 0));
+        seenSide = Math.max(seenSide, offWide(pl));
         seenLift = Math.max(seenLift, pl.visualLift || 0);
       } else if (played > 0) break;
     }
@@ -4263,8 +4344,14 @@ console.log('\n[38] the replay shows the play that actually happened');
      * palm roll — was never written into the replay buffer. The skeleton was
      * rebuilt correctly and then drawn square and flat, which is most obvious
      * on the clip the highlight system rates highest. */
+    /* Tight on purpose. The off arm has a resting lateral of about a shoulder
+     * width whatever the pose does, so a loose bound is satisfied by the arm
+     * simply existing: with the dunk's placement dropped from the recording the
+     * replayed hand still measures 0.21 against a live 0.28, which clears a
+     * 20% tolerance and fails a 10% one. The claim is that the replay draws the
+     * same arm, so it should be measured that way. */
     check('and the replay keeps the arm the dunk actually threw wide',
-          o.liveSide > 0.1 && o.seenSide > o.liveSide * 0.8,
+          o.liveSide > 0.1 && o.seenSide > o.liveSide * 0.9,
           'live ' + o.liveSide + ' vs replayed ' + o.seenSide);
     check('and keeps the hand up at the ring rather than under it',
           o.liveLift > 0.01 && o.seenLift > o.liveLift * 0.8,
@@ -4526,9 +4613,62 @@ console.log('\n[41] the body keeps its shape through every motion');
     var neckLo = 1e9, neckHi = -1e9, torsoLo = 1e9, torsoHi = -1e9;
     var statLo = 1e9, statHi = -1e9;
     var armClamp = 0, legClamp = 0, armWorst = '', legWorst = '';
+    var armStretch = 0, stretchWorst = '';
+    var elbowFlex = 0, flexWorst = '';
+
+    /* The tightest either elbow is bent, in degrees of flexion. Measured in
+     * three dimensions, since a hand carried across the body is further from
+     * its shoulder than the solver's plane says it is. */
+    function worstElbow(p) {
+      var f = 0;
+      for (var i = 0; i < 2; i++) {
+        var side = i ? 1 : -1;
+        var el = side < 0 ? p.elbowL : p.elbowR;
+        var lat = BB.Player.wristWidth(p, side) - side * BONE.shoulderW;
+        var d = Math.hypot(el.ex - side * BONE.shoulderW, el.ey - p.shoulderY, lat);
+        var c = U.clamp((BONE.upperArm * BONE.upperArm + BONE.forearm * BONE.forearm - d * d) /
+                        (2 * BONE.upperArm * BONE.forearm), -1, 1);
+        f = Math.max(f, 180 - Math.acos(c) * 57.3);
+      }
+      return f;
+    }
+
+    /* How long each arm bone comes out DRAWN, against the bone it is drawn
+     * from. The solver never sees the lateral axis — draw() moves the joints
+     * sideways after the solve — so a pose that carries a hand across the body
+     * is asking for a limb longer than the model has, and setBone answers by
+     * stretching the mesh along the bone rather than by complaining. The
+     * in-plane clamp measured above cannot see any of this: it is exactly zero
+     * on a pose whose forearm is drawn 14% over length. */
+    function drawnArms(p) {
+      var w = 0;
+      for (var i = 0; i < 2; i++) {
+        var side = i ? 1 : -1;
+        var el = side < 0 ? p.elbowL : p.elbowR;
+        var sw = side * BONE.shoulderW;
+        var roll = side * (p.armRoll || 0), rollUp = -p.shoulderY;
+        var at = function (lx, ly, width) {
+          var dUp = -ly - rollUp;
+          var up = rollUp + dUp * Math.cos(roll);
+          return { fwd: (lx - sw) + up * (p.torsoLean * 0.45),
+                   lat: width - dUp * Math.sin(roll), up: up };
+        };
+        var sh = { fwd: -p.shoulderY * (p.torsoLean * 0.45), lat: sw, up: -p.shoulderY };
+        var eb = at(el.jx, el.jy, BB.Player.elbowWidth(p, side));
+        var wr = at(el.ex, el.ey, BB.Player.wristWidth(p, side));
+        var d = function (a, b) { return Math.hypot(a.fwd - b.fwd, a.lat - b.lat, a.up - b.up); };
+        w = Math.max(w, Math.abs(d(sh, eb) / BONE.upperArm - 1),
+                        Math.abs(d(eb, wr) / BONE.forearm - 1));
+      }
+      return w;
+    }
 
     function sample(label) {
       var p = pl.pose;
+      var st = drawnArms(p);
+      if (st > armStretch) { armStretch = st; stretchWorst = label; }
+      var fx = worstElbow(p);
+      if (fx > elbowFlex) { elbowFlex = fx; flexWorst = label; }
       var neck = p.shoulderY - p.headY;
       var torso = p.hipY - p.shoulderY;
       var stat = -p.headY + BONE.headR;
@@ -4610,6 +4750,8 @@ console.log('\n[41] the body keeps its shape through every motion');
       torsoLo: torsoLo, torsoHi: torsoHi, torsoSpread: (torsoHi - torsoLo) / Math.max(1e-6, torsoLo),
       statLo: statLo, statHi: statHi, statSpread: (statHi - statLo) / Math.max(1e-6, statLo),
       armClamp: armClamp, armWorst: armWorst, legClamp: legClamp, legWorst: legWorst,
+      armStretch: armStretch, stretchWorst: stretchWorst,
+      elbowFlex: elbowFlex, flexWorst: flexWorst,
       pageErr: window.__pageErr || null
     };
   `, 'body');
@@ -4628,6 +4770,30 @@ console.log('\n[41] the body keeps its shape through every motion');
   check('and no pose asks that of a leg either',
         (o.legClamp == null ? 9 : o.legClamp) < 0.005,
         'worst shortfall ' + (o.legClamp || 0).toFixed(4) + ' in "' + (o.legWorst || '?') + '"');
+
+  /* The other half of the same question, and the half nothing was asking: the
+   * clamp above is measured in the solver's flat plane, and the lateral axis is
+   * added afterwards. Two poses were carrying a hand across the body far enough
+   * to draw the forearm 12-14% over its own length — the jump shot's guide arm
+   * and the dunk's free arm, both of them pinned on the centreline by the
+   * anti-crossing clamp and dragged there by a `side` value with the wrong
+   * sign. In the plane both measured a perfect zero. */
+  check('and no arm is DRAWN longer than the arm actually is',
+        (o.armStretch == null ? 9 : o.armStretch) < 0.06,
+        'worst drawn bone was ' + ((o.armStretch || 0) * 100).toFixed(1) +
+        '% off its own length in "' + (o.stretchWorst || '?') + '"');
+
+  /* And the joint at the other end of the same limb. A two-bone chain will
+   * happily fold until the two bones lie along each other, which is 176 degrees
+   * on this build; a real elbow stops at about 150 with the forearm against the
+   * biceps. Seven poses sat at or near the geometric limit, all three layup
+   * finishes exactly on it, and what that draws is the upper arm and the
+   * forearm occupying the same space — one smooth lobe hanging off the
+   * shoulder with no elbow visible anywhere in it. */
+  check('and no elbow folds tighter than an elbow folds',
+        (o.elbowFlex == null ? 999 : o.elbowFlex) < 152,
+        'tightest elbow was ' + (o.elbowFlex || 0).toFixed(0) +
+        ' degrees of flexion in "' + (o.flexWorst || '?') + '"');
 
   /* A neck is a bone. It used to carry the armRaise fudge, which stretched it
    * 22% on every shot, dunk and contest — and since headY also fed the model

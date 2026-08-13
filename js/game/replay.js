@@ -38,7 +38,7 @@
   const FRAMES = RATE * SECONDS;
   const MAX_PLAYERS = 10;
   const BALL_STRIDE = 6;
-  const PLAYER_STRIDE = 48;
+  const PLAYER_STRIDE = 52;
   const FRAME_STRIDE = BALL_STRIDE + MAX_PLAYERS * PLAYER_STRIDE;
 
   /* ----------------------------------------------------------- the timings
@@ -500,8 +500,27 @@
     a[o + 41] = s.handL.side || 0; a[o + 42] = s.handR.side || 0;
     a[o + 43] = s.handL.twist || 0; a[o + 44] = s.handR.twist || 0;
     a[o + 45] = p.visualLift || 0;
-    a[o + 46] = 0; a[o + 47] = 0;
+    /* Outright lateral placement, which the shot and the dunk use instead of
+     * `side` — so leaving it out would put a replayed jump shot's hands back
+     * where the tuck alone puts them, on top of each other in front of the
+     * face. That is the same omission this block was written to fix, one field
+     * later.
+     *
+     * These four are the only pose values that can be ABSENT rather than zero:
+     * null means "derive it from the splay and the tuck", and zero means "on
+     * the centreline", which are opposite instructions. NaN carries the null
+     * through a Float32Array, and it carries correctly through the blend too —
+     * lerping across a frame where the placement appears or disappears gives
+     * NaN, i.e. the derived path, which is the right answer for that frame. */
+    a[o + 46] = s.handL.lat == null ? NaN : s.handL.lat;
+    a[o + 47] = s.handR.lat == null ? NaN : s.handR.lat;
+    a[o + 48] = s.handL.elbowLat == null ? NaN : s.handL.elbowLat;
+    a[o + 49] = s.handR.elbowLat == null ? NaN : s.handR.elbowLat;
+    a[o + 50] = 0; a[o + 51] = 0;
   }
+
+  /** NaN back to null — see writePlayer. */
+  function orNull(v) { return v === v ? v : null; }
 
   function readPlayer(a, o, p) {
     const s = p.pose;
@@ -522,6 +541,8 @@
     s.handL.side = a[o + 41]; s.handR.side = a[o + 42];
     s.handL.twist = a[o + 43]; s.handR.twist = a[o + 44];
     p.visualLift = a[o + 45];
+    s.handL.lat = orNull(a[o + 46]); s.handR.lat = orNull(a[o + 47]);
+    s.handL.elbowLat = orNull(a[o + 48]); s.handR.elbowLat = orNull(a[o + 49]);
   }
 
   /** Same as readPlayer, blended between two frames. */
@@ -552,7 +573,7 @@
     s.handL.y = U.lerp(a[oA + 19], a[oB + 19], t);
     s.handR.x = U.lerp(a[oA + 20], a[oB + 20], t);
     s.handR.y = U.lerp(a[oA + 21], a[oB + 21], t);
-    for (let k = 22; k < 46; k++) TMP38[k] = U.lerp(a[oA + k], a[oB + k], t);
+    for (let k = 22; k < 50; k++) TMP38[k] = U.lerp(a[oA + k], a[oB + k], t);
     s.kneeL.jx = TMP38[22]; s.kneeL.jy = TMP38[23]; s.kneeL.ex = TMP38[24]; s.kneeL.ey = TMP38[25];
     s.kneeR.jx = TMP38[26]; s.kneeR.jy = TMP38[27]; s.kneeR.ex = TMP38[28]; s.kneeR.ey = TMP38[29];
     s.elbowL.jx = TMP38[30]; s.elbowL.jy = TMP38[31]; s.elbowL.ex = TMP38[32]; s.elbowL.ey = TMP38[33];
@@ -562,6 +583,8 @@
     s.handL.side = TMP38[41]; s.handR.side = TMP38[42];
     s.handL.twist = TMP38[43]; s.handR.twist = TMP38[44];
     p.visualLift = TMP38[45];
+    s.handL.lat = orNull(TMP38[46]); s.handR.lat = orNull(TMP38[47]);
+    s.handL.elbowLat = orNull(TMP38[48]); s.handR.elbowLat = orNull(TMP38[49]);
   }
 
   const TMP38 = new Float32Array(PLAYER_STRIDE);
