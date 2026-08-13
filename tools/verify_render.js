@@ -3405,7 +3405,9 @@ console.log('\n[30b] the head has a face on it');
     var qp = atob(M.buffers.pos), qs = atob(M.buffers.skin);
     var n = M.vertexCount, face = 0;
     var zLo = 1e9, zHi = -1e9, yLo = 1e9, yHi = -1e9, xAbs = 0;
-    var skullY = [1e9, -1e9];
+    var skullY = [1e9, -1e9], skullHalf = 0;
+    var faceV = [], skinBand = {};
+    var band = function (z) { return Math.round(z / H * 300); };
     for (var i = 0; i < n; i++) {
       var q0 = qp.charCodeAt(i * 6) | (qp.charCodeAt(i * 6 + 1) << 8);
       var q1 = qp.charCodeAt(i * 6 + 2) | (qp.charCodeAt(i * 6 + 3) << 8);
@@ -3416,26 +3418,64 @@ console.log('\n[30b] the head has a face on it');
       var zone = qs.charCodeAt(i * 4 + 3);
       if (zone === 5) {
         face++;
+        faceV.push([x, y, z]);
         if (z / H < zLo) zLo = z / H;
         if (z / H > zHi) zHi = z / H;
         if (y / H < yLo) yLo = y / H;
         if (y / H > yHi) yHi = y / H;
         if (Math.abs(x) / H > xAbs) xAbs = Math.abs(x) / H;
       }
-      if (zone === 0 && z / H > 0.90) {
-        if (y / H < skullY[0]) skullY[0] = y / H;
-        if (y / H > skullY[1]) skullY[1] = y / H;
+      if (zone === 0 && z / H > 0.88) {
+        // The frontmost skin at each height, so a feature can be compared with
+        // the face it is supposed to be lying on rather than with the whole head.
+        var b = band(z);
+        if (skinBand[b] == null || y < skinBand[b]) skinBand[b] = y;
+        if (z / H > 0.90) {
+          if (y / H < skullY[0]) skullY[0] = y / H;
+          if (y / H > skullY[1]) skullY[1] = y / H;
+          // How wide the skull actually is at face height, so "inside the head"
+          // can be judged against this head rather than against a constant.
+          if (Math.abs(x) / H > skullHalf) skullHalf = Math.abs(x) / H;
+        }
       }
+    }
+    /* Is every feature actually IN FRONT of the skin beside it? A patch laid
+     * on a curve that falls away faster than the real face does ends up behind
+     * it, and a buried feature is baked, counted and invisible. */
+    var minClear = 1e9, buriedZ = 0;
+    for (var k = 0; k < faceV.length; k++) {
+      var s = skinBand[band(faceV[k][2])];
+      if (s == null) continue;
+      var clear = (s - faceV[k][1]) / H;
+      if (clear < minClear) { minClear = clear; buriedZ = faceV[k][2] / H; }
     }
     return {
       face: face, zLo: zLo, zHi: zHi, yLo: yLo, yHi: yHi, xAbs: xAbs,
-      skullFront: skullY[0],
+      skullFront: skullY[0], skullHalf: skullHalf,
+      minClear: minClear < 1e8 ? minClear : null, buriedZ: buriedZ,
       pageErr: window.__pageErr || null
     };
   `, 'face');
   if (r.err) check('face probe ran', false, r.err);
   const o = r.out || {};
-  check('the head carries facial features', o.face > 40, o.face + ' vertices');
+  /* Enough geometry to be a face, without pinning the tessellation: the
+   * features are deliberately few-sided, because the figure they sit on is
+   * flat-faceted and a fourteen-segment ellipse reads as a smooth sticker from
+   * another model. Counting vertices at all is only a smoke test that the
+   * builder ran. */
+  check('the head carries facial features', o.face > 24, o.face + ' vertices');
+  /* THE one that was missing. The mouth used to be baked at the right height
+   * and the right size and buried INSIDE the head, because the ellipsoid the
+   * patches were laid on curves away from its pole far faster than this
+   * model's nearly flat face does. Five features went in and four came out,
+   * and every check here passed — they were all about where a feature sits,
+   * and none about whether it can be seen. */
+  check('and every one of them is in front of the skin beside it',
+        o.minClear != null && o.minClear > 0.0005,
+        'closest feature clears the local skin by ' +
+        ((o.minClear == null ? 0 : o.minClear) * 100).toFixed(3) +
+        '% of stature, at z/H ' + (o.buriedZ || 0).toFixed(3) +
+        (o.minClear != null && o.minClear <= 0 ? ' — BURIED' : ''));
   // Everything has to land on the front of the skull, between the hairline and
   // the chin — a feature on the crown or round the back is a bug you only see
   // in a replay.
@@ -3444,13 +3484,21 @@ console.log('\n[30b] the head has a face on it');
         'z/H ' + (o.zLo || 0).toFixed(3) + '..' + (o.zHi || 0).toFixed(3));
   check('and on the front of the head, not the back',
         o.yHi < 0, 'y/H up to ' + (o.yHi || 0).toFixed(3));
-  check('they stay inside the width of the skull', o.xAbs < 0.030,
-        'reach ' + (o.xAbs || 0).toFixed(3) + 'H off centre');
-  /* Laid on the fitted ellipsoid rather than a flat plane in front of it: a
-   * feature further forward than the face itself floats off the cheek the
-   * moment the head turns. */
+  /* Against THIS skull's measured half-width, not a constant. The features are
+   * sized off the fitted skull too, so a flat number here was really asserting
+   * that the head is the size the old model's head was: widen the eyes to
+   * something a player can see and a correct face starts failing. Three
+   * quarters leaves a clear margin of cheek either side. */
+  check('they stay inside the width of the skull',
+        o.xAbs < (o.skullHalf || 0) * 0.75,
+        'features reach ' + (o.xAbs || 0).toFixed(3) + 'H off centre, on a skull ' +
+        (o.skullHalf || 0).toFixed(3) + 'H wide either side');
+  /* Laid flat on the skin at a measured local depth, plus a fixed standoff. The
+   * standoff is a depth-buffer number rather than an aesthetic one — under
+   * about a centimetre of stature the features z-fight the cheek and vanish at
+   * the range the game is played at — so the bound here is what that costs. */
   check('and lie on the face rather than floating in front of it',
-        o.yLo > o.skullFront - 0.006,
+        o.yLo > o.skullFront - 0.009,
         'front-most feature ' + (o.yLo || 0).toFixed(3) + 'H vs skin at ' +
         (o.skullFront || 0).toFixed(3) + 'H');
   check('face probe raised no errors', !o.pageErr, o.pageErr);

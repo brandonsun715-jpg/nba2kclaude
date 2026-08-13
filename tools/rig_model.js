@@ -1474,71 +1474,123 @@ function buildFace(bodyVerts, J) {
   const c = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
   const r = [(hi[0] - lo[0]) / 2, (hi[1] - lo[1]) / 2, (hi[2] - lo[2]) / 2];
 
-  /* Where the front of the skull actually is, at the height the features sit.
+  /* Where the front of the face actually is, sampled from the face itself.
    *
-   * The ellipsoid comes from a bounding BOX, and a box's half-depth is the
-   * distance out to the single frontmost point of the whole head — a nose, a
-   * brow, whatever protrudes most. The surface it describes therefore stands
-   * proud of the cheeks the features are supposed to lie on, by however much
-   * that one feature sticks out. Measure the skin across the region the face
-   * occupies and slide the ellipsoid back onto it: the curvature still comes
-   * from the fit, so features still wrap around the head, but they now start
-   * from the real surface instead of from the model's most prominent bump. */
+   * This used to be an ellipsoid fitted to the head's bounding box, slid back
+   * to touch the skin at one calibration height. That works at the height it
+   * was calibrated at and nowhere else: an ellipsoid falls away from its pole
+   * far faster than this model's nearly flat face does, so a feature placed
+   * away from the eye line ends up BEHIND the skin. The mouth, at 0.911H, was
+   * buried inside the head — five features were being baked and only four of
+   * them could ever be seen.
+   *
+   * Measured instead, per feature, from the head's own vertices: take the
+   * frontmost skin across the feature's footprint and lay it on that. The
+   * window widens until it finds something, and only a head with no vertices
+   * at all falls back to the fit. */
   const ell = (x, z) => {
     const ex = (x - c[0]) / r[0], ez = (z - c[2]) / r[2];
     const k = 1 - ex * ex - ez * ez;
     return c[1] - r[1] * Math.sqrt(k > 0.04 ? k : 0.04);
   };
-  const EYE_Z = H * 0.9370;
-  let skinY = 1e9;
-  for (const v of head) {
-    if (v.p[2] > H * 0.900 && v.p[2] < H * 0.955 && Math.abs(v.p[0]) < H * 0.030) {
-      skinY = Math.min(skinY, v.p[1]);
+  /** The frontmost skin over one feature's own footprint. */
+  const frontOver = (cx, cz, rx, rz) => {
+    for (let pass = 0; pass < 4; pass++) {
+      const ex = rx + H * 0.004 * pass, ez = rz + H * 0.004 * pass;
+      let best = 1e9;
+      for (const v of head) {
+        if (Math.abs(v.p[0] - cx) <= ex && Math.abs(v.p[2] - cz) <= ez) {
+          best = Math.min(best, v.p[1]);
+        }
+      }
+      if (best < 1e8) return best;
     }
-  }
-  const shift = skinY < 1e8 ? skinY - ell(0, EYE_Z) : 0;
-  const frontY = (x, z) => ell(x, z) + shift;
+    return ell(cx, cz);
+  };
 
   const startTris = shaded.tris.length;
-  const SEG = 14;
 
-  /* One feature: an ellipse of `seg` segments laid on the face, pushed a
-   * hair's breadth proud of it so it cannot z-fight with the skin under it. */
-  function patch(cx, cz, rx, rz, proud) {
+  /* One feature, as a flat angular polygon laid on the face.
+   *
+   * `outline` is the shape in unit coordinates, scaled by the feature's own
+   * half-width and half-height. Explicit outlines rather than a circle of N
+   * segments, because this is a low-poly figure: the body is all flat facets
+   * and hard edges, and a fourteen-sided ellipse on the front of it reads as a
+   * smooth sticker off a different model. Six points make an eye that still
+   * reads as an eye at gameplay distance and keeps the corners the rest of the
+   * mesh has.
+   *
+   * The patch is FLAT, at one depth taken from the frontmost skin across its
+   * own footprint. Conforming every vertex to the skin under it sounds better
+   * and is worse twice over: the rim ends up closer to the face than the
+   * centre, so how much clearance a feature gets depends on where it landed —
+   * measured, the eyes cleared by 0.22 model units and the mouth by 1.62,
+   * because the mouth's window caught the jaw — and 0.22 is inside what the
+   * depth buffer can resolve at gameplay range, so the eyes z-fought with the
+   * cheek and vanished. A flat chip gives every feature the same clearance,
+   * and flat is what the rest of this model looks like anyway. */
+  function patch(cx, cz, rx, rz, outline, proud) {
+    const base = frontOver(cx, cz, rx, rz) - proud;
     const centre = bodyVerts.push({
-      p: [cx, frontY(cx, cz) - proud, cz],
+      p: [cx, base, cz],
       n: [0, -1, 0],
       b0: BONE_INDEX.head, b1: BONE_INDEX.head, w0: 1,
       zone: ZONE.FACE
     }) - 1;
-    const ring = [];
-    for (let i = 0; i < SEG; i++) {
-      const a = (i / SEG) * Math.PI * 2;
-      const x = cx + Math.cos(a) * rx, z = cz + Math.sin(a) * rz;
-      ring.push(bodyVerts.push({
-        p: [x, frontY(x, z) - proud * 0.55, z],
-        n: [0, -1, 0],
-        b0: BONE_INDEX.head, b1: BONE_INDEX.head, w0: 1,
-        zone: ZONE.FACE
-      }) - 1);
-    }
-    for (let i = 0; i < SEG; i++) {
+    const ring = outline.map(([u, v]) => bodyVerts.push({
+      p: [cx + u * rx, base, cz + v * rz],
+      n: [0, -1, 0],
+      b0: BONE_INDEX.head, b1: BONE_INDEX.head, w0: 1,
+      zone: ZONE.FACE
+    }) - 1);
+    for (let i = 0; i < ring.length; i++) {
       // Wound to match the body — the bone matrices carry the court-to-GL
       // reflection, so the figure draws with frontFace(CW).
-      shaded.tris.push([centre, ring[i], ring[(i + 1) % SEG]]);
+      shaded.tris.push([centre, ring[i], ring[(i + 1) % ring.length]]);
     }
   }
 
-  /* Sized small on purpose. The first pass used eyes twice this wide and they
-   * read as empty sockets rather than eyes — at this polygon count a feature
-   * that is too big stops being a shape and becomes a hole. The brows sat
-   * higher too, and disappeared under the hairline, which starts at 0.960H. */
-  const eyeX = H * 0.0150, proud = H * 0.0016;
-  patch(+eyeX, H * 0.9370, H * 0.0070, H * 0.0036, proud);   // eyes
-  patch(-eyeX, H * 0.9370, H * 0.0070, H * 0.0036, proud);
-  patch(+eyeX, H * 0.9468, H * 0.0106, H * 0.0021, proud);   // brows, clear of the hair
-  patch(-eyeX, H * 0.9468, H * 0.0106, H * 0.0021, proud);
-  patch(0, H * 0.9105, H * 0.0112, H * 0.0025, proud);       // mouth
+  /* Outlines run COUNTER-CLOCKWISE in (u, v), and that is not cosmetic: the fan
+   * above emits them in order, the bone matrices carry the court-to-GL
+   * reflection, and the figure is drawn frontFace(CW) with back faces culled.
+   * Wind one the other way and it is not merely lit wrongly, it is not drawn at
+   * all — the face comes out blank with the geometry present and correct in the
+   * buffer, which is a confusing hour if you are looking for it in the wrong
+   * place. */
+
+  /* An angular almond: flat top and bottom, a corner at each end. */
+  const EYE = [[-1, 0], [-0.5, -0.9], [0.5, -0.9], [1, 0], [0.5, 0.8], [-0.5, 0.8]];
+  /* A brow is a bar, thicker at the inner end and tilted up toward the temple,
+   * which is most of what stops a face reading as blank. */
+  const BROW = [[1, 0.1], [1, 1], [-1, 0.7], [-1, -0.9]];
+  /* The mouth is a wide, shallow wedge — broader across the top than the
+   * bottom, so it reads as a mouth and not as a slot. */
+  const MOUTH = [[-0.45, -1], [0.45, -1], [1, 0.2], [0.55, 1], [-0.55, 1], [-1, 0.2]];
+  /* A brow is not symmetric, so the other one has to be its mirror and not a
+   * copy: the same outline on both sides tilts one up toward the temple and the
+   * other down into the nose. Reversing the order as well as flipping u keeps
+   * the winding, and therefore the facing, the way it was. */
+  const mirror = (o) => o.map(([u, v]) => [-u, v]).reverse();
+
+  /* Proportions are set against the MEASURED skull rather than against stature,
+   * so a differently shaped head gets features that still fit it.
+   *
+   * The previous pass had all five crowded into the top third of the face
+   * directly under the hairline, each about a tenth of the head's width; at
+   * gameplay distance they read as four smudges above a blank chin. */
+  const eyeX = r[0] * 0.40;               // out from the midline, not stature
+  const eyeZ = H * 0.9330;
+  /* How far the chip stands off the skin. A DEPTH-BUFFER number, not an
+   * aesthetic one: too little and the face z-fights the cheek and disappears at
+   * the range the game is actually played at. At this size it is about a
+   * centimetre proud of a real face, invisible from the sideline, and it draws
+   * every time. */
+  const proud = H * 0.0045;
+  patch(+eyeX, eyeZ, r[0] * 0.23, H * 0.0055, EYE, proud);
+  patch(-eyeX, eyeZ, r[0] * 0.23, H * 0.0055, EYE, proud);
+  patch(+eyeX, eyeZ + H * 0.0128, r[0] * 0.26, H * 0.0030, BROW, proud);
+  patch(-eyeX, eyeZ + H * 0.0128, r[0] * 0.26, H * 0.0030, mirror(BROW), proud);
+  patch(0, H * 0.9045, r[0] * 0.36, H * 0.0044, MOUTH, proud);
 
   return shaded.tris.length - startTris;
 }
