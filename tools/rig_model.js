@@ -435,9 +435,25 @@ function gatePenalty(name, p, J, seg) {
      * Gentler here so the cap can be genuinely blended between the two bones,
      * which is what lets it deform instead of splitting. The gate still has to
      * exist: without any, the jersey's chest panel joins the arm and swings
-     * with it. */
+     * with it.
+     *
+     * At a flat 1.5 it did not exist by enough. The torso bone is a stick on
+     * the MIDLINE, so a vertex out at the edge of the chest is about sixteen
+     * units from it and only nine from the arm bone passing beside it — and
+     * inverse-square weighting hands it to the arm. Measured on the shipped
+     * bake, chest geometry at 0.8 of a shoulder-width inboard carried a mean
+     * FIFTY PER CENT arm weight. The upper arm rotates 166 degrees from bind in
+     * a jump shot, so half the chest and the vest's shoulder went with it: the
+     * flat fin of jersey stretched from the ribs to the raised hand.
+     *
+     * No single slope fixes that. Gentle enough to blend the deltoid is too
+     * gentle to hold the chest, and steep enough to hold the chest is the wall
+     * that tore the shoulder open. So the gate is QUADRATIC: negligible over
+     * the first units inboard, where the cap has to stay shared, and growing
+     * fast enough to be decisive by the time it reaches the ribs. Divided by
+     * the shoulder's own offset so it means the same on any build. */
     const inboard = shoulderX * 1.05 - ax;
-    if (inboard > 0) pen += inboard * 1.5;
+    if (inboard > 0) pen += inboard * inboard / Math.max(1e-6, shoulderX) * 11.5;
     const above = p[2] - J.shoulderL[2];
     if (above > 0) pen += above * 4.0;
   } else if (/^(thigh|shin|foot)/.test(name)) {

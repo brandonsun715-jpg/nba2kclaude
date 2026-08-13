@@ -2732,12 +2732,29 @@
          * tenths of the way out, not ten. */
         hrX = shR + U.lerp(0.15, 0.24, snap) - relax * 0.03;
         hrY = upY(shoulderY, U.lerp(0.87, 0.82, snap) + relax * 0.03);
-        // The guide hand is left up around where the ball was, not dropped.
+        /* The guide hand comes OFF the ball, outboard and down a little.
+         *
+         * It used to be driven the other way. `side` is measured along the
+         * player's right, so a POSITIVE value on the LEFT hand pulls it inboard
+         * — and this ran it from 0.08 to 0.15 through the follow-through, which
+         * is the guide hand travelling further across the body at exactly the
+         * moment it should be leaving. Worked through, it finished at a lateral
+         * of -0.010 on a shoulder sitting at -0.207: dead on the centreline,
+         * folded flat across the face. Every other shooting check passed,
+         * because they are all about the shooting hand.
+         *
+         * A real guide hand stays on its own side of the body. It comes off as
+         * the ball goes, falls back under its own shoulder, and drops toward
+         * the chest — it never crosses the nose.
+         *
+         * Driven by `snap` and not by `relax`: relax is the settle at the END
+         * of the follow-through and does not begin until nearly halfway, so on
+         * the old timing the guide hand stayed parked on a ball that had
+         * already gone for the first half of the release. It comes off with
+         * the shot. */
         hlX = shL + U.lerp(0.17, 0.21, relax);
-        hlY = upY(shoulderY, U.lerp(0.33, 0.25, relax));
-        // The guide hand comes off the ball sideways as the shot leaves, which
-        // is the separation the eye reads as a release rather than a push.
-        hlSide = U.lerp(0.08, 0.15, relax);
+        hlY = upY(shoulderY, U.lerp(0.33, 0.12, snap));
+        hlSide = U.lerp(0.08, -0.04, snap);
         hrSide = -0.03;
         armTuck = 0.24 * (1 - relax * 0.35);
         armRoll = 0.16;
