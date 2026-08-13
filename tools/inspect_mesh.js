@@ -53,13 +53,14 @@ const lo = M.bounds.lo, ext = M.bounds.ext, H = M.height;
 const n = M.vertexCount;
 
 const P = new Float64Array(n * 3);
-const DOM = new Uint8Array(n);
+const B0 = new Uint8Array(n), B1 = new Uint8Array(n);
+const W0 = new Float64Array(n);
 for (let i = 0; i < n; i++) {
   for (let k = 0; k < 3; k++) {
     const q = qp[i * 6 + k * 2] | (qp[i * 6 + k * 2 + 1] << 8);
     P[i * 3 + k] = lo[k] + (q / 65535) * ext[k];
   }
-  DOM[i] = qs[i * 4 + 2] >= 128 ? qs[i * 4] : qs[i * 4 + 1];
+  B0[i] = qs[i * 4]; B1[i] = qs[i * 4 + 1]; W0[i] = qs[i * 4 + 2] / 255;
 }
 
 /* Colour per bone. Adjacent bones in a chain must contrast, or a bone running
@@ -123,6 +124,13 @@ function shade(a, b, c, col) {
   }
 }
 
+function mixBone(i) {
+  const a = COL[B0[i]] || [255, 0, 255];
+  const b = COL[B1[i]] || [255, 0, 255];
+  const w = W0[i];
+  return [a[0] * w + b[0] * (1 - w), a[1] * w + b[1] * (1 - w), a[2] * w + b[2] * (1 - w)];
+}
+
 const bodyTris = M.bodyIndexCount ? M.bodyIndexCount / 3 : M.triCount;
 let drawn = 0;
 for (let t = 0; t < bodyTris; t++) {
@@ -134,7 +142,16 @@ for (let t = 0; t < bodyTris; t++) {
   if (mid < zLo * H || mid > zHi * H) continue;
   if (REGION === 'arms' && Math.abs((a[0] + b[0] + c[0]) / 3) < H * 0.06) continue;
   drawn++;
-  const col = COL[DOM[i0]] || [255, 0, 255];
+  /* Blend the two bones' colours by their weights rather than painting the
+   * stronger one outright.
+   *
+   * Picking a winner is what a "which bone owns this" view wants to do, and it
+   * lies exactly where it matters most: across a joint the weights pass through
+   * 50/50, so the winner flips from vertex to vertex and a perfectly smooth
+   * blend renders as a violent sawtooth. That reads as a tear in a mesh that
+   * has none. Blending shows the real thing — a gradient where the weights are
+   * graded, a hard line only where they genuinely jump. */
+  const col = mixBone(i0);
   // Cheap lambert so the form reads instead of coming out as a flat silhouette.
   const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
   const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];

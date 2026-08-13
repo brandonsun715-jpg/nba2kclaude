@@ -896,11 +896,9 @@ function rebuildNormals(pos, tris, angleDeg) {
       outPos.push(pos[v]);
       outNrm.push([g.n[0] / L, g.n[1] / L, g.n[2] / L]);
       outSrc.push(v);
-      if (gi === 0) {
-        for (const f of g.faces) for (let k = 0; k < 3; k++) if (tris[f][k] === v) outTris[f][k] = id;
-      } else {
-        for (const f of g.faces) for (let k = 0; k < 3; k++) if (tris[f][k] === v) outTris[f][k] = id;
-      }
+      // Every group rewires its own faces to its own copy, including the first
+      // — this used to be an if/else whose two branches were identical.
+      for (const f of g.faces) for (let k = 0; k < 3; k++) if (tris[f][k] === v) outTris[f][k] = id;
     });
   }
   return { pos: outPos, normals: outNrm, tris: outTris, src: outSrc };
@@ -1257,14 +1255,35 @@ const shaded = rebuildNormals(simplified.pos, simplified.tris, 52);
 // and a vertex that drifts across a garment's height threshold would flip to
 // the wrong kit — which shows up as navy blotches out in the middle of an arm.
 // Collapses never cross a zone, so every survivor's zone is unambiguous.
+/* Smooth the weights on POSITION topology, not on the split render topology.
+ *
+ * rebuildNormals splits a vertex into one copy per smoothing group, so every
+ * hard edge on the model carries two or more copies of the same point. Run the
+ * diffusion over that topology and each copy is its own island in the smoothing
+ * graph: same seed, different neighbour fan, twenty-six iterations to drift
+ * apart. Measured on this model, 82 positions ended up with copies that did not
+ * even agree on which two bones they belonged to, with weights up to 22% apart
+ * — at the shorts hem, the crotch, and the armhole. Two copies of one point,
+ * moved by different bones, separate the instant either bone moves, and the
+ * seam opens as a visible tear.
+ *
+ * Diffusing over the welded positions and then handing each position's result
+ * to all of its copies makes that impossible by construction: copies of a point
+ * are the same point, so they get the same weights.
+ */
 const nb = BONES.length;
-const dense = new Float32Array(shaded.pos.length * nb);
-shaded.pos.forEach((p, i) => {
+const dense = new Float32Array(simplified.pos.length * nb);
+simplified.pos.forEach((p, i) => {
   const sk = skinVertex(p, segs, J);
   dense[i * nb + sk[0]] = sk[2];
   dense[i * nb + sk[1]] = sk[3];
 });
-const smoothed = smoothWeights(shaded.pos.length, shaded.tris, nb, dense, 26);
+const posSmoothed = smoothWeights(simplified.pos.length, simplified.tris, nb, dense, 26);
+const smoothed = new Float32Array(shaded.pos.length * nb);
+for (let i = 0; i < shaded.pos.length; i++) {
+  const from = shaded.src[i] * nb, to = i * nb;
+  for (let b = 0; b < nb; b++) smoothed[to + b] = posSmoothed[from + b];
+}
 
 const verts = shaded.pos.map((p, i) => {
   // Back to two bones: take the strongest pair from the smoothed field.

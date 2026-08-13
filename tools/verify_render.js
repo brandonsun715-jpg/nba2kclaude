@@ -4698,8 +4698,72 @@ console.log('\n[42] the drawn figure is one consistent size');
   check('scale probe raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[43] the baked mesh cannot come apart at a seam');
+{
+  /* A hard edge in the mesh is stored as two or more copies of the same point,
+   * one per smoothing group. They are the same point, so they have to move the
+   * same way — if two copies are weighted to different bones, the surface
+   * splits open along that seam the instant either bone moves, and no amount
+   * of good animation can close it again.
+   *
+   * The weight smoothing used to run on the SPLIT topology, which makes each
+   * copy its own island in the diffusion: same seed, different neighbour fan,
+   * twenty-six iterations to drift apart. Measured on the shipped bake, 70
+   * positions had copies that did not agree on which two bones moved them,
+   * with weights up to 22% apart, at the shorts hem, the crotch and the
+   * armhole. */
+  const r = runInPage(`
+    var M = window.BB.PLAYER_MESH;
+    var qp = atob(M.buffers.pos), qs = atob(M.buffers.skin);
+    var byPos = {};
+    for (var i = 0; i < M.vertexCount; i++) {
+      // The quantised position IS the identity: two copies of one point encode
+      // to the same sixteen-bit triple.
+      var k = (qp.charCodeAt(i * 6) | (qp.charCodeAt(i * 6 + 1) << 8)) + ',' +
+              (qp.charCodeAt(i * 6 + 2) | (qp.charCodeAt(i * 6 + 3) << 8)) + ',' +
+              (qp.charCodeAt(i * 6 + 4) | (qp.charCodeAt(i * 6 + 5) << 8));
+      (byPos[k] || (byPos[k] = [])).push(i);
+    }
+    function pair(i) {
+      var a = qs.charCodeAt(i * 4), b = qs.charCodeAt(i * 4 + 1);
+      return a < b ? a + '-' + b : b + '-' + a;
+    }
+    var split = 0, disagree = 0, maxGap = 0;
+    for (var k in byPos) {
+      var list = byPos[k];
+      if (list.length < 2) continue;
+      split++;
+      var p0 = pair(list[0]), bad = false, lo = 255, hi = 0;
+      for (var j = 0; j < list.length; j++) {
+        if (pair(list[j]) !== p0) bad = true;
+        var w = qs.charCodeAt(list[j] * 4 + 2);
+        if (w < lo) lo = w;
+        if (w > hi) hi = w;
+      }
+      if (bad) disagree++;
+      if (hi - lo > maxGap) maxGap = hi - lo;
+    }
+    return { split: split, disagree: disagree, maxGap: maxGap / 255,
+             pageErr: window.__pageErr || null };
+  `, 'seam');
+  if (r.err) check('seam probe ran', false, r.err);
+  const o = r.out || {};
+
+  check('the mesh has split vertices to check', (o.split || 0) > 50,
+        (o.split || 0) + ' positions carry more than one copy');
+  check('every copy of a point is moved by the same bones',
+        o.disagree === 0,
+        (o.disagree || 0) + ' of ' + (o.split || 0) +
+        ' split positions have copies weighted to different bones');
+  check('and by the same amounts',
+        (o.maxGap == null ? 9 : o.maxGap) < 0.01,
+        'worst weight gap between copies of one point ' +
+        ((o.maxGap || 0) * 100).toFixed(0) + '%');
+  check('seam probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[43] screenshots');
+  console.log('\n[44] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],
