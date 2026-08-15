@@ -364,19 +364,25 @@
    * Only four of these existed and none of them moved the ball — see BALL_PATH.
    */
   const MOVES = {
-    crossover:   { dur: 0.30, cool: 0.32, swap: true,  kick: 3.4, risk: 1.00 },
-    betweenLegs: { dur: 0.38, cool: 0.36, swap: true,  kick: 2.6, risk: 1.20 },
-    behindBack:  { dur: 0.40, cool: 0.40, swap: true,  kick: 4.0, risk: 1.40 },
-    hesitation:  { dur: 0.42, cool: 0.40, swap: false, kick: 0,   risk: 0.90 },
-    inAndOut:    { dur: 0.32, cool: 0.30, swap: false, kick: 1.5, risk: 1.00 },
-    spin:        { dur: 0.46, cool: 0.65, swap: true,  kick: 0,   risk: 1.40 }
+    crossover:   { dur: 0.38, cool: 0.40, swap: true,  kick: 4.1, risk: 1.00 },
+    betweenLegs: { dur: 0.48, cool: 0.45, swap: true,  kick: 3.1, risk: 1.20 },
+    behindBack:  { dur: 0.50, cool: 0.50, swap: true,  kick: 4.8, risk: 1.40 },
+    hesitation:  { dur: 0.50, cool: 0.48, swap: false, kick: 0,   risk: 0.90 },
+    inAndOut:    { dur: 0.40, cool: 0.38, swap: false, kick: 1.8, risk: 1.00 },
+    spin:        { dur: 0.56, cool: 0.78, swap: true,  kick: 0,   risk: 1.40 }
   };
   const MOVE_DURATION = {};
   for (const k in MOVES) MOVE_DURATION[k] = MOVES[k].dur;
   const MOVE_CHAIN_WINDOW = 0.55; // a second press within this window chains
   /* How much of a move is spent collecting the ball out of whatever the
-   * bounce was doing when the key went down. */
-  const MOVE_GATHER = 0.30;
+   * bounce was doing when the key went down.
+   *
+   * Kept short, because the gather blends from wherever the ball WAS toward the
+   * path — so every frame of it is a frame the path's own shape is diluted, and
+   * the start of the path is where the ball is furthest out to the side. At
+   * 0.30 it was eating a quarter of the move's lateral travel. Four or five
+   * frames is enough to hide the join. */
+  const MOVE_GATHER = 0.16;
 
   /* Which input action starts which move. Order matters only in that the first
    * pressed key wins, and nobody presses two at once on purpose. */
@@ -393,6 +399,14 @@
    * Where the BALL is through each move, in the player's own frame: `fwd`
    * ahead of them, `lat` to their RIGHT, `up` off the floor, all in skeleton
    * units so a bigger player has a proportionally bigger handle.
+   *
+   * The durations are about a quarter longer than the real thing, and the kicks
+   * a fifth bigger to pay for it. A crossover takes three tenths of a second in
+   * a gym, which is eighteen frames — over before the eye has found the ball,
+   * and on a figure five feet tall at broadcast distance that is a flicker
+   * rather than a move. The extra time is what makes it legible; the extra kick
+   * is so a move still buys the step it used to, because a longer move is a
+   * longer window for the defender to recover in.
    *
    * This is the piece that did not exist. The moves animated an arm and left
    * the ball glued to the right wrist, so — measured on every frame of both —
@@ -423,13 +437,16 @@
    * differ, and _syncDribblePhase picks the bounce up at whatever height the
    * move left the ball at. */
   const REST_FWD = 0.11;
+  /* How far past the resting hand a move carries the ball sideways, as a
+   * multiple of it. At 1.48 the ball finishes outside the foot on each side. */
+  const MOVE_SPREAD = 1.58;
 
   const BALL_PATH = {
     /* Straight across the front on one hard bounce. Low and quick — the whole
      * move IS the bounce, and it clears out in front so it misses the feet. */
     crossover(k, c) {
       return {
-        fwd: REST_FWD + Math.sin(k * Math.PI) * 0.15,
+        fwd: REST_FWD + Math.sin(k * Math.PI) * 0.20,
         lat: U.lerp(c.lat * c.dir, -c.lat * c.dir, k),
         up: U.lerp(c.hi * 0.70, c.lo, fall(k))
       };
@@ -439,7 +456,7 @@
      * pose — or the ball goes through a thigh. */
     betweenLegs(k, c) {
       return {
-        fwd: REST_FWD - Math.sin(k * Math.PI) * 0.27,
+        fwd: REST_FWD - Math.sin(k * Math.PI) * 0.15,
         lat: U.lerp(c.lat * c.dir, -c.lat * c.dir, k),
         up: U.lerp(c.hi * 0.58, c.lo, fall(k))
       };
@@ -453,7 +470,7 @@
      * gym you are stepping past the ball while it is behind you. */
     behindBack(k, c) {
       return {
-        fwd: REST_FWD - Math.sin(k * Math.PI) * 0.62,
+        fwd: REST_FWD - Math.sin(k * Math.PI) * 0.76,
         lat: U.lerp(c.lat * c.dir, -c.lat * c.dir, k),
         up: U.lerp(c.hi * 0.82, c.lo, fall(k))
       };
@@ -480,7 +497,7 @@
       const swing = Math.sin(k * Math.PI);
       return {
         fwd: REST_FWD + swing * 0.12,
-        lat: c.lat * c.dir * (1 - swing * 0.80),
+        lat: c.lat * c.dir * (1 - swing * 0.94),
         up: U.lerp(c.hi * 0.76, c.lo, fall(k))
       };
     },
@@ -493,7 +510,7 @@
         fwd: REST_FWD - Math.sin(k * Math.PI) * 0.12,
         // Pulled in tight through the turn, out to the hand at either end.
         lat: U.lerp(c.lat * c.dir, -c.lat * c.dir, s) * (1 - Math.sin(k * Math.PI) * 0.30),
-        up: c.hi * 0.74 - Math.sin(k * Math.PI) * c.hi * 0.12
+        up: c.hi * 0.68 - Math.sin(k * Math.PI) * c.hi * 0.16
       };
     }
   };
@@ -748,9 +765,16 @@
       out = out || { x: 0, y: 0, z: 0 };
       const p = this.pose, f = this._frame();
       const knee = side < 0 ? p.kneeL : p.kneeR;
+      const foot = side < 0 ? p.footL : p.footR;
       const w = side * BONE.hipW;
       const lean = p.hipLean * 0.45 + this.lean * 0.16;
-      posePoint(TMP_P0, f, knee.ex, knee.ey, w, side * BONE.stance, lean);
+      /* Including the foot's own lateral offset, which this dropped — so it
+       * answered with a foot the renderer does not draw. Everything that
+       * steps sideways lives in that field: the defensive slide, and the wide
+       * stance a between-the-legs opens up. Measured against draw(), the two
+       * were a stance-width apart whenever either was happening. */
+      posePoint(TMP_P0, f, knee.ex, knee.ey, w,
+                side * BONE.stance + (foot.side || 0), lean);
       out.x = TMP_P0[0]; out.y = TMP_P0[1]; out.z = TMP_P0[2];
       return out;
     }
@@ -792,7 +816,15 @@
       // A waist-high dribble tops out a little above the hip, which is what
       // "waist-high" means.
       out.hi = REST_HIP * 1.15;
-      out.lat = BONE.shoulderW * SPLAY.wrist;
+      /* How far to the side a move puts the ball.
+       *
+       * A resting dribble keeps it at the hand, about a shoulder half-width
+       * out. A move pushes it PAST that — outside the foot on that side —
+       * because the point of a crossover is that the ball ends up somewhere the
+       * defender has to move to cover. At the hand's own width the whole
+       * lateral travel was 1.16ft, one and a half ball-widths, on a figure five
+       * feet tall: accurate, and nearly invisible. */
+      out.lat = BONE.shoulderW * SPLAY.wrist * MOVE_SPREAD;
       out.dir = this._moveFromHand;
       return out;
     }
@@ -2830,9 +2862,15 @@
         const reach = (w, side) => {
           const sh = side < 0 ? shL : shR;
           const over = Math.min(-b.up - 0.10, reachY(shoulderY, 0.97));
+          /* Both hands drop into the move whether or not they are on the ball.
+           * A hand that returns to its resting height the moment it lets go
+           * draws as an arm hanging while the ball crosses on its own — and
+           * mid-move is exactly when neither hand has it, so that was most of
+           * the move. Real hands stay low and live over the whole thing. */
+          const idle = reachY(shoulderY, 0.94 + 0.05 * Math.sin(k * Math.PI));
           return {
             x: U.lerp(sh + 0.09, sh + b.fwd, w),
-            y: U.lerp(reachY(shoulderY, 0.94), over, w),
+            y: U.lerp(idle, over, w),
             lat: U.lerp(side * BONE.shoulderW * SPLAY.wrist, b.lat, w)
           };
         };
@@ -2840,10 +2878,14 @@
         const R = reach(wR, 1);
         hlX = L.x; hlY = L.y; hlLat = L.lat;
         hrX = R.x; hrY = R.y; hrLat = R.lat;
-        // The elbows stay outside the wrists, so the arms read as arms rather
-        // than as two lines converging on the ball.
-        elLatL = Math.min(L.lat - 0.04, -BONE.shoulderW * 0.72);
-        elLatR = Math.max(R.lat + 0.04, BONE.shoulderW * 0.72);
+        /* The elbow sits on the line from its shoulder to its wrist, a little
+         * short of halfway. Pinning it outboard of the wrist instead made the
+         * upper arm travel sideways on its own — and a bone that has to cover
+         * lateral ground has that much less left for the plane the solver
+         * works in, so the hand came back clamped at exactly the moments the
+         * ball is furthest out to the side. */
+        elLatL = U.lerp(-BONE.shoulderW, L.lat, 0.45);
+        elLatR = U.lerp(BONE.shoulderW, R.lat, 0.45);
         armTuck = 0;
         armRoll = 0;
 
@@ -2852,17 +2894,48 @@
          * as one block. Driven off where the ball is, so it leans into the
          * move instead of being timed separately from it. */
         const across = -b.lat / Math.max(1e-6, BONE.shoulderW);
-        torsoLean = across * 0.05;
-        hipLean = across * 0.018;
+        torsoLean = across * 0.085;
+        hipLean = across * 0.030;
 
         if (this.moveState === 'betweenLegs') {
-          /* The gap has to be open or the ball goes through a thigh. The foot
-           * on the side the ball is LEAVING steps forward, which is the stance
-           * you are already in when you put it between your legs. */
-          const split = Math.sin(k * Math.PI) * 0.30;
+          /* THE GAP HAS TO BE WIDER THAN THE BALL.
+           *
+           * It was not. Measured at the bounce: the lateral gap between the
+           * feet is 0.71ft and a basketball is 0.79ft across, so the ball was
+           * about an inch INSIDE each leg — more once the calves are counted.
+           * The stance split fore/aft, which is right, but it never opened
+           * sideways, so "between the legs" was drawn as through them.
+           *
+           * The width comes off the BALL, which is the only thing that can
+           * decide it: its own diameter, plus a third of one of daylight
+           * either side so you can see it go through rather than infer it.
+           * `side` is the same per-foot lateral offset the defensive slide
+           * uses, so the leg reach cap already accounts for it.
+           *
+           * Eased over the move, so the player steps wide and recovers instead
+           * of their feet jumping apart. */
+          const open2 = Math.sin(k * Math.PI);
+          const wantHalf = (C.BALL_RADIUS * 2 * 1.50) / 2 / this.bodyScale;
+          const extra = Math.max(0, wantHalf - BONE.stance) * open2;
+          sideL -= extra; sideR += extra;
+
+          /* And the foot on the side the ball is LEAVING steps forward, which
+           * is the stance you are already in when you put it between them.
+           *
+           * Kept modest. Isolating the two halves of this stance against the
+           * render, the sideways opening is clean at any width the ball needs,
+           * but the fore/aft step tears the shorts open at the hem of the leg
+           * that moves — the garment cannot follow one thigh that far past the
+           * other. The ball's own dip is shallow to match, so it still crosses
+           * between the feet rather than behind the back one. */
+          const split = Math.sin(k * Math.PI) * 0.16;
           if (src > 0) { frX += split; flX -= split * 0.6; }
           else { flX += split; frX -= split * 0.6; }
-          flY -= 0.05; frY -= 0.05;                 // sink into it
+          // Sink into it. A wide stance taken standing up is a straddle; the
+          // hips have to drop or the legs are above the ball, not around it.
+          const sink = open2 * 0.09;
+          flY -= 0.05 + sink; frY -= 0.05 + sink;
+          hipY += sink * 0.85; shoulderY += sink * 0.85;
 
         } else if (this.moveState === 'spin') {
           // Compact through the turn: feet under the hips, knees loaded.

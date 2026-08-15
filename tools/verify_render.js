@@ -5019,6 +5019,7 @@ console.log('\n[44] the ball goes where the move says it goes');
       // The move's own duration, off the table the game runs on.
       var total = P.MOVES[m].dur;
       var lat0 = 0, latN = 0, crossings = 0, prev = null, low = 1e9, hi = -1e9;
+      var legGap = 0, latLo = 1e9, latHi = -1e9;
       var fwdLo = 1e9, fwdHi = -1e9, crossFwd = 0, crossZ = 0, gap = 0, prevP = null;
       for (var s = 0; s <= 60; s++) {
         pl.moveT = s / 60 * total; pl._updatePose(1 / 60);
@@ -5027,7 +5028,15 @@ console.log('\n[44] the ball goes where the move says it goes');
         var lat = -b.y, fwd = b.x;
         if (s === 0) lat0 = lat;
         latN = lat;
-        if (prev !== null && (prev > 0) !== (lat > 0)) { crossings++; crossFwd = fwd; crossZ = b.z; }
+        if (prev !== null && (prev > 0) !== (lat > 0)) {
+          crossings++; crossFwd = fwd; crossZ = b.z;
+          /* How much room the legs are actually giving the ball at the moment
+           * it goes through them. footAt() is the drawn foot, lateral offset
+           * and all, which is what the ball has to miss. */
+          var lf = pl.footAt(-1, null), rf = pl.footAt(1, null);
+          legGap = Math.abs((-lf.y) - (-rf.y));
+        }
+        latLo = Math.min(latLo, lat); latHi = Math.max(latHi, lat);
         prev = lat;
         low = Math.min(low, b.z); hi = Math.max(hi, b.z);
         fwdLo = Math.min(fwdLo, fwd); fwdHi = Math.max(fwdHi, fwd);
@@ -5056,7 +5065,8 @@ console.log('\n[44] the ball goes where the move says it goes');
       out[m] = {
         lat0: lat0, latN: latN, crossings: crossings, low: low, high: hi,
         fwdLo: fwdLo, fwdHi: fwdHi, crossFwd: crossFwd, crossZ: crossZ,
-        footL: fl.x, footR: fr.x, hand: pl.dribbleHand, dur: total
+        footL: fl.x, footR: fr.x, hand: pl.dribbleHand, dur: total,
+        legGap: legGap, travel: latHi - latLo
       };
     }
 
@@ -5124,6 +5134,15 @@ console.log('\n[44] the ball goes where the move says it goes');
         got('betweenLegs').crossZ < o.ballR * 1.3,
         'crossed at ' + (got('betweenLegs').crossFwd || 0).toFixed(2) + 'ft with the feet at ' +
         (got('betweenLegs').footL || 0).toFixed(2) + ' and ' + (got('betweenLegs').footR || 0).toFixed(2));
+  /* THE one the ball could not do. Measured on the build this replaces: the
+   * lateral gap between the feet was 0.71ft and a basketball is 0.79ft across,
+   * so the ball was an inch inside each leg — passing THROUGH them, not
+   * between them. The stance split fore/aft and never opened sideways. */
+  check('and there is daylight either side of it while it does',
+        got('betweenLegs').legGap - o.ballR * 2 > o.ballR * 0.5,
+        'the legs opened to ' + (got('betweenLegs').legGap || 0).toFixed(2) +
+        'ft for a ball ' + (o.ballR * 2).toFixed(2) + 'ft across, leaving ' +
+        (((got('betweenLegs').legGap || 0) - o.ballR * 2) / 2).toFixed(3) + 'ft each side');
   check('the behind-the-back actually goes behind the back',
         got('behindBack').fwdLo < -0.8,
         'the furthest back it got was ' + (got('behindBack').fwdLo || 0).toFixed(2) + 'ft');
@@ -5155,6 +5174,12 @@ console.log('\n[44] the ball goes where the move says it goes');
   check('a jump shot leaves the hand with real backspin',
         o.spinTurns > 1.5 && o.spinTurns < 3.5,
         (o.spinTurns || 0).toFixed(2) + ' turns a second; a jumper carries 2 to 3');
+  /* And big enough to see. A move whose ball travels less than its own width
+   * is accurate and invisible; the eye needs the ball to go somewhere. */
+  check('a move that changes hands carries the ball at least two ball-widths',
+        SWAPS.every((n) => got(n).travel > o.ballR * 4),
+        SWAPS.map((n) => n + ' ' + ((got(n).travel || 0) / (o.ballR * 2)).toFixed(2)).join(', ') +
+        ' ball-widths of travel');
   check('handles probe raised no errors', !o.pageErr, o.pageErr);
 }
 
