@@ -38,8 +38,18 @@
       this.receiver = null;
 
       /* Presentation */
-      this.rot = 0;            // seam rotation, radians
-      this.spin = 0;           // rad/s about the screen normal
+      this.rot = 0;            // seam rotation about spinAxis, radians
+      this.spin = 0;           // rad/s about spinAxis; negative is backspin
+      /* Which way the ball is actually turning, in court space.
+       *
+       * This used to be nothing at all — the seams were rotated about world x
+       * and nothing else, so a ball travelling up the court along y span about
+       * the axis it was flying down, like a thrown American football. A ball
+       * turns about the horizontal axis perpendicular to its travel; there is
+       * no other axis a bounce or a shot can put it on. Held over rather than
+       * recomputed when the ball is nearly still, so a ball rolling to a stop
+       * does not flip its seams about as the velocity direction goes to noise. */
+      this.spinAxis = [0, 1, 0];
       this.backspin = 0;       // 0..1, softens rim contact
       this.trail = [];
       this.trailTimer = 0;
@@ -91,9 +101,34 @@
     launch(vx, vy, vz, state) {
       this.vx = vx; this.vy = vy; this.vz = vz;
       this.release(state);
-      this.spin = -Math.hypot(vx, vy) * 0.55;
+      this._aimSpin();
+      /* A shot leaves the hand with real backspin, and a shot's backspin is not
+       * a function of how hard it was thrown — it comes off the fingers. Two
+       * turns a second is what a jump shot carries. The old value was
+       * 0.55 x speed, which for a 22ft/s shot is 12 rad/s about an axis that
+       * had nothing to do with the flight. */
+      this.spin = state === STATE.SHOT ? -SHOT_BACKSPIN
+                : state === STATE.PASS ? -SHOT_BACKSPIN * 0.5
+                : Math.hypot(vx, vy) / C.BALL_RADIUS;
       this.backspin = state === STATE.SHOT ? 1 : 0.25;
       this.trail.length = 0;
+    }
+
+    /**
+     * Point the spin axis across the direction of travel.
+     *
+     * Rolling without slipping fixes both the axis and the rate: the contact
+     * point has to be stationary, which for a centre moving at v gives
+     * omega = (-vy, vx, 0) / R — the velocity turned a quarter turn about the
+     * vertical, at v/R radians a second. Everything else the ball does spins
+     * about that same axis, faster or slower or backwards.
+     */
+    _aimSpin() {
+      const s = Math.hypot(this.vx, this.vy);
+      if (s < 0.35) return;                 // too slow to read a direction from
+      this.spinAxis[0] = -this.vy / s;
+      this.spinAxis[1] = this.vx / s;
+      this.spinAxis[2] = 0;
     }
 
     /**
@@ -161,6 +196,7 @@
       this.y += this.vy * dt;
       this.z += this.vz * dt;
 
+      this._aimSpin();
       this.rot += this.spin * dt;
 
       /* --- collisions ----------------------------------------------------- */
@@ -205,7 +241,11 @@
         this.vz = impact * C.FLOOR_RESTITUTION;
         this.vx *= C.FLOOR_FRICTION + 0.2;
         this.vy *= C.FLOOR_FRICTION + 0.2;
-        this.spin *= 0.75;
+        /* The floor takes the ball's spin toward rolling. A hard court has
+         * plenty of grip, so a bounce converts most of the way there in one
+         * contact — which is why a ball thrown down with backspin comes back
+         * toward you and one thrown flat runs away. */
+        this.spin += (Math.hypot(this.vx, this.vy) / C.BALL_RADIUS - this.spin) * 0.55;
         this.events.emit('bounce', { x: this.x, y: this.y, force: U.clamp01(impact / 24) });
         if (this.state === STATE.SHOT && !this.scoredThisFlight) {
           this.state = STATE.LOOSE;
@@ -217,7 +257,9 @@
         const f = Math.exp(-2.4 * dt);
         this.vx *= f;
         this.vy *= f;
-        if (Math.hypot(this.vx, this.vy) < 0.25) { this.vx = 0; this.vy = 0; this.spin *= 0.9; }
+        // Settled on the floor: whatever it is doing, it is rolling.
+        this.spin = Math.hypot(this.vx, this.vy) / C.BALL_RADIUS;
+        if (Math.hypot(this.vx, this.vy) < 0.25) { this.vx = 0; this.vy = 0; this.spin = 0; }
         if (this.state === STATE.SHOT && !this.scoredThisFlight) {
           this.events.emit('miss', { shooter: this.shooter, x: this.x, y: this.y });
         }
@@ -441,25 +483,35 @@
        * three through the poles, evenly spaced. They sit half proud of the
        * surface, the way a moulded seam actually does, and they are most of
        * what separates a basketball from an orange dot. */
-      const sr = r * 0.995;
+      /* Set INSIDE the surface, not proud of it. A moulded seam is a channel
+       * pressed into the leather; drawn standing off the ball it read as string
+       * wound round an orange, and it was the other half of why the ball looked
+       * like a toy. Sunk to just under the radius, what shows is the dark line
+       * in the groove, which is all you actually see of a real one. */
+      const sr = r * 0.955;
       const rot = this.rot;
+      const k = this.spinAxis;
+      const cr = Math.cos(rot), st0 = Math.sin(rot), t0 = 1 - cr;
       for (let s = 0; s < SEAMS.length; s++) {
         const seam = SEAMS[s];
         let px = 0, py = 0, pz = 0, have = false;
         for (let i = 0; i <= SEAM_SEGS; i++) {
           const t = (i / SEAM_SEGS) * Math.PI * 2;
           const ct = Math.cos(t), st = Math.sin(t);
-          // Point on the unit circle in the seam's own plane, then rotated
-          // into the ball's frame by its spin about the horizontal axis.
+          // Point on the unit circle in the seam's own plane...
           const ux = seam[0] * ct + seam[3] * st;
           const uy = seam[1] * ct + seam[4] * st;
           const uz = seam[2] * ct + seam[5] * st;
-          const cr = Math.cos(rot), srot = Math.sin(rot);
-          const ry = uy * cr - uz * srot;
-          const rz = uy * srot + uz * cr;
-          const wx = this.x + ux * sr, wy = this.y + ry * sr, wz = this.z + rz * sr;
+          /* ...then turned about the axis the ball is actually spinning on,
+           * by Rodrigues. This used to be a rotation in the y/z plane and
+           * nothing else, i.e. about world x whatever the ball was doing. */
+          const kd = k[0] * ux + k[1] * uy + k[2] * uz;
+          const rx = ux * cr + (k[1] * uz - k[2] * uy) * st0 + k[0] * kd * t0;
+          const ry = uy * cr + (k[2] * ux - k[0] * uz) * st0 + k[1] * kd * t0;
+          const rz = uz * cr + (k[0] * uy - k[1] * ux) * st0 + k[2] * kd * t0;
+          const wx = this.x + rx * sr, wy = this.y + ry * sr, wz = this.z + rz * sr;
           if (have) {
-            S3.limb(px, py, pz, wx, wy, wz, r * 0.075, SEAM_COL, 0.06);
+            S3.limb(px, py, pz, wx, wy, wz, r * 0.070, SEAM_COL, 0.06);
           }
           px = wx; py = wy; pz = wz; have = true;
         }
@@ -469,20 +521,26 @@
 
   /* ------------------------------------------------------------ appearance
    * Seam planes, each given as two orthogonal unit vectors spanning the plane
-   * the seam circle lies in: one round the middle, then three through the
-   * poles at 0, 60 and 120 degrees. Evenly spaced — the three polar circles
-   * used to sit at 0, 45 and 135, which leaves one lopsided gap twice the
-   * width of the others and is the sort of thing the eye catches without ever
-   * working out what it is looking at.
+   * the seam circle lies in.
+   *
+   * A basketball has EIGHT panels, and eight panels is three great circles:
+   * one round the middle and two through the poles at right angles to each
+   * other. Four lunes, halved by the equator.
+   *
+   * This carried four circles — the equator plus three polar ones at 0, 60 and
+   * 120 — which is twelve panels, and twelve panels is a volleyball. The count
+   * is the most recognisable thing about a basketball after the colour, and it
+   * was the one thing about the seams nobody had checked.
    */
   const SEAM_SEGS = 22;
-  const S60 = Math.sin(Math.PI / 3);          // 0.8660
   const SEAMS = [
-    [1, 0, 0, 0, 1, 0],
-    [1, 0, 0, 0, 0, 1],
-    [0.5, S60, 0, 0, 0, 1],
-    [-0.5, S60, 0, 0, 0, 1]
+    [1, 0, 0, 0, 1, 0],     // the equator
+    [1, 0, 0, 0, 0, 1],     // pole to pole
+    [0, 1, 0, 0, 0, 1]      // pole to pole, square to the one above
   ];
+  /* Turns a second a jump shot carries off the fingers. Real backspin on a
+   * jumper runs about two to three; passes carry roughly half of it. */
+  const SHOT_BACKSPIN = 2 * Math.PI * 2;
   /* Pebbled leather, a shade deeper than the old flat orange so the seams and
    * the white lines of the court both have something to sit against. */
   const BALL_COL = [0.788, 0.337, 0.106, 1];

@@ -355,13 +355,148 @@
   };
 
   /* ---------------------------------------------------------- dribble moves
-   * Crossover / behind-the-back / hesitation change direction on the spot to
-   * create separation; spin turns the whole body away from the defender.
-   * Durations are how long the move's own animation/kick lasts; cooldown
-   * (set in _startMove) is the minimum gap before another move can start. */
-  const MOVE_DURATION = { crossover: 0.30, behindBack: 0.36, spin: 0.46, hesitation: 0.42 };
-  const MOVE_COOLDOWN = { crossover: 0.32, behindBack: 0.38, spin: 0.65, hesitation: 0.40 };
-  const MOVE_CHAIN_WINDOW = 0.55; // a second dribble press within this window chains into behind-the-back
+   * `dur` is how long the move's own animation and kick last; `cool` is the
+   * minimum gap before another can start; `swap` is whether the ball finishes
+   * in the other hand, which is the thing that makes a move a move; `kick` is
+   * the lateral burst that sells the change of direction, in ft/s; `risk`
+   * multiplies the chance of losing the handle.
+   *
+   * Only four of these existed and none of them moved the ball — see BALL_PATH.
+   */
+  const MOVES = {
+    crossover:   { dur: 0.30, cool: 0.32, swap: true,  kick: 3.4, risk: 1.00 },
+    betweenLegs: { dur: 0.38, cool: 0.36, swap: true,  kick: 2.6, risk: 1.20 },
+    behindBack:  { dur: 0.40, cool: 0.40, swap: true,  kick: 4.0, risk: 1.40 },
+    hesitation:  { dur: 0.42, cool: 0.40, swap: false, kick: 0,   risk: 0.90 },
+    inAndOut:    { dur: 0.32, cool: 0.30, swap: false, kick: 1.5, risk: 1.00 },
+    spin:        { dur: 0.46, cool: 0.65, swap: true,  kick: 0,   risk: 1.40 }
+  };
+  const MOVE_DURATION = {};
+  for (const k in MOVES) MOVE_DURATION[k] = MOVES[k].dur;
+  const MOVE_CHAIN_WINDOW = 0.55; // a second press within this window chains
+  /* How much of a move is spent collecting the ball out of whatever the
+   * bounce was doing when the key went down. */
+  const MOVE_GATHER = 0.30;
+
+  /* Which input action starts which move. Order matters only in that the first
+   * pressed key wins, and nobody presses two at once on purpose. */
+  const MOVE_KEYS = [
+    ['dribbleCross', 'crossover'],
+    ['dribbleTween', 'betweenLegs'],
+    ['dribbleBehind', 'behindBack'],
+    ['dribbleHesi', 'hesitation'],
+    ['dribbleInOut', 'inAndOut'],
+    ['dribbleSpin', 'spin']
+  ];
+
+  /* ----------------------------------------------------------- the ball path
+   * Where the BALL is through each move, in the player's own frame: `fwd`
+   * ahead of them, `lat` to their RIGHT, `up` off the floor, all in skeleton
+   * units so a bigger player has a proportionally bigger handle.
+   *
+   * This is the piece that did not exist. The moves animated an arm and left
+   * the ball glued to the right wrist, so — measured on every frame of both —
+   * a crossover and a behind-the-back were the same thing: the ball travelling
+   * from behind the player to in front of them, seven inches to their right,
+   * at a lateral position that never changed by so much as a thousandth. It
+   * never crossed the body, never went behind it, and was never once in the
+   * left hand, because handPosition() asked handAt() for a side and handAt()
+   * defaults to the right.
+   *
+   * A move is a thing the BALL does. The hands are posed to meet it.
+   *
+   * `fall(k)` is the free-fall shape — 0 at the palm, 1 at the floor, squared
+   * so the ball is quickest where it is lowest. Sideways travel is linear,
+   * because nothing pushes a ball sideways once it has left the hand; the two
+   * paths that curve say why.
+   *
+   * `c` carries the figure's own dimensions: `lo` the ball's centre resting on
+   * the floor, `hi` the height it tops out at in the hand, `lat` how far to the
+   * side a hand dribbles it, and `dir` which hand it starts in (+1 right).
+   */
+  function fall(k) { const s = k < 0.5 ? k * 2 : (1 - k) * 2; return s * s; }
+
+  /* Where a resting dribble keeps the ball, fore/aft — the same offset the
+   * dribbling-hand pose uses. EVERY path starts and ends here, and at its
+   * hand's own lateral, because the free bounce takes over on the frame the
+   * move ends and anywhere else is a jump. Height is the one thing that may
+   * differ, and _syncDribblePhase picks the bounce up at whatever height the
+   * move left the ball at. */
+  const REST_FWD = 0.11;
+
+  const BALL_PATH = {
+    /* Straight across the front on one hard bounce. Low and quick — the whole
+     * move IS the bounce, and it clears out in front so it misses the feet. */
+    crossover(k, c) {
+      return {
+        fwd: REST_FWD + Math.sin(k * Math.PI) * 0.15,
+        lat: U.lerp(c.lat * c.dir, -c.lat * c.dir, k),
+        up: U.lerp(c.hi * 0.70, c.lo, fall(k))
+      };
+    },
+    /* Through the gap, back-to-front, and lower than a crossover because it has
+     * to pass under the crotch. The stance splits to open the gap — see the
+     * pose — or the ball goes through a thigh. */
+    betweenLegs(k, c) {
+      return {
+        fwd: REST_FWD - Math.sin(k * Math.PI) * 0.27,
+        lat: U.lerp(c.lat * c.dir, -c.lat * c.dir, k),
+        up: U.lerp(c.hi * 0.58, c.lo, fall(k))
+      };
+    },
+    /* Round the back, bouncing behind the heels.
+     *
+     * The fore/aft curve is the one place a straight line would be wrong. The
+     * ball leaves the hand travelling back and across and comes up on the far
+     * side in front — which only reconciles because the PLAYER is running
+     * forward underneath it, and this frame moves with the player. In the
+     * gym you are stepping past the ball while it is behind you. */
+    behindBack(k, c) {
+      return {
+        fwd: REST_FWD - Math.sin(k * Math.PI) * 0.62,
+        lat: U.lerp(c.lat * c.dir, -c.lat * c.dir, k),
+        up: U.lerp(c.hi * 0.82, c.lo, fall(k))
+      };
+    },
+    /* The ball comes up and STOPS there while the body rises as if to pull up.
+     * The stall is the whole fake; then it is pushed out ahead and the player
+     * goes with it. Same hand throughout — a hesi that changes hands is a
+     * crossover. */
+    hesitation(k, c) {
+      const hold = U.ease.outCubic(U.clamp01(k / 0.55));
+      const go = k > 0.55 ? (k - 0.55) / 0.45 : 0;
+      return {
+        // Out in front and back under the hand, because the player is running
+        // onto it — the ball is not left out there, it is arrived at.
+        fwd: REST_FWD + Math.sin(go * Math.PI) * 0.26,
+        lat: c.lat * c.dir,
+        up: U.lerp(U.lerp(c.lo, c.hi, hold), c.lo, go * go)
+      };
+    },
+    /* In toward the midline and back out without ever reaching it — a
+     * crossover the ball does not complete. The hand rolls over the outside of
+     * the ball to bring it back, which is why it stays on the same side. */
+    inAndOut(k, c) {
+      const swing = Math.sin(k * Math.PI);
+      return {
+        fwd: REST_FWD + swing * 0.12,
+        lat: c.lat * c.dir * (1 - swing * 0.80),
+        up: U.lerp(c.hi * 0.76, c.lo, fall(k))
+      };
+    },
+    /* Carried, not bounced. Through a spin the ball is pinned in against the
+     * hip and the body turns around it — which is the only way to keep it from
+     * the defender whose side you are turning your back to. */
+    spin(k, c) {
+      const s = U.ease.inOutSine(k);
+      return {
+        fwd: REST_FWD - Math.sin(k * Math.PI) * 0.12,
+        // Pulled in tight through the turn, out to the hand at either end.
+        lat: U.lerp(c.lat * c.dir, -c.lat * c.dir, s) * (1 - Math.sin(k * Math.PI) * 0.30),
+        up: c.hi * 0.74 - Math.sin(k * Math.PI) * c.hi * 0.12
+      };
+    }
+  };
 
   let NEXT_ID = 1;
 
@@ -428,6 +563,12 @@
       /* -------------------------------------------------------- animation */
       this.stridePhase = 0;
       this.dribblePhase = 0;
+      /* Which hand the ball is in: +1 right, -1 left. It had no answer before,
+       * which is to say the answer was always the right hand — handPosition()
+       * asked handAt() without a side and handAt() defaults. A crossover that
+       * does not change hands is an arm waving. */
+      this.dribbleHand = 1;
+      this._moveFromHand = 1;
       this.armRaise = 0;           // 0..1, hands up for a shot
       this.lean = 0;               // signed, forward lean from acceleration
       this.squash = 0;             // landing squash-and-stretch
@@ -627,9 +768,80 @@
         out.z = U.lerp(this.handZ - 0.6, this.handZ + 1.6, this.armRaise);
         return out;
       }
-      this.handAt(out);
+      /* Mid-move the ball is not in a hand at all — it is in the air between
+       * two of them, which is the entire point of a dribble move and the thing
+       * the old code had no way to express. */
+      if (this.moveState && BALL_PATH[this.moveState]) {
+        return this._moveBallPos(out);
+      }
+      this.handAt(out, this.dribbleHand);
       out.z = this._dribbleZ(out.z);
       return out;
+    }
+
+    /**
+     * The figure's own handle dimensions, in skeleton units, for BALL_PATH.
+     *
+     * Computed from constants rather than read off the live pose, so the ball
+     * path and the hands posed to meet it (in _updatePose) cannot disagree
+     * about where the ball is, whichever runs first in a frame.
+     */
+    _pathCtx(out) {
+      out = out || PATH_CTX;
+      out.lo = C.BALL_RADIUS / this.bodyScale;
+      // A waist-high dribble tops out a little above the hip, which is what
+      // "waist-high" means.
+      out.hi = REST_HIP * 1.15;
+      out.lat = BONE.shoulderW * SPLAY.wrist;
+      out.dir = this._moveFromHand;
+      return out;
+    }
+
+    /** World point on the current move's ball path. */
+    _moveBallPos(out) {
+      const mv = MOVES[this.moveState];
+      const k = U.clamp01(this.moveT / mv.dur);
+      const b = BALL_PATH[this.moveState](k, this._pathCtx());
+      const s = this.bodyScale;
+      const fx = Math.cos(this.facing), fy = Math.sin(this.facing);
+      // The player's right, in world terms — the same axis posePoint uses.
+      const rx = Math.sin(this.facing), ry = -Math.cos(this.facing);
+      out.x = this.x + (b.fwd * fx + b.lat * rx) * s;
+      out.y = this.y + (b.fwd * fy + b.lat * ry) * s;
+      out.z = this.z + b.up * s;
+
+      /* Gather onto the path over the first beat, from wherever the ball
+       * happened to be when the move started.
+       *
+       * A move can begin at any point in the bounce, and the path's first
+       * point is where the hand takes it — so without this the ball jumps
+       * across the gap between the two on the frame the key goes down. A real
+       * move starts on the catch, and this is that catch: the hand collects
+       * the ball and puts it on its way. */
+      const g = k / MOVE_GATHER;
+      if (g < 1 && this._ball0) {
+        const w = U.ease.inOutSine(g);
+        out.x = U.lerp(this._ball0.x, out.x, w);
+        out.y = U.lerp(this._ball0.y, out.y, w);
+        out.z = U.lerp(this._ball0.z, out.z, w);
+      }
+      return out;
+    }
+
+    /**
+     * Put the free-running bounce back in step with a height the ball is
+     * already at, so leaving a move does not jump it.
+     *
+     * _dribbleZ is a parabola between the floor and the palm; this inverts it
+     * on the falling branch, which is the branch the ball is on when a move
+     * hands it back.
+     */
+    _syncDribblePhase(z) {
+      const handZ = this.handAt(TMP_V, this.dribbleHand).z;
+      const low = C.BALL_RADIUS;
+      const high = Math.max(low + 0.05, handZ - C.BALL_RADIUS * 0.5);
+      const q = Math.sqrt(U.clamp01((high - z) / (high - low)));
+      this.dribblePhase = Math.floor(this.dribblePhase) + 1 + q * 0.5;
     }
 
     /**
@@ -649,12 +861,41 @@
       return out;
     }
 
-    /** Ball height across one bounce: floor at the bottom, palm at the top. */
+    /**
+     * Ball height across one bounce: floor at the bottom, palm at the top.
+     *
+     * A real parabola, not a cosine. Under gravity a ball is at its FASTEST at
+     * the floor and its slowest at the top; a raised cosine is slowest at both
+     * ends, so the old ball hung around down by the boards on every bounce and
+     * shot through the middle of its travel. It is the difference between a
+     * dribble and something bobbing on a string, and it is on screen for the
+     * whole game.
+     */
     _dribbleZ(handZ) {
-      const low = C.BALL_RADIUS + 0.02;
-      const high = Math.max(low, handZ - C.BALL_RADIUS * 0.5);
-      const c = (Math.cos(this.dribblePhase * Math.PI * 2) + 1) * 0.5; // 1 = in hand
-      return U.lerp(low, high, c);
+      const low = C.BALL_RADIUS;
+      const high = Math.max(low + 0.05, handZ - C.BALL_RADIUS * 0.5);
+      // 0 at the palm, 1 at the floor, so the shape below is the free fall.
+      const u = this.dribblePhase - Math.floor(this.dribblePhase);
+      const q = 2 * Math.min(u, 1 - u);
+      return high - (high - low) * q * q;
+    }
+
+    /**
+     * How many bounces a second this dribble runs at.
+     *
+     * Derived from how high the ball is going rather than picked: a ball that
+     * falls `h` and comes back takes `2*sqrt(2h/g)` to do it, and no dribbler
+     * gets to choose otherwise. The rate was a hand-set 1.7-3.0Hz against an
+     * apex the pose put at chest height, which is a ball falling three feet in
+     * a third of a second — about three times gravity.
+     *
+     * So the height is the control and the rate follows, which is also how it
+     * works in the hand: to dribble faster you dribble LOWER.
+     */
+    _dribbleRate(handZ) {
+      const low = C.BALL_RADIUS;
+      const high = Math.max(low + 0.05, handZ - C.BALL_RADIUS * 0.5);
+      return 1 / (2 * Math.sqrt(2 * (high - low) / C.GRAVITY));
     }
 
     /* --------------------------------------------------------------- setup */
@@ -682,6 +923,13 @@
       this._pivotX = null;
       this._pivotY = null;
       this._traveled = false;
+      /* Take it in the strong hand. A player catching a pass has not just
+       * finished a crossover, and leaving the hand wherever the last
+       * possession ended would start them dribbling left-handed for no reason
+       * anyone watching could account for. */
+      this.dribbleHand = 1;
+      this._moveFromHand = 1;
+      this.moveState = null;
       // aiPatience otherwise defaults to 0 and is only ever reset after a
       // shot — meaning a player's FIRST possession (a rebound, a steal, the
       // opening tip) would immediately read as "out of patience" and force
@@ -740,9 +988,20 @@
         if (input.pressed('block')) this.tryBlock(this._ballRef);
       }
 
-      if (this.hasBall && !this.isBusyShooting && this._dribbleLive && input.pressed('dribble')) {
-        const lateral = input.down('left') ? -1 : (input.down('right') ? 1 : 0);
-        this._tryDribbleMove(lateral, input.down('sprint'));
+      /* A key per move, and one that picks for you.
+       *
+       * The named keys go straight to the move — no direction, because a move
+       * does not take one: the ball is in a hand and there is only one way out
+       * of it. `dribble` is still here for the pad, which has no free face
+       * buttons, and for anyone who would rather press one key than six. */
+      if (this.hasBall && !this.isBusyShooting && this._dribbleLive) {
+        for (let i = 0; i < MOVE_KEYS.length; i++) {
+          if (input.pressed(MOVE_KEYS[i][0]) && this.startMove(MOVE_KEYS[i][1])) break;
+        }
+        if (input.pressed('dribble')) {
+          const lateral = input.down('left') ? -1 : (input.down('right') ? 1 : 0);
+          this._tryDribbleMove(lateral, input.down('sprint'));
+        }
       }
 
       if (this.hasBall && !this.isBusyShooting && input.pressed('pickup')) {
@@ -774,11 +1033,17 @@
     _tryDribbleMove(lateral, sprintHeld) {
       if (this.moveCooldown > 0 || this.moveState) return false;
 
+      /* The generic dribble button, still here because the AI drives it and
+       * because nobody should have to learn six keys to dribble. Chaining
+       * escalates: a second press inside the window goes between the legs, a
+       * third goes behind the back, which is the order they come in when
+       * somebody is actually stringing a handle together. */
+      const chained = (this._animClock - this._lastMoveT) < MOVE_CHAIN_WINDOW;
       let type = null;
       if (sprintHeld && (this.intentMag || 0) > 0.25) {
         type = 'spin';
-      } else if (lateral !== 0 && (this._animClock - this._lastMoveT) < MOVE_CHAIN_WINDOW) {
-        type = 'behindBack';
+      } else if (lateral !== 0 && chained) {
+        type = this._lastMoveType === 'crossover' ? 'betweenLegs' : 'behindBack';
       } else if (lateral !== 0) {
         type = 'crossover';
       } else if ((this.intentMag || 0) < 0.25) {
@@ -786,35 +1051,56 @@
       }
       if (!type) return false;
 
-      this._startMove(type, lateral || (U.rng.chance(0.5) ? 1 : -1));
+      this.startMove(type);
+      return true;
+    }
+
+    /**
+     * Start a named move. The public entry point — one key per move drives
+     * this directly, and _tryDribbleMove picks a name and calls it.
+     *
+     * There is no direction argument, because a move does not get one: you
+     * cannot cross over from your left hand into your left hand. Which way the
+     * ball goes, which way the body breaks and which way the defender is sold
+     * all follow from the hand it is in.
+     */
+    startMove(type) {
+      if (!MOVES[type] || this.moveCooldown > 0 || this.moveState) return false;
+      if (!this.hasBall || !this._dribbleLive || this.isBusyShooting) return false;
+      this._startMove(type, this.dribbleHand);
       return true;
     }
 
     _startMove(type, dir) {
+      // Where the ball is RIGHT NOW, before moveState redirects handPosition
+      // onto the path — _moveBallPos gathers it from here.
+      this._ball0 = Object.assign(this._ball0 || {}, this.handPosition(TMP_V));
       this.moveState = type;
       this.moveT = 0;
       this.moveDir = dir;
+      this._moveFromHand = this.dribbleHand;
+      this._lastMoveType = type;
       this._lastMoveT = this._animClock;
-      this.moveCooldown = MOVE_COOLDOWN[type];
+      const mv = MOVES[type];
+      this.moveCooldown = mv.cool;
 
       // Harder, more committal moves are riskier for a shaky ball handler.
-      const riskMul = (type === 'spin' || type === 'behindBack') ? 1.4 : 1.0;
-      const fumbleChance = U.remap(this.ratings.ballHandle, 25, 99, 0.16, 0.008) * riskMul;
+      const fumbleChance = U.remap(this.ratings.ballHandle, 25, 99, 0.16, 0.008) * mv.risk;
       this._moveFumble = U.rng.chance(fumbleChance);
 
       if (type === 'spin') {
         this._spinFromFacing = this.facing;
         this._spinToFacing = this.facing + Math.PI * dir;
-      } else {
-        // A brief lateral kick sells the change of direction; normal
-        // acceleration/deceleration physics takes over immediately after,
-        // so it never fights the regular movement model.
-        const kick = { crossover: 3.4, behindBack: 4.0, hesitation: 0 }[type] || 0;
-        if (kick) {
-          const perp = this.facing + Math.PI / 2;
-          this.vx += Math.cos(perp) * dir * kick;
-          this.vy += Math.sin(perp) * dir * kick;
-        }
+      } else if (mv.kick) {
+        /* A brief lateral kick sells the change of direction; normal
+         * acceleration/deceleration physics takes over immediately after, so
+         * it never fights the regular movement model.
+         *
+         * `dir` is the hand the ball STARTED in, and the two agree: the ball
+         * leaves your right hand going left, and so do you. */
+        const perp = this.facing + Math.PI / 2;
+        this.vx += Math.cos(perp) * dir * mv.kick;
+        this.vy += Math.sin(perp) * dir * mv.kick;
       }
 
       // The actual mechanism that sells a shake: nudge the defender's
@@ -822,8 +1108,7 @@
       // briefly lags behind. A fumbled move sells nothing — you telegraphed
       // it by bobbling the ball.
       if (this.opponent && this.opponent._beliefX != null && !this._moveFumble) {
-        const strength = U.remap(this.ratings.ballHandle, 25, 99, 0.5, 2.4) *
-          (type === 'spin' ? 1.35 : type === 'behindBack' ? 1.15 : type === 'hesitation' ? 0.9 : 1.0);
+        const strength = U.remap(this.ratings.ballHandle, 25, 99, 0.5, 2.4) * mv.risk;
         const perp = this.facing + Math.PI / 2;
         this.opponent._beliefX += Math.cos(perp) * dir * strength;
         this.opponent._beliefY += Math.sin(perp) * dir * strength;
@@ -955,10 +1240,10 @@
       }
 
       if (speed > 0.05) this._advanceStride(speed, top, dt);
-      if (this.hasBall && this._dribbleLive && this.action === ACTION.MOVE) {
-        this.dribblePhase += dt * (1.7 + (speed / top) * 1.3);
-      } else if (this.hasBall && this._dribbleLive && this.action === ACTION.IDLE) {
-        this.dribblePhase += dt * 1.5;
+      if (this.hasBall && this._dribbleLive &&
+          (this.action === ACTION.MOVE || this.action === ACTION.IDLE)) {
+        // Gravity sets the rate, off the height the pose is dribbling at.
+        this.dribblePhase += dt * this._dribbleRate(this.handAt(TMP_V).z);
       }
 
       this._integrate(dt);
@@ -1778,7 +2063,18 @@
           this._fumbleBall();
           this._fumbleAt = -1;
         }
-        if (this.moveT >= MOVE_DURATION[this.moveState]) this.moveState = null;
+        if (this.moveT >= MOVES[this.moveState].dur) {
+          /* The ball finishes where the path put it. A move that swaps hands
+           * has carried it to the other one, and the resting dribble has to
+           * pick it up there or it teleports back across the body on the frame
+           * the move ends. */
+          const endZ = this._moveBallPos(TMP_V).z;
+          if (MOVES[this.moveState].swap) this.dribbleHand = -this._moveFromHand;
+          this.moveState = null;
+          // Pick the bounce up at the height the move left the ball at, so it
+          // does not jump on the frame the move ends.
+          this._syncDribblePhase(endZ);
+        }
       }
       this._updateDefense(dt, ball);
       this.updateShotState(dt, ball);
@@ -2476,78 +2772,121 @@
         frX = BONE.hipW * 0.55; frY = -tuck - fall * 0.02;
       }
 
-      /* ---- dribbling hand: reaches down on the bounce, up on the catch --- */
+      /* ---- dribbling hand: reaches down on the bounce, up on the catch ---
+       * Whichever hand the ball is actually in. It was hard-coded to the right
+       * one, and so was every pose the game has ever drawn. */
       if (this.hasBall && !this.isBusyShooting) {
         const c = (Math.cos(this.dribblePhase * Math.PI * 2) + 1) * 0.5; // 1=held high, 0=at the bounce
-        hrX = shR + 0.11;                          // ball works out in front of the hip
-        hrY = U.lerp(reachY(shoulderY, 0.99), reachY(shoulderY, 0.72), c);
-        hlX = shL + 0.09; hlY = reachY(shoulderY, 0.94); // guide hand close, out of the way
+        const on = this.dribbleHand, off = -on;
+        const onX = (on < 0 ? shL : shR) + 0.11;   // ball works out in front of the hip
+        const onY = U.lerp(reachY(shoulderY, 0.99), reachY(shoulderY, 0.72), c);
+        const offX = (off < 0 ? shL : shR) + 0.09; // guide hand close, out of the way
+        const offY = reachY(shoulderY, 0.94);
+        if (on < 0) { hlX = onX; hlY = onY; hrX = offX; hrY = offY; }
+        else { hrX = onX; hrY = onY; hlX = offX; hlY = offY; }
       }
 
-      /* ---- dribble moves: crossover / behind-the-back / spin / hesitation -
-       * Each of these now visibly winds the shoulders against the hips
-       * (hipLean vs torsoLean) instead of the whole body swinging as one
-       * rigid block — that counter-twist is most of what sells a real
-       * change-of-direction move rather than just an arm waving sideways. */
-      if (this.moveState && this.hasBall) {
-        const dur = MOVE_DURATION[this.moveState];
-        const k = U.clamp01(this.moveT / dur);
+      /* ---- dribble moves ------------------------------------------------
+       * The hands are posed to MEET THE BALL, wherever BALL_PATH has put it.
+       *
+       * This used to be six hand-authored arm animations with the ball glued
+       * to the right wrist, which is why none of them looked like the move
+       * they were named after — the ball was not in any of them. Driving the
+       * hands off the path instead means the two cannot disagree, and it is
+       * the same reasoning as everywhere else in this file: one definition,
+       * read by everybody who needs the answer.
+       *
+       * The hand that lets the ball go follows it out; the hand that receives
+       * it comes to meet it. In between, neither is on it — which is exactly
+       * what a dribble move is. */
+      if (this.moveState && this.hasBall && BALL_PATH[this.moveState]) {
+        const mv = MOVES[this.moveState];
+        const k = U.clamp01(this.moveT / mv.dur);
         const dir = this.moveDir;
+        const b = BALL_PATH[this.moveState](k, this._pathCtx());
+        const src = this._moveFromHand;
 
-        if (this.moveState === 'crossover') {
-          const sweep = U.ease.inOutSine(k);
-          // Lower and sharper than a normal dribble — the ball dips toward
-          // the floor at the midpoint of the sweep, the classic low snap.
-          const dip = Math.sin(sweep * Math.PI);
-          const sweepX = U.lerp(-0.28 * dir, 0.28 * dir, sweep);
-          hrX = shR + sweepX;
-          hrY = hipY + 0.10 + dip * 0.14;
-          hlX = shL - sweepX * 0.32; hlY = hipY + 0.30 - dip * 0.06;
-          torsoLean = -dip * dir * 0.07;
-          hipLean = dip * dir * 0.035; // hips barely move — the fake lives in the shoulders
-          shoulderY += dip * 0.03;
+        /* How much each hand is ON the ball right now. A move that changes
+         * hands pushes it out of one and gathers it into the other, with a beat
+         * in between where neither has it — that beat is the move. A move that
+         * does NOT change hands never lets go, so its hand stays with the ball
+         * the whole way; weighting it like a hand-off left the ball out in
+         * front of a hesitation with nobody near it. */
+        let wL, wR;
+        if (mv.swap) {
+          const give = 1 - U.ease.inOutSine(U.clamp01(k / 0.42));
+          const take = U.ease.inOutSine(U.clamp01((k - 0.52) / 0.48));
+          wL = src < 0 ? give : take;
+          wR = src > 0 ? give : take;
+        } else {
+          wL = src < 0 ? 1 : 0;
+          wR = src > 0 ? 1 : 0;
+        }
 
-        } else if (this.moveState === 'behindBack') {
-          const sweep = U.ease.inOutSine(k);
-          const dip = Math.sin(sweep * Math.PI);
-          // A wider, lower sweep that carries past the hip to read as going
-          // around the body, with real torso wind-up against planted hips.
-          const sweepX = U.lerp(-0.34 * dir, 0.38 * dir, sweep);
-          hrX = shR + sweepX;
-          hrY = hipY + 0.02 + dip * 0.18;
-          hlX = shL - sweepX * 0.28; hlY = hipY + 0.28;
-          torsoLean = dip * dir * 0.09;
-          hipLean = dip * dir * 0.02;
+        /* A hand goes to the ball, but only as far as an arm goes. A
+         * dribbler's hand stays OVER the ball; it does not chase it to the
+         * floor, and asking it to means handing the solver a target outside
+         * the arm, which comes back clamped and draws as a pole. */
+        const reach = (w, side) => {
+          const sh = side < 0 ? shL : shR;
+          const over = Math.min(-b.up - 0.10, reachY(shoulderY, 0.97));
+          return {
+            x: U.lerp(sh + 0.09, sh + b.fwd, w),
+            y: U.lerp(reachY(shoulderY, 0.94), over, w),
+            lat: U.lerp(side * BONE.shoulderW * SPLAY.wrist, b.lat, w)
+          };
+        };
+        const L = reach(wL, -1);
+        const R = reach(wR, 1);
+        hlX = L.x; hlY = L.y; hlLat = L.lat;
+        hrX = R.x; hrY = R.y; hrLat = R.lat;
+        // The elbows stay outside the wrists, so the arms read as arms rather
+        // than as two lines converging on the ball.
+        elLatL = Math.min(L.lat - 0.04, -BONE.shoulderW * 0.72);
+        elLatR = Math.max(R.lat + 0.04, BONE.shoulderW * 0.72);
+        armTuck = 0;
+        armRoll = 0;
+
+        /* The counter-twist is most of what sells a change of direction: the
+         * shoulders wind against the hips rather than the whole body swinging
+         * as one block. Driven off where the ball is, so it leans into the
+         * move instead of being timed separately from it. */
+        const across = -b.lat / Math.max(1e-6, BONE.shoulderW);
+        torsoLean = across * 0.05;
+        hipLean = across * 0.018;
+
+        if (this.moveState === 'betweenLegs') {
+          /* The gap has to be open or the ball goes through a thigh. The foot
+           * on the side the ball is LEAVING steps forward, which is the stance
+           * you are already in when you put it between your legs. */
+          const split = Math.sin(k * Math.PI) * 0.30;
+          if (src > 0) { frX += split; flX -= split * 0.6; }
+          else { flX += split; frX -= split * 0.6; }
+          flY -= 0.05; frY -= 0.05;                 // sink into it
 
         } else if (this.moveState === 'spin') {
-          // Ball protected in tight to the body for the whole rotation, low
-          // and compact, with a deeper knee bend to sell the pivot.
-          hrX = shR + 0.02; hrY = hipY + 0.22;
-          hlX = shL + 0.06; hlY = hipY + 0.30;
+          // Compact through the turn: feet under the hips, knees loaded.
           flX *= 0.42; frX *= 0.42;
           flY -= 0.05; frY -= 0.05;
-          // The shoulders lead the turn; hips catch up a beat behind.
           torsoLean = 0;
           hipLean = 0;
 
         } else if (this.moveState === 'hesitation') {
-          if (k < 0.55) {
-            // The freeze: a held, deliberately low dribble with a real
-            // crouch and a sharper stutter than before.
-            const kk = U.clamp01(k / 0.55);
-            const stutter = (Math.cos(this._animClock * 16) + 1) * 0.5;
-            const crouch = U.ease.outCubic(kk) * 0.14;
-            hrX = shR + 0.10; hrY = hipY + 0.02 + stutter * 0.04 + crouch * 0.3;
-            hlX = shL + 0.12; hlY = hipY + 0.26;
-            flY -= crouch * 0.5; frY -= crouch * 0.5;
-            torsoLean = crouch * 0.5;
-          } else {
-            // The burst: full extension as the player explodes forward,
-            // hand climbing back up and out ahead of the body.
-            const go = U.ease.outCubic((k - 0.55) / 0.45);
-            hrX = shR + U.lerp(0.10, 0.22, go); hrY = U.lerp(hipY + 0.16, hipY + 0.50, go);
-            torsoLean = U.lerp(0.07, -0.10, go);
-          }
+          /* The freeze, then the burst. The body rises as if pulling up — that
+           * is the fake — and drops back into the drive as the ball goes out
+           * in front. */
+          const rise = U.ease.outCubic(U.clamp01(k / 0.55));
+          const go = k > 0.55 ? U.ease.outCubic((k - 0.55) / 0.45) : 0;
+          const crouch = rise * 0.14 * (1 - go);
+          flY -= crouch * 0.5; frY -= crouch * 0.5;
+          torsoLean = crouch * 0.5 - go * 0.12;
+
+        } else if (this.moveState === 'crossover' || this.moveState === 'behindBack') {
+          // Sink into it. A crossover taken standing upright is a pass to
+          // yourself; the whole move happens below the waist.
+          const dip = Math.sin(k * Math.PI);
+          flY -= dip * 0.06; frY -= dip * 0.06;
+          shoulderY += dip * 0.03;
         }
       }
 
@@ -3245,6 +3584,9 @@
 
   const TMP_V = { x: 0, y: 0, z: 0 };
   const TMP_MOVE = { x: 0, y: 0, mag: 0 };
+  /* The handle's dimensions, refilled per call. Shared for the same reason
+   * everything else here is: a figure is always posed synchronously. */
+  const PATH_CTX = { lo: 0, hi: 0, lat: 0, dir: 1 };
 
   /* Scratch world points for draw(). Shared across every player because the
    * whole figure is submitted synchronously inside one draw() call. */
@@ -3562,6 +3904,11 @@
    * draw() places the joints with. */
   Player.wristWidth = wristWidth;
   Player.elbowWidth = elbowWidth;
+  /* The dribble move table and the ball paths, so a check can drive a move for
+   * exactly as long as it lasts and measure where the ball went — rather than
+   * re-deriving either, which is how a check ends up agreeing with itself. */
+  Player.MOVES = MOVES;
+  Player.BALL_PATH = BALL_PATH;
   Player.RATING_KEYS = RATING_KEYS;
   Player.TENDENCY_KEYS = TENDENCY_KEYS;
   Player.computeOverall = computeOverall;

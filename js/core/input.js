@@ -23,7 +23,18 @@
     pass:      ['KeyJ'],
     lob:       ['KeyK'],
     sprint:    ['ShiftLeft', 'ShiftRight'],
+    /* One key per dribble move, sat under the right hand beside J/K/L.
+     *
+     * `dribble` stays as the one that picks a move for you — the pad has no
+     * free face buttons for six of anything, the tutorial teaches it, and
+     * nobody should have to learn six keys before they can dribble. */
     dribble:   ['KeyL'],
+    dribbleCross:  ['KeyU'],
+    dribbleTween:  ['KeyI'],
+    dribbleBehind: ['KeyO'],
+    dribbleHesi:   ['KeyH'],
+    dribbleInOut:  ['KeyN'],
+    dribbleSpin:   ['KeyM'],
     pickup:    ['KeyB'],
     steal:     ['KeyJ'],
     block:     ['KeyK'],

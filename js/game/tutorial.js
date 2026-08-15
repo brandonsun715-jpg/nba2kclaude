@@ -58,8 +58,8 @@
       id: 'dribble',
       title: 'Move the ball',
       task: 'Pull off 3 dribble moves.',
-      why: 'On its own it is a hesitation. Add a direction for a crossover, or hold sprint for a spin.',
-      keys: ['dribble'],
+      why: 'One key per move: crossover, between the legs, behind the back, hesitation, in and out, spin. Which way each one goes follows from the hand the ball is in.',
+      keys: ['dribbleCross', 'dribbleTween', 'dribbleBehind', 'dribbleHesi', 'dribbleInOut', 'dribbleSpin'],
       enter(t) { t.giveBall(); },
       test(t, dt) {
         const p = t.pl;

@@ -523,7 +523,11 @@
         const rows = [
           ['up', 'Move up'], ['down', 'Move down'], ['left', 'Move left'], ['right', 'Move right'],
           ['sprint', 'Sprint'], ['shoot', 'Shoot / gather'], ['pass', 'Pass / steal'],
-          ['lob', 'Lob / block'], ['dribble', 'Dribble move (+ direction/Shift)'],
+          ['lob', 'Lob / block'],
+          ['dribbleCross', 'Crossover'], ['dribbleTween', 'Between the legs'],
+          ['dribbleBehind', 'Behind the back'], ['dribbleHesi', 'Hesitation'],
+          ['dribbleInOut', 'In and out'], ['dribbleSpin', 'Spin'],
+          ['dribble', 'Dribble move — picks one for you (also the gamepad button)'],
           ['pickup', 'Pick up dribble (press again to fake a re-dribble)'],
           ['switchMan', 'Switch defender'],
           ['intense', 'Intense defence'], ['timeout', 'Timeout'], ['pause', 'Pause']
@@ -626,10 +630,18 @@
       {
         name: 'Keeping the ball',
         note: 'A dribble move buys you a step. Chaining one into another buys ' +
-              'more, but the defender is reading the same window you are.',
+              'more, but the defender is reading the same window you are. ' +
+              'Which way a move goes is not up to you — the ball is in one ' +
+              'hand and there is only one way out of it.',
         practice: ['oneVone', 'Try it in 1 vs 1'],
         lessons: [
-          ['dribble', 'Dribble move', 'On its own this is a hesitation. Add a direction for a crossover, or hold Sprint for a spin.'],
+          ['dribbleCross', 'Crossover', 'One hard bounce across the front of your feet, into the other hand. The quickest way to change direction and the easiest to read.'],
+          ['dribbleTween', 'Between the legs', 'Through the gap, into the other hand. Your legs are between the ball and the defender the whole way, so it is the safest of the changes — and the slowest.'],
+          ['dribbleBehind', 'Behind the back', 'Round your hips, into the other hand. Keeps the ball furthest from a defender who is reaching, and buys the biggest step; it is also the easiest to lose.'],
+          ['dribbleHesi', 'Hesitation', 'Catch it high and stand up as if you are pulling up, then go. Same hand throughout — nothing changes but the defender\'s mind.'],
+          ['dribbleInOut', 'In and out', 'Push it toward the middle and take it straight back. A crossover you do not finish; it sells the same lean for half the risk.'],
+          ['dribbleSpin', 'Spin', 'Turn your back and take the ball round with you. It beats a defender who has committed, and it costs you sight of the floor while you do it.'],
+          ['dribble', 'Or let it pick', 'One key, and the game chooses a move to fit. Press it again inside the window to chain: crossover, then between the legs, then behind the back. This is also the gamepad button.'],
           ['pickup', 'Pick up your dribble', 'Gathers the ball into two hands. Press it again to fake a re-dribble — but you cannot legally start dribbling again, and the referee is watching.'],
           [null, 'Travelling', 'Moving too far after you have gathered is a travel and a turnover. Gather when you are ready to do something with it.']
         ]

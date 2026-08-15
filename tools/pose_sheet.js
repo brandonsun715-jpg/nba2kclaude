@@ -95,21 +95,45 @@ const POSES = [
   ['airborne', `
     p.jumping = true; p.z = 1.2; p.vx = 0; p.vy = 0;`],
 
+  /* The dribble moves, driven off the game's own table rather than a copy of
+   * the durations — a sheet that disagrees with the game about how long a move
+   * lasts is drawing a pose the game never holds. `_moveFromHand` is what the
+   * ball path reads, so it has to be set as _startMove would. */
   ['crossover', `
-    p.hasBall = true; p.moveState = 'crossover';
-    p.moveT = t * 0.30;`],
+    p.hasBall = true; p._dribbleLive = true;
+    p.dribbleHand = 1; p._moveFromHand = 1;
+    p.moveState = 'crossover'; p.moveDir = 1;
+    p.moveT = t * BB.Player.MOVES.crossover.dur;`],
+
+  ['between_legs', `
+    p.hasBall = true; p._dribbleLive = true;
+    p.dribbleHand = 1; p._moveFromHand = 1;
+    p.moveState = 'betweenLegs'; p.moveDir = 1;
+    p.moveT = t * BB.Player.MOVES.betweenLegs.dur;`],
 
   ['behind_back', `
-    p.hasBall = true; p.moveState = 'behindBack';
-    p.moveT = t * 0.36;`],
+    p.hasBall = true; p._dribbleLive = true;
+    p.dribbleHand = 1; p._moveFromHand = 1;
+    p.moveState = 'behindBack'; p.moveDir = 1;
+    p.moveT = t * BB.Player.MOVES.behindBack.dur;`],
+
+  ['in_and_out', `
+    p.hasBall = true; p._dribbleLive = true;
+    p.dribbleHand = 1; p._moveFromHand = 1;
+    p.moveState = 'inAndOut'; p.moveDir = 1;
+    p.moveT = t * BB.Player.MOVES.inAndOut.dur;`],
 
   ['spin', `
-    p.hasBall = true; p.moveState = 'spin';
-    p.moveT = t * 0.46;`],
+    p.hasBall = true; p._dribbleLive = true;
+    p.dribbleHand = 1; p._moveFromHand = 1;
+    p.moveState = 'spin'; p.moveDir = 1;
+    p.moveT = t * BB.Player.MOVES.spin.dur;`],
 
   ['hesitation', `
-    p.hasBall = true; p.moveState = 'hesitation';
-    p.moveT = t * 0.42;`],
+    p.hasBall = true; p._dribbleLive = true;
+    p.dribbleHand = 1; p._moveFromHand = 1;
+    p.moveState = 'hesitation'; p.moveDir = 1;
+    p.moveT = t * BB.Player.MOVES.hesitation.dur;`],
 
   ['gather', `
     p.hasBall = true; p.action = A.GATHER;
@@ -309,6 +333,18 @@ function shoot(name, phase, t) {
       ${setup}
 
       p._updatePose(1 / 60);
+
+      /* Put the ball where the player is actually holding it.
+       *
+       * Without this the sheet drew every dribble move with no ball in it,
+       * which for a set of poses whose whole subject is where the ball goes is
+       * the one thing that had to be in frame. handPosition() is the same
+       * answer the live game places it at. */
+      if (p.hasBall && scene.ball) {
+        var bp = p.handPosition(null);
+        scene.ball.hold(p);
+        scene.ball.place(bp.x, bp.y, bp.z);
+      }
 
       BB.Camera.setMode('tight');
       BB.Camera.reset(p.x, p.y, ${cam.zoom});

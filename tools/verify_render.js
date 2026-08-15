@@ -3290,6 +3290,13 @@ console.log('\n[29] the stance locks on, and walls the drive off');
         me.defenseQuality = q;
         foe.intentX = 0; foe.intentY = 0; foe.intentMag = 0; foe.sprinting = false;
         foe.moveState = null; foe.moveCooldown = 0;
+        /* And the shot state, which is the same reset for the same reason.
+         * A player who has begun a gather cannot legally start a dribble move
+         * and no longer tries to — so without this, every tick after the brain
+         * first reaches for a shot is a tick that can never register a move,
+         * and the count stops being a measure of the read and becomes a
+         * measure of how early each side decided to shoot. */
+        foe.action = BB.Player.ACTION.IDLE; foe.actionT = 0; foe._dribbleLive = true;
         BB.AI.offense(foe, me, hoop, 1 / 120, 1);
         var toRim = Math.atan2(hoop.y - foe.y, hoop.x - foe.x);
         if (foe.intentMag > 0.1 &&
@@ -4709,11 +4716,16 @@ console.log('\n[41] the body keeps its shape through every motion');
     sweep('guard', 80, function () { pl.isGuarding = true; });
     sweep('airborne', 10, function () { pl.jumping = true; pl.z = 1.2; });
 
-    var MOVES = { crossover: 0.30, behindBack: 0.36, spin: 0.46, hesitation: 0.42 };
+    // Every dribble move, at the durations the game itself runs them for.
+    var MOVES = BB.Player.MOVES;
     for (var m in MOVES) {
       (function (name, dur) {
-        sweep(name, 20, function (t) { pl.hasBall = true; pl.moveState = name; pl.moveT = t * dur; });
-      })(m, MOVES[m]);
+        sweep(name, 20, function (t) {
+          pl.hasBall = true; pl._dribbleLive = true;
+          pl.dribbleHand = 1; pl._moveFromHand = 1;
+          pl.moveState = name; pl.moveDir = 1; pl.moveT = t * dur;
+        });
+      })(m, MOVES[m].dur);
     }
 
     sweep('gather', 12, function (t) { pl.hasBall = true; pl.action = A.GATHER; pl.actionT = t * 0.10; });
@@ -4976,8 +4988,178 @@ console.log('\n[43] the baked mesh cannot come apart at a seam');
   check('seam probe raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[44] the ball goes where the move says it goes');
+{
+  /* Six moves, and every one of them named after something the BALL does. On
+   * the build this replaces the ball's lateral position was identical on every
+   * frame of every move, to the last decimal — seven inches to the player's
+   * right, forever — because handPosition() asked handAt() for a hand without
+   * saying which and handAt() defaults to the right. So a crossover was the
+   * ball travelling from behind the player to in front of them, and a
+   * behind-the-back was the same thing further. Nothing here could fail. */
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, C = BB.C;
+    var P = BB.Player, A = P.ACTION;
+    var pl = new P({ height: 79 });
+    pl.placeAt(0, 0, 0);
+    pl.facing = pl.moveFacing = 0;
+    pl.hasBall = true; pl._dribbleLive = true; pl.action = A.MOVE;
+
+    var NAMES = ['crossover', 'betweenLegs', 'behindBack', 'hesitation', 'inAndOut', 'spin'];
+    var out = {};
+    for (var i = 0; i < NAMES.length; i++) {
+      var m = NAMES[i];
+      /* Square the player up first. The real-run block below leaves them
+       * turned and moving — a spin turns them a half revolution — and "the
+       * player's right" is only -y while they are facing +x. */
+      pl.placeAt(0, 0, 0); pl.facing = pl.moveFacing = 0; pl.vx = pl.vy = 0;
+      pl.dribbleHand = 1; pl.moveCooldown = 0; pl.moveState = null; pl.dribblePhase = 0;
+      pl._updatePose(1 / 60);
+      if (!pl.startMove(m)) { out[m] = { missing: true }; continue; }
+      // The move's own duration, off the table the game runs on.
+      var total = P.MOVES[m].dur;
+      var lat0 = 0, latN = 0, crossings = 0, prev = null, low = 1e9, hi = -1e9;
+      var fwdLo = 1e9, fwdHi = -1e9, crossFwd = 0, crossZ = 0, gap = 0, prevP = null;
+      for (var s = 0; s <= 60; s++) {
+        pl.moveT = s / 60 * total; pl._updatePose(1 / 60);
+        var b = pl.handPosition(null);
+        // Facing +x, so the player's right is -y and forward is +x.
+        var lat = -b.y, fwd = b.x;
+        if (s === 0) lat0 = lat;
+        latN = lat;
+        if (prev !== null && (prev > 0) !== (lat > 0)) { crossings++; crossFwd = fwd; crossZ = b.z; }
+        prev = lat;
+        low = Math.min(low, b.z); hi = Math.max(hi, b.z);
+        fwdLo = Math.min(fwdLo, fwd); fwdHi = Math.max(fwdHi, fwd);
+        if (prevP) gap = Math.max(gap, Math.abs(b.z - prevP));
+        prevP = b.z;
+      }
+      // Where the feet are, for the between-the-legs gap test.
+      pl.moveT = total * 0.5; pl._updatePose(1 / 60);
+      var fl = pl.footAt(-1, null), fr = pl.footAt(1, null);
+
+      /* Which hand it ends in has to come from a REAL run: the swap happens in
+       * the timer step of update(), not in _updatePose, so driving moveT by
+       * hand never reaches it. */
+      var bl = new BB.Ball([]);
+      pl.giveBall(bl);
+      pl.moveCooldown = 0; pl.moveState = null;
+      pl.placeAt(0, 0, 0); pl.facing = pl.moveFacing = 0; pl.vx = pl.vy = 0;
+      pl.dribblePhase = 0;
+      pl._updatePose(1 / 60);
+      pl.startMove(m);
+      // Losing the handle ends the move early and is a separate question from
+      // where the ball goes when you do not.
+      pl._moveFumble = false; pl._fumbleAt = -1;
+      for (var q = 0; q < 60 && pl.moveState; q++) pl.update(1 / 60, bl);
+
+      out[m] = {
+        lat0: lat0, latN: latN, crossings: crossings, low: low, high: hi,
+        fwdLo: fwdLo, fwdHi: fwdHi, crossFwd: crossFwd, crossZ: crossZ,
+        footL: fl.x, footR: fr.x, hand: pl.dribbleHand, dur: total
+      };
+    }
+
+    /* The rulebook drop test: released from six feet it must come back between
+     * 52 and 56 inches. Run at a fine step so the peak is not stepped over. */
+    var d = new BB.Ball([]);
+    d.release('loose'); d.x = 10; d.y = 10; d.z = 6; d.vx = d.vy = d.vz = 0;
+    var peak = 0, up = false;
+    for (var t = 0; t < 4000; t++) {
+      d.update(1 / 600);
+      if (d.vz > 0) up = true;
+      if (up) peak = Math.max(peak, d.z);
+      if (up && d.vz < 0 && d.z < peak - 0.01) break;
+    }
+    /* A ball turns about the horizontal axis ACROSS its travel. Fire one down
+     * +x: an axis locked to world x scores a perfect 1 here, which is a ball
+     * spinning about the line it is flying along. */
+    var sp = new BB.Ball([]); sp.x = 0; sp.y = 0; sp.z = 5;
+    sp.launch(18, 0, 9, 'shot');
+    var ax = sp.spinAxis || [1, 0, 0];
+
+    return {
+      moves: out,
+      rebound: peak * 12,
+      spinAlong: Math.abs(ax[0]),
+      spinTurns: Math.abs(sp.spin) / (2 * Math.PI),
+      ballR: C.BALL_RADIUS,
+      pageErr: window.__pageErr || null
+    };
+  `, 'handles');
+  if (r.err) check('handles probe ran', false, r.err);
+  const o = r.out || {}, M = o.moves || {};
+  const got = (n) => M[n] || {};
+  const SWAPS = ['crossover', 'betweenLegs', 'behindBack', 'spin'];
+  const KEEPS = ['hesitation', 'inAndOut'];
+
+  check('all six moves exist',
+        SWAPS.concat(KEEPS).every((n) => M[n] && !M[n].missing),
+        SWAPS.concat(KEEPS).filter((n) => !M[n] || M[n].missing).join(', ') + ' missing');
+
+  /* THE one. A move that does not change hands is an arm waving. */
+  check('a crossover, a tween, a behind-the-back and a spin all change hands',
+        SWAPS.every((n) => got(n).hand === -1),
+        SWAPS.filter((n) => got(n).hand !== -1).join(', ') + ' finished in the same hand');
+  check('and a hesi and an in-and-out do not',
+        KEEPS.every((n) => got(n).hand === 1),
+        KEEPS.filter((n) => got(n).hand !== 1).join(', ') + ' swapped hands');
+  check('each of those crosses the midline exactly once',
+        SWAPS.every((n) => got(n).crossings === 1),
+        SWAPS.map((n) => n + ':' + got(n).crossings).join(' '));
+  check('and the two that keep the ball never cross it at all',
+        KEEPS.every((n) => got(n).crossings === 0),
+        KEEPS.map((n) => n + ':' + got(n).crossings).join(' '));
+
+  /* Named after where the ball goes, so that is what gets measured. */
+  check('the crossover bounces out in front of the feet',
+        got('crossover').crossFwd > 0.4 && got('crossover').crossZ < o.ballR * 1.3,
+        'crossed at ' + (got('crossover').crossFwd || 0).toFixed(2) + 'ft forward, ' +
+        (got('crossover').crossZ || 0).toFixed(2) + 'ft up');
+  /* Between the legs means BETWEEN THE LEGS: through the gap the split stance
+   * opens, below the hips, not through a thigh. */
+  check('the tween passes through the gap between the feet',
+        got('betweenLegs').crossFwd > Math.min(got('betweenLegs').footL, got('betweenLegs').footR) &&
+        got('betweenLegs').crossFwd < Math.max(got('betweenLegs').footL, got('betweenLegs').footR) &&
+        got('betweenLegs').crossZ < o.ballR * 1.3,
+        'crossed at ' + (got('betweenLegs').crossFwd || 0).toFixed(2) + 'ft with the feet at ' +
+        (got('betweenLegs').footL || 0).toFixed(2) + ' and ' + (got('betweenLegs').footR || 0).toFixed(2));
+  check('the behind-the-back actually goes behind the back',
+        got('behindBack').fwdLo < -0.8,
+        'the furthest back it got was ' + (got('behindBack').fwdLo || 0).toFixed(2) + 'ft');
+  check('and the spin carries the ball rather than bouncing it',
+        got('spin').low > o.ballR * 2.5,
+        'the spin put the ball ' + (got('spin').low || 0).toFixed(2) + 'ft up at its lowest');
+
+  /* A bounce reaches the floor. Every move but the spin puts it down. */
+  check('every bounced move actually reaches the floor',
+        ['crossover', 'betweenLegs', 'behindBack', 'hesitation', 'inAndOut']
+          .every((n) => Math.abs(got(n).low - o.ballR) < 0.02),
+        ['crossover', 'betweenLegs', 'behindBack', 'hesitation', 'inAndOut']
+          .map((n) => n + ':' + (got(n).low || 0).toFixed(2)).join(' ') +
+        ' against a ball radius of ' + (o.ballR || 0).toFixed(2));
+  check('and none of them goes through it',
+        SWAPS.concat(KEEPS).every((n) => got(n).low >= o.ballR - 0.005),
+        SWAPS.concat(KEEPS).map((n) => n + ':' + (got(n).low || 0).toFixed(3)).join(' '));
+
+  /* ---- and the ball itself ---- */
+  /* Rule 1: released from six feet it rebounds 52 to 56 inches. It was 43 —
+   * a foot short of legal, and a ball nobody would agree to play with. */
+  check('the ball bounces the height the rulebook says it must',
+        o.rebound > 52 && o.rebound < 56,
+        'a 6ft drop rebounds ' + (o.rebound || 0).toFixed(1) + 'in, spec is 52-56');
+  check('and turns about the axis across its travel, not along it',
+        o.spinAlong < 0.02,
+        'a ball fired down +x spins about an axis ' +
+        ((o.spinAlong || 0) * 100).toFixed(0) + '% aligned with its own flight');
+  check('a jump shot leaves the hand with real backspin',
+        o.spinTurns > 1.5 && o.spinTurns < 3.5,
+        (o.spinTurns || 0).toFixed(2) + ' turns a second; a jumper carries 2 to 3');
+  check('handles probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[44] screenshots');
+  console.log('\n[45] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],

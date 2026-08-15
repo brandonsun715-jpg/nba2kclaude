@@ -52,7 +52,7 @@
 
     /* -------------------------------------------------------------- physics */
     GRAVITY: 32.174,       // ft/s^2
-    BALL_RADIUS: 0.395,    // ~9.47" circumference ball
+    BALL_RADIUS: 0.395,    // 9.48" across — a size 7, which is 29.5" round
     BALL_MASS: 1.4,
     // The arc solver (Ball.solveArc) assumes drag-free ballistic flight and
     // has no way to compensate for drag when computing a launch velocity.
@@ -64,7 +64,18 @@
     // negligibly affected by air resistance, so zero is both correct and
     // necessary rather than a simplification.
     AIR_DRAG: 0,
-    FLOOR_RESTITUTION: 0.755,
+    /* How much of its speed the ball keeps off the floor.
+     *
+     * This is a measured property of a legal basketball, not a feel knob. The
+     * NBA inflates to the rulebook's drop test: released from six feet, the
+     * ball must rebound to between 52 and 56 inches. That is e = sqrt(54/72) =
+     * 0.866 at the middle of the range.
+     *
+     * It was 0.755, which rebounds to 41 inches — a foot short of legal, and a
+     * ball nobody in the building would agree to play with. Everything
+     * downstream inherited it: rebounds died under the rim, deflections
+     * stopped where they were hit, and a loose ball was never a scramble. */
+    FLOOR_RESTITUTION: 0.866,
     FLOOR_FRICTION: 0.72,
     RIM_RESTITUTION: 0.42,
     RIM_FRICTION: 0.55,
