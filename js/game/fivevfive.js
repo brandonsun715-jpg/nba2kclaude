@@ -170,6 +170,10 @@
         p.events.on('fumble', (pl) => this._onFumble(pl));
         p.events.on('lockdown', (e) => this._onLockdown(e));
         p.events.on('violation', (e) => this._onViolation(e));
+        // Any of the ten can throw one down worth slowing the game for.
+        p.events.on('poster', () => {
+          if (BB.Engine) BB.Engine.slowMo(0.32, 0.50);
+        });
         p.events.on('foul', (e) => this._onFoul({ type: e.type, foulOn: e.by, against: e.victim }));
       }
     },
@@ -547,6 +551,14 @@
 
     /* =============================================================== events */
     _onScore(e) {
+      /* And the slow motion ends the instant it counts.
+       *
+       * A basket is also a restart — the ball gets checked at the top of the
+       * key, or everybody forms up for the inbound — and all of that happens on
+       * the frame the ball goes through. Holding the slow motion past this
+       * point would not be slowing the dunk, it would be slowing the reset. The
+       * flush is what the beat is for, and the flush is over. */
+      if (BB.Engine) BB.Engine.setTimeScale(1);
       if (this.phase === 'over') return;
       if (this.phase === 'freethrow') { this._resolveFreeThrow(true, e); return; }
 

@@ -4749,7 +4749,16 @@ console.log('\n[41] the body keeps its shape through every motion');
         });
       })(STYLES[j]);
     }
-    sweep('dunk', 16, function (t) { pl.action = A.DUNK; pl.jumping = true; pl.z = 2.4; pl.actionT = t * 0.45; });
+    // Every dunk style, not just whichever one the default happens to be.
+    var DUNKS = ['tomahawk', 'cradle', 'power'];
+    for (var d = 0; d < DUNKS.length; d++) {
+      (function (st) {
+        sweep('dunk_' + st, 16, function (t) {
+          pl.action = A.DUNK; pl.dunkStyle = st;
+          pl.jumping = true; pl.z = 2.4; pl.actionT = t * 0.55;
+        });
+      })(DUNKS[d]);
+    }
     sweep('block', 16, function (t) { pl.action = A.BLOCK; pl.jumping = true; pl.z = 1.8; pl.actionT = t * 0.45; });
     sweep('steal', 16, function (t) { pl.action = A.STEAL; pl.actionT = t * 0.30; });
     // armRaise is a separate axis: it used to be subtracted straight out of the
@@ -5183,8 +5192,169 @@ console.log('\n[44] the ball goes where the move says it goes');
   check('handles probe raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[45] a dunk is a dunk, and a good one is worth slowing down for');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, C = BB.C;
+    var P = BB.Player, A = P.ACTION, S = BB.Shooting;
+    var ball = C.BALL_RADIUS * 2;
+
+    /* Each style, driven through its own flush. The question every one of these
+     * answers is how many hands are on the ball — which is the whole difference
+     * between a one-hander and a slam, and which could not be asked at all when
+     * there was one dunk in the game. */
+    function shape(style) {
+      var pl = new P({ height: 84 });
+      pl.placeAt(0, 0, 0);
+      pl.facing = pl.moveFacing = 0;
+      pl.jumping = true; pl.z = 2.6;
+      pl.action = A.DUNK; pl.dunkStyle = style;
+      var apart = 1e9, wide = 0, latLo = 1e9, latHi = -1e9, held = 1e9;
+      for (var i = 0; i <= 40; i++) {
+        pl.actionT = i / 40 * 0.55;
+        pl._updatePose(1 / 60);
+        var R = pl.handAt(null, 1), L = pl.handAt(null, -1);
+        var d = Math.hypot(R.x - L.x, R.y - L.y, R.z - L.z);
+        // The flush proper: the middle of the move, where the hands are doing
+        // whatever the style says they do.
+        if (i >= 12 && i <= 26) { apart = Math.min(apart, d); wide = Math.max(wide, d); }
+        latLo = Math.min(latLo, -R.y); latHi = Math.max(latHi, -R.y);
+        // The ball rides in the dunking hand the whole way, which is the one
+        // thing every style has to agree on.
+        var b = pl.handPosition(null);
+        held = Math.min(held, Math.min(
+          Math.hypot(b.x - R.x, b.y - R.y, b.z - R.z),
+          Math.hypot(b.x - L.x, b.y - L.y, b.z - L.z)));
+      }
+      return { apart: apart, wide: wide, swing: latHi - latLo, held: held };
+    }
+
+    /* ---- and the slow motion ---- */
+    var E = BB.Engine;
+    var scaleLog = { ran: false, floor: 1, back: 1, afterPause: 1 };
+    if (E) {
+      E.setTimeScale(1, true);
+      E.slowMo(0.32, 0.50);
+      // Tick the easing the way _step does, in real seconds.
+      var t = 0;
+      while (t < 0.30) { t += 1 / 60; E._slowT -= 1 / 60;
+        if (E._slowT <= 0) { E._slowT = 0; E._targetScale = 1; }
+        E.timeScale = U.approach(E.timeScale, E._targetScale, E._scaleRate, 1 / 60); }
+      scaleLog.floor = E.timeScale;
+      scaleLog.ran = true;
+      while (t < 2.0) { t += 1 / 60; E._slowT -= 1 / 60;
+        if (E._slowT <= 0) { E._slowT = 0; E._targetScale = 1; }
+        E.timeScale = U.approach(E.timeScale, E._targetScale, E._scaleRate, 1 / 60); }
+      scaleLog.back = E.timeScale;
+
+      /* An explicit request has to WIN over a slow motion that is still
+       * running — including after its timer expires. Pause during a dunk and
+       * hold the menu open: the slow motion's clock keeps running underneath,
+       * and when it ends it restores the scale it thinks the game should be
+       * at. If that overwrites the pause, the game starts playing behind the
+       * menu. Same shape for any scene that sets a scale of its own. */
+      E.setTimeScale(1, true);
+      E.slowMo(0.32, 0.50);
+      E.setTimeScale(0, true);      // pause, taken mid-dunk
+      var u = 0;
+      while (u < 1.2) { u += 1 / 60;
+        if (E._slowT > 0) { E._slowT -= 1 / 60; if (E._slowT <= 0) { E._slowT = 0; E._targetScale = 1; } }
+        E.timeScale = U.approach(E.timeScale, E._targetScale, E._scaleRate, 1 / 60); }
+      scaleLog.afterPause = E.timeScale;
+      E.setTimeScale(1, true);
+    }
+
+    /* ---- which dunks earn it ---- */
+    function poster(quality, auto) {
+      var pl = new P({ height: 84 });
+      pl.shotType = 'dunk'; pl.dunkAuto = !!auto;
+      pl._commitShot({ quality: quality });
+      return pl.posterDunk;
+    }
+    /* And what the replay makes of one. rateShot is what decides whether the
+     * game stops to show you something. */
+    function rated(isPoster) {
+      var pl = new P({ height: 84 });
+      pl.shotType = 'dunk'; pl.posterDunk = isPoster;
+      pl.stats.streak = 0;
+      var w = BB.Replay.rateShot({ three: false, clean: true }, pl);
+      return w ? w.weight : 0;
+    }
+
+    return {
+      ball: ball,
+      tomahawk: shape('tomahawk'), cradle: shape('cradle'), power: shape('power'),
+      slow: scaleLog,
+      posterPerfect: poster(1.00, false), posterExcellent: poster(0.86, false),
+      posterSloppy: poster(0.42, false), posterAuto: poster(0.42, true),
+      ratedPoster: rated(true), ratedOrdinary: rated(false),
+      threshold: BB.Replay.THRESHOLD,
+      pageErr: window.__pageErr || null
+    };
+  `, 'dunkstyles');
+  if (r.err) check('dunk-style probe ran', false, r.err);
+  const o = r.out || {};
+  const ONE = ['tomahawk', 'cradle'];
+
+  /* One hand on the ball and the other one somewhere else entirely. The off
+   * arm is not decoration — it is what a dunker's free arm does BECAUSE the
+   * other one is behind their head, and it is most of what reads as effort. */
+  check('the one-handers keep the off hand well clear of the ball',
+        ONE.every((n) => (o[n] || {}).apart > o.ball * 1.5),
+        ONE.map((n) => n + ' ' + (((o[n] || {}).apart || 0) / o.ball).toFixed(2)).join(', ') +
+        ' ball-widths at the closest');
+  /* And the power dunk is the opposite claim: two hands on one ball, which is
+   * the same geometry as the set point of a jump shot and was impossible
+   * before absolute lateral placement existed. */
+  check('and the power dunk really has both hands on it',
+        (o.power || {}).wide < o.ball * 1.35 && (o.power || {}).wide > o.ball * 0.5,
+        'hands ' + (((o.power || {}).wide || 0) / o.ball).toFixed(2) + ' ball-widths apart');
+  /* The cradle earns its name by taking the ball the long way round. If it
+   * swings no further than the tomahawk it is the tomahawk. */
+  check('the cradle swings the ball out and away, not just back',
+        (o.cradle || {}).swing > ((o.tomahawk || {}).swing || 0) * 2,
+        'cradle ' + (((o.cradle || {}).swing) || 0).toFixed(2) + 'ft of lateral swing vs tomahawk ' +
+        (((o.tomahawk || {}).swing) || 0).toFixed(2));
+  check('and every style keeps the ball in a hand all the way to the ring',
+        ['tomahawk', 'cradle', 'power'].every((n) => (o[n] || {}).held < 0.75),
+        ['tomahawk', 'cradle', 'power']
+          .map((n) => n + ' ' + (((o[n] || {}).held) || 0).toFixed(2) + 'ft').join(', '));
+
+  /* ---- the slow motion ---- */
+  check('a poster dunk actually slows the world down',
+        o.slow && o.slow.ran && o.slow.floor < 0.5,
+        'time scale bottomed at ' + ((o.slow || {}).floor || 1).toFixed(2));
+  check('and it comes back on its own',
+        o.slow && Math.abs(o.slow.back - 1) < 0.01,
+        'settled at ' + ((o.slow || {}).back || 0).toFixed(3) + ' instead of 1');
+  /* THE one worth writing, and it is about the pause rather than the dunk.
+   * Pausing sets the scale to zero and knows nothing about a dunk being in the
+   * air — but the slow motion's own clock keeps running underneath a paused
+   * game, and when it ends it puts the scale back where it thinks it belongs.
+   * If that is allowed to overwrite the pause, the game starts playing behind
+   * the menu. An explicit request has to cancel the slow motion outright. */
+  check('and pausing during one leaves the game paused, not running behind the menu',
+        o.slow && (o.slow.afterPause || 1) < 0.05,
+        'a pause taken mid-slow-motion ended up at ' +
+        ((o.slow || {}).afterPause || 0).toFixed(3) + ' speed instead of stopped');
+
+  /* ---- which dunks earn it ---- */
+  check('a green dunk and a free one earn the moment',
+        o.posterPerfect === true && o.posterExcellent === true && o.posterAuto === true,
+        'perfect ' + o.posterPerfect + ', excellent ' + o.posterExcellent +
+        ', wide open ' + o.posterAuto);
+  check('and a scrappy one does not',
+        o.posterSloppy === false, 'a 0.42-quality dunk was rated a poster');
+  /* A replay that plays every time is not a replay, it is an interruption. */
+  check('the highlight stops cutting in on every dunk in the game',
+        o.ratedPoster >= o.threshold && o.ratedOrdinary < o.threshold,
+        'poster ' + o.ratedPoster + ', ordinary ' + o.ratedOrdinary +
+        ' against a threshold of ' + o.threshold);
+  check('dunk-style probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[45] screenshots');
+  console.log('\n[46] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],

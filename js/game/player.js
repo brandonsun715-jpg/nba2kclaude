@@ -622,6 +622,10 @@
       this._wanderTimer = 0;
       this._wanderSign = 1;
       this.layupStyle = 'standard';
+      /* Which dunk. Purely presentational, exactly like layupStyle — the shot
+       * maths does not know or care which one is playing. */
+      this.dunkStyle = 'tomahawk';
+      this.posterDunk = false;   // this dunk earned the slow motion
       this._beliefX = null;      // AI defense: lagged belief of the opponent's position
       this._beliefY = null;
 
@@ -1789,6 +1793,24 @@
             this.layupStyle = 'hop';
           }
         }
+
+        /* Which dunk, on the same argument as the layup styles above: the shot
+         * maths is untouched and only the picture changes, but a dunk with a
+         * body in the way should not look like a dunk with the rim to yourself.
+         *
+         * The read is what the situation already knows. Room to spare and a run
+         * at it is the one you show off on, so the ball goes out on a long arc
+         * away from the body. Somebody at the rim, or only just enough height,
+         * and you take it up the middle in two hands where nobody can get at
+         * it — which is also the only shape that does not need the arm fully
+         * extended to work. Everything else is the tomahawk. */
+        this.dunkStyle = 'tomahawk';
+        if (this.shotType === 'dunk') {
+          const guarded = this.opponent &&
+            U.dist(this.x, this.y, this.opponent.x, this.opponent.y) < 4.6;
+          if (guarded || headroom < DUNK_CLEAR) this.dunkStyle = 'power';
+          else if (driving && headroom >= DUNK_EASY) this.dunkStyle = 'cradle';
+        }
       } else {
         this.shotType = 'jumper';
         this.dunkAuto = false;
@@ -1806,6 +1828,8 @@
       this.driving = false;
       this.dunkAuto = false;
       this.layupStyle = 'standard';
+      this.dunkStyle = 'tomahawk';
+      this.posterDunk = false;
       this._shotFouled = false;
     }
 
@@ -1938,6 +1962,19 @@
       this.action = (type === 'jumper' || type === 'freethrow') ? ACTION.RELEASE : (type === 'dunk' ? ACTION.DUNK : ACTION.LAYUP);
       this.actionT = 0;
       this.pendingShot = { grade, type };
+      /* Was this one worth slowing down for?
+       *
+       * Decided here because here is where it is knowable — the grade exists
+       * for exactly one instant, between the release and the ball leaving. A
+       * scene reading it later would be reading it off a shot that has already
+       * happened.
+       *
+       * Either the release was timed (perfect or excellent) or there was
+       * nothing to time: dunkAuto is the wide-open dunk that skips the meter
+       * because the hand is going over the ring whatever happens, which is the
+       * definition of a poster. */
+      const timed = grade && grade.quality != null && grade.quality >= 0.86;
+      this.posterDunk = type === 'dunk' && (timed || this.dunkAuto);
 
       // Layups/dunks release a beat after commit, in sync with the animation
       // reaching the rim; jumpers and free throws release immediately since
@@ -2047,6 +2084,14 @@
         }
         if (this.pendingShot && fireAt) {
           this._ballRef = ball;
+          /* The flush is the moment worth slowing down for, and this is it —
+           * the frame the ball goes through the ring. Raised as an event rather
+           * than reaching for BB.Engine from inside a player: the engine's clock
+           * is the whole game's, and one figure on the floor has no business
+           * setting it. A scene decides whether to take it. */
+          if (this.action === ACTION.DUNK && this.posterDunk) {
+            this.events.emit('poster', { by: this, style: this.dunkStyle });
+          }
           this._fireBall(this.pendingShot);
         }
         this.armRaise = this.action === ACTION.DUNK
@@ -2924,9 +2969,21 @@
            *
            * Kept modest. Isolating the two halves of this stance against the
            * render, the sideways opening is clean at any width the ball needs,
-           * but the fore/aft step tears the shorts open at the hem of the leg
-           * that moves — the garment cannot follow one thigh that far past the
-           * other. The ball's own dip is shallow to match, so it still crosses
+           * but past about this much fore/aft step the hem of the moving leg
+           * GAPES. The shorts leg is an open tube a little wider than the
+           * thigh; once the knee folds far enough the shin leaves through its
+           * side and you look into the opening.
+           *
+           * It is not a tear — the weights are continuous, measured, zero
+           * discontinuity — and it is not fixable by taking the shin off the
+           * hem. That was tried: shorts weighted purely to the thigh do stop
+           * the hem overshooting a raised knee in a stride, but the tube then
+           * stays rigid on the thigh instead of tracking the leg, and in a
+           * deep crouch it gapes wider than before. The shin weight is doing
+           * real work. What this wants is hem geometry that closes, which is a
+           * change to the model rather than to the rig.
+           *
+           * The ball's own dip is shallow to match, so it still crosses
            * between the feet rather than behind the back one. */
           const split = Math.sin(k * Math.PI) * 0.16;
           if (src > 0) { frX += split; flX -= split * 0.6; }
@@ -3375,6 +3432,26 @@
         // Palm rolls over the top of the ball as it goes through the rim.
         hrTwist = U.lerp(0.85, 1.55, cock) - flush * 0.45;
 
+        /* ---- the cradle: the same one-hander, taken the long way round ----
+         *
+         * Instead of cocking straight back behind the head, the ball swings OUT
+         * and away from the body on a wide arc and comes over the top from
+         * outside the shoulder. It needs room and a run at it, which is exactly
+         * when it gets picked, and it is the one that reads from the cheap
+         * seats because the ball travels furthest.
+         *
+         * Placed laterally rather than pushed out through hrX — the same
+         * distinction the off arm's comment below makes, and the same reason:
+         * hrX is FORWARD, and forward is not where this goes. */
+        if (this.dunkStyle === 'cradle') {
+          const swing = Math.sin(cock * Math.PI);
+          hrX = shR + U.lerp(0.16, 0.18, flush) - land * 0.14;
+          hrY = U.lerp(upY(shoulderY, U.lerp(0.42, DUNK_REACH, cock)), flushY, flush) + land * 0.30;
+          hrLat = BONE.shoulderW * (1.0 + swing * 0.62) * (1 - flush * 0.42);
+          elLatR = BONE.shoulderW * (0.92 + swing * 0.40) * (1 - flush * 0.30);
+          hrTwist = U.lerp(0.85, 1.35, cock) - flush * 0.35;
+        }
+
         /* The off arm, thrown wide. `side` is the only axis that can do this —
          * pushing it out through hlX would come out as forward reach instead. */
         hlX = shL + U.lerp(0.08, 0.12, cock) + land * 0.06;
@@ -3401,6 +3478,44 @@
         elLatL = -BONE.shoulderW * U.lerp(1.02, 1.16, cock) * (1 - land * 0.30);
         armRoll = 0;
         armTuck = 0;
+
+        /* ---- the power dunk: both hands, straight up the middle ----------
+         *
+         * The note at the top of this branch says a two-handed slam "fights the
+         * centreline clamp in draw(), because both hands want the middle of the
+         * rim", and that was true when it was written: the only lateral axis
+         * was a nudge, and keepInboard() pinned anything aimed at the middle.
+         * Absolute placement is what makes it possible now — two hands sitting
+         * a ball's width apart over the ring is the same problem as two hands
+         * on a ball at the set point of a jump shot, and the same machinery
+         * answers it.
+         *
+         * Gets picked when somebody is at the rim or there is only just enough
+         * height, which is when you take it up where nobody can reach it. It is
+         * also the shape that does not need full extension to work, so it stays
+         * comfortably inside the arm at a headroom the other two would clamp. */
+        if (this.dunkStyle === 'power') {
+          const ball = (C.BALL_RADIUS * 2) / this.bodyScale;
+          const up2 = upY(shoulderY, U.lerp(0.46, DUNK_REACH - 0.05, cock));
+          const down = upY(shoulderY, DUNK_REACH - 0.14);
+          // Both hands take the same path — the ball is between them and stays
+          // between them, so the pair moves as one and cannot come apart.
+          const fwd = U.lerp(U.lerp(0.02, 0.06, cock), 0.19, flush) - land * 0.12;
+          const ht = U.lerp(up2, down, flush) + land * 0.34;
+          hrX = shR + fwd; hrY = ht;
+          hlX = shL + fwd; hlY = ht;
+          hrLat = ball * 0.5;
+          hlLat = -ball * 0.5;
+          elLatR = BONE.shoulderW * 0.86;
+          elLatL = -BONE.shoulderW * 0.86;
+          hrTwist = U.lerp(0.85, 1.20, cock) - flush * 0.30;
+          hlTwist = hrTwist;
+          // Knees together under the body — a power dunk is squared up, not
+          // the splayed, trailing-leg shape a one-hander throws.
+          flX = -BONE.hipW + 0.04 - 0.04 * land;
+          frX = BONE.hipW + 0.04 - 0.04 * land;
+          flY = frY = (-0.34 - cock * 0.08) * (1 - land * 0.92);
+        }
 
         // Chest opens up and back through the cock, then pitches over the rim.
         torsoLean = U.lerp(-0.12, 0.10, flush) - land * 0.06;

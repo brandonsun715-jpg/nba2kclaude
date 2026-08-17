@@ -34,6 +34,8 @@
     timeScale: 1,
     _targetScale: 1,
     _scaleRate: 6,
+    /* Real seconds left on a self-unwinding slow motion; 0 when none. */
+    _slowT: 0,
 
     fps: 60,
     frameMs: 0,
@@ -101,7 +103,30 @@
      */
     setTimeScale(scale, snap) {
       this._targetScale = Math.max(0.02, scale);
+      /* An explicit request wins outright, and cancels any slow motion that was
+       * running. That is what makes the pause safe: pause sets 0 and resume
+       * sets 1, and neither has to know a dunk was in the air — without this a
+       * slow motion taken across a pause would come back and re-apply itself
+       * to a game the player had already resumed at full speed. */
+      this._slowT = 0;
       if (snap) this.timeScale = this._targetScale;
+    },
+
+    /**
+     * Slow the world down for a moment and let it come back on its own.
+     *
+     * Everything about a poster dunk is over in about half a second of game
+     * time, which is too fast to see the thing you just did. The easing in and
+     * out is the existing _scaleRate approach, so it ramps rather than steps,
+     * and the timer runs on REAL seconds — a slow motion that measured its own
+     * length in slowed time would take three times as long as asked.
+     *
+     * @param {number} scale  how slow, e.g. 0.30
+     * @param {number} secs   how long to hold it, in real seconds
+     */
+    slowMo(scale, secs) {
+      this._targetScale = Math.max(0.02, scale);
+      this._slowT = Math.max(0, secs);
     },
 
     /* ------------------------------------------------------------------ tick */
@@ -128,6 +153,10 @@
         this._fpsFrames = 0;
       }
 
+      if (this._slowT > 0) {
+        this._slowT -= raw;
+        if (this._slowT <= 0) { this._slowT = 0; this._targetScale = 1; }
+      }
       this.timeScale = U.approach(this.timeScale, this._targetScale, this._scaleRate, raw);
 
       BB.Input.beginFrame();

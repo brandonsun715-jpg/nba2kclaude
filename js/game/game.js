@@ -292,11 +292,20 @@
 
       ball.events.on('score', (e) => this._onScore(e));
       ball.events.on('miss', (e) => this._onMiss(e));
+      this.player.events.on('poster', () => this._onPoster());
 
       void hoop0; void hoop1;
     },
 
     _onScore(e) {
+      /* And the slow motion ends the instant it counts.
+       *
+       * A basket is also a restart — the ball gets checked at the top of the
+       * key, or everybody forms up for the inbound — and all of that happens on
+       * the frame the ball goes through. Holding the slow motion past this
+       * point would not be slowing the dunk, it would be slowing the reset. The
+       * flush is what the beat is for, and the flush is over. */
+      if (BB.Engine) BB.Engine.setTimeScale(1);
       const three = e.three;
       const pts = three ? 3 : 2;
       this.points += pts;
@@ -332,6 +341,10 @@
 
     /** What a replay needs to redraw this scene. */
     replayCast() { return { ball: this.ball, players: [this.player] }; },
+
+    _onPoster() {
+      if (BB.Engine) BB.Engine.slowMo(0.32, 0.50);
+    },
 
     _onMiss(e) {
       this.player.onMiss();
@@ -555,6 +568,14 @@
       ball.events.on('score', (e) => this._onScore(e));
       ball.events.on('miss', (e) => this._onMiss(e));
 
+      /* A dunk worth watching slows the world down for it.
+       *
+       * Engine.slowMo unwinds itself and is cancelled by any explicit
+       * setTimeScale, so the pause path needs no special case: pausing during
+       * one and resuming comes back at full speed rather than stranding the
+       * game at a third of it. */
+      this.player.events.on('poster', () => this._onPoster());
+      this.ai.events.on('poster', () => this._onPoster());
       this.player.events.on('steal', (e) => this._onSteal(e));
       this.ai.events.on('steal', (e) => this._onSteal(e));
       this.player.events.on('block', (e) => this._onBlock(e));
@@ -570,6 +591,14 @@
     },
 
     _onScore(e) {
+      /* And the slow motion ends the instant it counts.
+       *
+       * A basket is also a restart — the ball gets checked at the top of the
+       * key, or everybody forms up for the inbound — and all of that happens on
+       * the frame the ball goes through. Holding the slow motion past this
+       * point would not be slowing the dunk, it would be slowing the reset. The
+       * flush is what the beat is for, and the flush is over. */
+      if (BB.Engine) BB.Engine.setTimeScale(1);
       if (this.phase === 'over') return;
       if (this.phase === 'freethrow') { this._resolveFreeThrow(true, e); return; }
 
@@ -637,6 +666,14 @@
         BB.HUD.banner('SHOOTING FOUL', count + ' SHOTS', 1400);
         this._awardFreeThrows(fouled.shooter, fouled.defender, count);
       }
+    },
+
+    /* How slow, and for how long in real seconds. A dunk's flush is over in
+     * about a third of a second of game time; a third of a real second at 0.30
+     * stretches it to roughly a second on screen, which is long enough to read
+     * and short enough not to feel like the game took the controls away. */
+    _onPoster() {
+      if (BB.Engine) BB.Engine.slowMo(0.32, 0.50);
     },
 
     _onSteal(e) {

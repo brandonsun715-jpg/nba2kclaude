@@ -177,9 +177,19 @@ const POSES = [
     p.jumping = true; p.z = 1.0;
     p.actionT = t * 0.60;`],
 
-  ['dunk', `
-    p.action = A.DUNK; p.jumping = true; p.z = 2.4;
-    p.actionT = t * 0.45;`],
+  /* Every dunk, at the duration the game runs them for. hasBall puts the ball
+   * in frame, which for a set of poses about where the ball goes is the point. */
+  ['dunk_tomahawk', `
+    p.hasBall = true; p.jumping = true; p.z = 2.4;
+    p.action = A.DUNK; p.dunkStyle = 'tomahawk'; p.actionT = t * 0.55;`],
+
+  ['dunk_cradle', `
+    p.hasBall = true; p.jumping = true; p.z = 2.4;
+    p.action = A.DUNK; p.dunkStyle = 'cradle'; p.actionT = t * 0.55;`],
+
+  ['dunk_power', `
+    p.hasBall = true; p.jumping = true; p.z = 2.4;
+    p.action = A.DUNK; p.dunkStyle = 'power'; p.actionT = t * 0.55;`],
 
   ['block', `
     p.action = A.BLOCK; p.jumping = true; p.z = 1.8;
@@ -341,7 +351,13 @@ function shoot(name, phase, t) {
        * the one thing that had to be in frame. handPosition() is the same
        * answer the live game places it at. */
       if (p.hasBall && scene.ball) {
-        var bp = p.handPosition(null);
+        /* The same choice Player.update makes: a player winding up a shot
+         * carries the ball in the DRAWN hand, while handPosition() answers with
+         * the release point, which is calibrated against the true-scale rim and
+         * sits on the centreline. Asking handPosition() for a dunk put the ball
+         * a foot from the hand throwing it down — and on a sheet whose subject
+         * is where the ball goes, that is the whole picture. */
+        var bp = p.isBusyShooting ? p.handAt(null) : p.handPosition(null);
         scene.ball.hold(p);
         scene.ball.place(bp.x, bp.y, bp.z);
       }

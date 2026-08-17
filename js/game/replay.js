@@ -48,12 +48,14 @@
    * nothing left to advance to and simply holds it: the shot freezes at the
    * rim with the camera still swinging round it.
    *
-   * There is deliberately no slow-motion beat on the LIVE moment before the
-   * cut. A basket is also a restart — 1v1 checks the ball at the top of the
-   * key, 5v5 forms up for the inbound — and both of those reposition everybody
-   * on the same frame the ball goes through. Hanging on the live moment hangs
-   * on that, so the moment worth watching is the recorded one, and the replay
-   * is where the slow motion lives. */
+   * A poster dunk now DOES get a live slow-motion beat, taken between the flush
+   * and the basket counting — see Engine.slowMo and the scenes' _onPoster. The
+   * constraint that kept one out is still true and is what bounds it: a basket
+   * is also a restart, 1v1 checks the ball at the top of the key and 5v5 forms
+   * up for the inbound, and both reposition everybody on the frame the ball
+   * goes through. So the live beat is released by _onScore, on that same frame.
+   * It slows the dunk and never the reset, and the replay still does the long
+   * look afterwards. */
   const PRE_ROLL = 1.60;
   const HOLD_TAIL = 0.30;
   const PLAY_RATE = 0.55;
@@ -122,7 +124,17 @@
      */
     rateShot(e, shooter) {
       const type = shooter && shooter.shotType;
-      if (type === 'dunk') return { weight: 1.0, label: 'THROWN DOWN' };
+      /* A dunk used to be worth a highlight whatever it was, so THROWN DOWN cut
+       * in on every single one — and a replay that plays every time stops being
+       * a replay and becomes an interruption. `posterDunk` is the same read the
+       * live slow motion uses: a green release, or a dunk with so much room
+       * over the ring there was no meter to time. An ordinary one still gets a
+       * weight, just not one over the bar. */
+      if (type === 'dunk') {
+        return shooter.posterDunk
+          ? { weight: 1.0, label: 'THROWN DOWN' }
+          : { weight: 0.55, label: 'AT THE RIM' };
+      }
       // The one the whole feature is for: nothing but net, from behind the arc.
       if (e.three && e.clean) return { weight: 1.0, label: 'SWISH FROM DEEP' };
       if (e.clean && shooter && shooter.stats.streak >= 3) {
