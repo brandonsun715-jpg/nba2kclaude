@@ -21,19 +21,23 @@
   /* Palette, resolved once into GL float colours. */
   const COL = {};
 
+  /* Park hardware, not arena hardware: galvanised pole, painted frame, a
+   * concrete footing instead of a wheeled base with padding on it. The dark
+   * charcoal these used to be was built to disappear into an unlit bowl, and
+   * out in the sun it reads as a hole cut in the frame. */
   function colors() {
     if (COL.rim) return COL;
     const g = BB.GLX;
     COL.rim = g.color(PAL.rim);
     COL.rimHot = g.color('#FFD08A');
-    COL.frame = g.color('#2A3442');
+    COL.frame = g.color('#4A5866');
     COL.pad = g.color(PAL.orangeDim);
-    COL.steel = g.color('#39465A');
-    COL.steelDark = g.color('#222C3A');
+    COL.steel = g.color('#9BA6AE');
+    COL.steelDark = g.color('#79858E');
     COL.glass = g.color(PAL.glass);
     COL.chalk = g.color(PAL.chalk);
     COL.net = g.color(PAL.net);
-    COL.base = g.color('#151C27');
+    COL.base = g.color('#8E8C86');
     return COL;
   }
 
@@ -70,6 +74,22 @@
     /** Ball struck the glass. */
     hitBoard(strength) {
       this.glass = Math.min(1, this.glass + strength);
+    }
+    /**
+     * Dunked on. The ring wears the whole weight of it.
+     *
+     * Not swish(), which billows the net and leaves the rim untouched — that
+     * is a shot dropping through, and it is the wrong picture for a ball being
+     * carried down through the ring by hand. A slam bends the ring hard and
+     * snaps the net at the same time, which is the difference the eye actually
+     * reads between two points and a dunk.
+     */
+    slam(strength) {
+      const s = strength == null ? 1 : strength;
+      this.rimFlex = Math.min(1, this.rimFlex + s);
+      this.netEnergy = Math.min(1, this.netEnergy + s);
+      this.netPhase = 0;
+      this.scoreGlow = 1;
     }
 
     update(dt) {
@@ -225,6 +245,35 @@
     NET_TMP[3] = a;
     return NET_TMP;
   }
+
+  /**
+   * How the basket reacts to a made shot, and the sound it makes.
+   *
+   * Lives here rather than in each scene because three of them score baskets
+   * and a dunk has to look like a dunk in all three — the version that gets
+   * forgotten is the one that quietly plays a swish while somebody hangs off
+   * the ring.
+   *
+   * @param {object} e the ball's 'score' event
+   * @param {object} shooter who scored it
+   * @returns {boolean} whether that was a dunk, so the caller can say so
+   */
+  Hoop.scored = function (e, shooter) {
+    const dunk = !!(shooter && shooter.shotType === 'dunk');
+    const pan = BB.Camera ? BB.Camera.panFor(e.x) : 0;
+    if (dunk) {
+      e.hoop.slam(1);
+      if (BB.FX) BB.FX.ring(e.hoop.x, e.hoop.y, PAL.gold, 1.5);
+      if (BB.Audio) {
+        BB.Audio.play('rim', { pan, gain: 0.95 });
+        BB.Audio.play('net', { pan });
+      }
+    } else {
+      e.hoop.swish(e.clean ? 1 : 0.6);
+      if (BB.Audio) BB.Audio.play('swish', { pan });
+    }
+    return dunk;
+  };
 
   BB.Hoop = Hoop;
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -123,26 +123,36 @@ kbd {
 }
 
 /* =================================================================== HUD --
-   Broadcast scorebug, reserved for full game modes. */
+   Broadcast scorebug, reserved for full game modes.
+
+   It is deliberately SHORT. The shot meter is canvas, the scorebug is DOM
+   sitting on top of it, and a shooter anywhere up the floor puts the top of
+   that meter — the half with the green window in it, the only half that
+   matters — straight underneath this bar. Every dimension here is chosen to
+   keep the strip that steals as thin as it can be and still be read at a
+   glance: one row, no stacking, scores and clock on the same baseline. */
 .hud {
   position: fixed; top: 0; left: 0; right: 0;
   display: flex; flex-direction: column; align-items: center;
-  padding-top: 14px;
+  padding-top: 7px;
   z-index: 40;
   pointer-events: none;
-  opacity: 0; transform: translateY(-14px);
+  opacity: 0; transform: translateY(-10px);
   transition: opacity 0.4s var(--ease), transform 0.4s var(--ease);
 }
 .hud.is-live { opacity: 1; transform: translateY(0); }
+/* The scorebug is DOM over the canvas, so a replay cannot letterbox over it
+   — it has to be taken away for the length of the cut. */
+.hud.is-replay { opacity: 0; transform: translateY(-10px); }
 
 .hud-bug {
   display: grid;
   grid-template-columns: 1fr auto 1fr;
   align-items: stretch;
-  background: rgba(8, 11, 17, 0.86);
-  border: 1px solid rgba(243, 240, 231, 0.12);
-  border-radius: 10px;
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+  background: rgba(8, 11, 17, 0.82);
+  border: 1px solid rgba(243, 240, 231, 0.10);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.42);
   backdrop-filter: blur(6px);
   overflow: hidden;
 }
@@ -150,85 +160,96 @@ kbd {
 .hud-team {
   --team: var(--steel);
   --team-2: var(--orange);
-  display: flex; align-items: center; gap: 10px;
-  padding: 8px 16px;
-  min-width: 150px;
+  display: flex; align-items: center; gap: 7px;
+  padding: 3px 9px 5px;
+  min-width: 104px;
   position: relative;
 }
 .hud-team--away { justify-content: flex-start; }
 .hud-team--home { justify-content: flex-end; flex-direction: row; }
 .hud-team::before {
   content: ''; position: absolute; inset: 0;
-  background: linear-gradient(180deg, var(--team) 0%, color-mix(in srgb, var(--team) 60%, #000) 100%);
+  background: linear-gradient(180deg, var(--team) 0%, color-mix(in srgb, var(--team) 55%, #000) 100%);
   opacity: 0.92; z-index: -1;
 }
 .hud-team::after {
-  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
   background: var(--team-2); z-index: -1;
 }
 
 .hud-team__abbr {
-  font: var(--display); font-size: 15px; letter-spacing: 0.05em; color: var(--chalk);
+  font: var(--display); font-size: 11px; letter-spacing: 0.06em; color: var(--chalk);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
 }
 .hud-team__score {
-  font: var(--display); font-size: 26px; color: var(--chalk); min-width: 1.4ch; text-align: center;
+  font: var(--display); font-size: 18px; line-height: 1; color: var(--chalk);
+  min-width: 1.5ch; text-align: center; font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
 }
 .hud-poss {
   width: 0; height: 0; opacity: 0; transition: opacity 0.2s var(--ease);
-  border-top: 6px solid transparent; border-bottom: 6px solid transparent;
+  border-top: 4px solid transparent; border-bottom: 4px solid transparent;
 }
-.hud-team--away .hud-poss { border-left: 8px solid var(--gold); }
-.hud-team--home .hud-poss { border-right: 8px solid var(--gold); }
+.hud-team--away .hud-poss { border-left: 5px solid var(--gold); }
+.hud-team--home .hud-poss { border-right: 5px solid var(--gold); }
 .hud-poss.is-on { opacity: 1; }
 
 .hud-bonus {
-  font: 800 10px var(--mono); letter-spacing: 0.06em;
-  color: rgba(243, 240, 231, 0.25);
-  border: 1px solid rgba(243, 240, 231, 0.25);
-  border-radius: 3px; padding: 1px 4px;
+  font: 800 8px var(--mono); letter-spacing: 0.06em; line-height: 1.3;
+  color: rgba(243, 240, 231, 0.28);
+  border: 1px solid rgba(243, 240, 231, 0.28);
+  border-radius: 2px; padding: 0 3px;
 }
 .hud-bonus.is-on { color: var(--ink); background: var(--gold); border-color: var(--gold); }
 
-.hud-dots { display: flex; gap: 3px; }
-.hud-dots i { width: 6px; height: 6px; border-radius: 50%; background: rgba(243, 240, 231, 0.2); font-style: normal; }
+.hud-dots { display: flex; gap: 2px; }
+.hud-dots i { width: 4px; height: 4px; border-radius: 50%; background: rgba(243, 240, 231, 0.22); font-style: normal; }
 .hud-dots i.on { background: var(--chalk); }
 
 .hud-stamina {
-  position: absolute; left: 8px; right: 8px; bottom: 4px; height: 3px;
+  position: absolute; left: 6px; right: 6px; bottom: 3px; height: 2px;
   background: rgba(0, 0, 0, 0.35);
-  border-radius: 2px;
+  border-radius: 1px;
   overflow: hidden;
 }
 .hud-stamina__fill {
   height: 100%; width: 100%;
   background: var(--mint);
-  border-radius: 2px;
+  border-radius: 1px;
   transition: width 0.25s linear, background-color 0.4s ease;
 }
 .hud-stamina__fill.is-low { background: var(--gold); }
 .hud-stamina__fill.is-gassed { background: var(--red); }
 
+/* Period, clock and shot clock share one row rather than stacking three deep
+   — that stack alone was taller than the whole bar is now. */
 .hud-clockblock {
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  padding: 6px 22px; gap: 2px;
+  display: flex; flex-direction: row; align-items: center; justify-content: center;
+  padding: 3px 10px; gap: 8px;
   background: var(--ink-soft);
 }
-.hud-period { font: 700 11px var(--mono); letter-spacing: 0.1em; color: var(--chalk-dim); }
-.hud-clock { font: var(--display); font-size: 28px; color: var(--chalk); font-variant-numeric: tabular-nums; }
+.hud-period {
+  font: 700 8px var(--mono); letter-spacing: 0.1em; color: var(--chalk-dim);
+  white-space: nowrap;
+}
+.hud-clock {
+  font: var(--display); font-size: 18px; line-height: 1; color: var(--chalk);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
 .hud-clock.is-urgent { color: var(--red); }
 .hud-shotwrap {
   display: flex; align-items: center; justify-content: center;
-  width: 30px; height: 30px; border-radius: 50%;
-  background: var(--orange); margin-top: 2px;
+  min-width: 20px; height: 16px; padding: 0 4px; border-radius: 8px;
+  background: var(--orange);
 }
 .hud-shotwrap.is-off { background: rgba(243, 240, 231, 0.12); }
 .hud-shotwrap.is-urgent { background: var(--red); animation: shotPulse 0.5s ease-in-out infinite; }
 @keyframes shotPulse { 50% { transform: scale(1.12); } }
-.hud-shot { font: 800 15px var(--mono); color: var(--ink); }
+.hud-shot { font: 800 10px var(--mono); color: var(--ink); font-variant-numeric: tabular-nums; }
 .hud-shotwrap.is-off .hud-shot { color: var(--chalk-dim); }
 
 .hud-banner {
-  margin-top: 14px; text-align: center;
+  margin-top: 10px; text-align: center;
   opacity: 0; transform: translateY(-8px) scale(0.96);
   transition: opacity 0.25s var(--ease), transform 0.25s var(--ease-back);
 }
@@ -240,7 +261,7 @@ kbd {
 .hud-banner__sub { font: 700 13px var(--body); color: var(--gold); letter-spacing: 0.05em; margin-top: 2px; }
 
 .hud-toast {
-  position: fixed; top: 96px; right: 22px;
+  position: fixed; top: 60px; right: 22px;
   padding: 8px 14px; border-radius: 8px;
   background: rgba(8, 11, 17, 0.88); border: 1px solid rgba(243,240,231,0.14);
   font: 700 12px var(--body); color: var(--chalk);
@@ -311,49 +332,156 @@ kbd {
 .screen.is-out { opacity: 0; transform: translateY(-10px) scale(0.99); }
 .screen.is-behind { opacity: 0; pointer-events: none; }
 
-/* ---------------------------------------------------------------- main menu */
-.menu-stage { display: flex; flex-direction: column; align-items: center; gap: 34px; width: min(420px, 92vw); }
-
-.menu-brand { display: flex; flex-direction: column; align-items: center; gap: 10px; }
-.menu-brand__mark { display: flex; gap: 8px; margin-bottom: 4px; }
-.menu-brand__mark span { width: 10px; height: 10px; border-radius: 50%; }
-.menu-brand__mark span:nth-child(1) { background: var(--orange); }
-.menu-brand__mark span:nth-child(2) { background: var(--mint); }
-.menu-brand__mark span:nth-child(3) { background: var(--gold); }
-
-.menu-brand__word {
-  margin: 0; font: var(--display); font-size: clamp(40px, 9vw, 64px);
-  letter-spacing: 0.045em; color: var(--chalk);
-  text-shadow: 0 8px 30px rgba(255,90,31,0.18);
+/* ---------------------------------------------------------------- main menu
+   A front page laid over the live scene rather than a panel floating on a
+   backdrop: modes across the top, the selected one explained down the left,
+   and the right side deliberately left alone so the standby camera's player
+   is part of the composition instead of something hidden behind a scrim. */
+.screen--main {
+  align-items: stretch; justify-content: flex-start;
+  padding: 0;
+  /* Dark where the words go, clear where the player stands. The vertical pass
+     puts weight back under the tab row and along the floor line so neither
+     dissolves into a bright patch of court. */
+  background: linear-gradient(95deg,
+    rgba(4,6,10,0.97) 0%, rgba(4,6,10,0.93) 34%, rgba(4,6,10,0.72) 48%,
+    rgba(4,6,10,0.26) 70%, rgba(4,6,10,0.05) 88%, rgba(4,6,10,0.00) 100%);
+  overflow: hidden;
 }
-.menu-brand__tag { margin: 0; font: 600 13px var(--body); color: var(--chalk-dim); letter-spacing: 0.04em; }
 
-.menu-list { display: flex; flex-direction: column; gap: 10px; width: 100%; }
-.menu-list--tight { gap: 8px; }
+.menu {
+  position: relative; flex: 1;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  padding: clamp(16px, 3.2vh, 34px) clamp(20px, 4.5vw, 66px) clamp(14px, 2.6vh, 26px);
+  min-height: 0;
+}
 
-.menu-item {
+/* ---- brand */
+.menu__brand { display: flex; align-items: center; gap: 10px; }
+.menu__mark {
+  width: 22px; height: 22px; border-radius: 5px;
+  background: linear-gradient(135deg, var(--orange) 0%, var(--gold) 100%);
+  box-shadow: 0 0 18px rgba(255, 90, 31, 0.45);
+  position: relative;
+}
+/* Two lines across the mark: a ball's seams, at the size where a whole ball
+   would just read as an orange dot. */
+.menu__mark::before, .menu__mark::after {
+  content: ''; position: absolute; background: rgba(6, 9, 14, 0.55);
+}
+.menu__mark::before { left: 0; right: 0; top: 50%; height: 1.5px; transform: translateY(-50%); }
+.menu__mark::after { top: 0; bottom: 0; left: 50%; width: 1.5px; transform: translateX(-50%); }
+.menu__word {
+  font: var(--display); font-size: clamp(17px, 2.1vw, 23px);
+  letter-spacing: 0.10em; color: var(--chalk);
+}
+
+/* ---- mode row */
+.menu-tabs {
+  display: flex; align-items: flex-end; flex-wrap: wrap;
+  gap: clamp(10px, 2.4vw, 34px);
+  margin-top: clamp(12px, 2.4vh, 26px);
+}
+.menu-tab {
   all: unset; cursor: pointer;
-  display: flex; flex-direction: column; gap: 3px;
-  padding: 16px 20px;
-  background: rgba(243, 240, 231, 0.045);
-  border: 1px solid rgba(243, 240, 231, 0.10);
-  border-left: 3px solid transparent;
-  border-radius: 8px;
-  transition: background 0.16s var(--ease), border-color 0.16s var(--ease), transform 0.16s var(--ease);
+  font: var(--display); font-size: clamp(12px, 1.35vw, 16px);
+  letter-spacing: 0.04em; color: rgba(243, 240, 231, 0.52);
+  padding: 4px 2px 9px;
+  position: relative;
+  transition: color 0.16s var(--ease);
+  white-space: nowrap;
 }
-.menu-item:hover, .menu-item:focus-visible {
-  background: rgba(243, 240, 231, 0.09);
-  border-left-color: var(--orange);
-  transform: translateX(3px);
+.menu-tab:hover, .menu-tab:focus-visible { color: var(--chalk); outline: none; }
+/* The underline is the selection. It grows from the middle so sweeping the
+   row reads as one marker travelling rather than seven lamps blinking. */
+.menu-tab::after {
+  content: ''; position: absolute; left: 50%; right: 50%; bottom: 0; height: 2px;
+  background: var(--chalk);
+  transition: left 0.2s var(--ease), right 0.2s var(--ease), background-color 0.2s var(--ease);
+}
+.menu-tab.is-on { color: var(--chalk); }
+.menu-tab.is-on::after { left: 0; right: 0; }
+.menu-tab:focus-visible::after { left: 0; right: 0; background: var(--orange); }
+
+/* ---- hero */
+.menu-hero {
+  align-self: center;
+  width: min(500px, 54vw);
+  display: flex; flex-direction: column; align-items: flex-start;
+  gap: 12px;
+}
+.menu-hero.is-swap { animation: heroIn 0.26s var(--ease) both; }
+@keyframes heroIn {
+  from { opacity: 0; transform: translateX(-14px); }
+  to { opacity: 1; transform: none; }
+}
+
+.menu-hero__title {
+  margin: 0; font: var(--display);
+  font-size: clamp(34px, 5.4vw, 62px); line-height: 0.96;
+  letter-spacing: 0.02em; color: var(--chalk);
+  text-shadow: 0 10px 34px rgba(0, 0, 0, 0.55);
+}
+.menu-hero__tags {
+  margin: 0; order: -1;
+  font: 800 clamp(10px, 1.05vw, 12px) var(--mono);
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--orange);
+  text-shadow: 0 2px 12px rgba(4, 6, 10, 0.9);
+  white-space: nowrap;
+}
+.menu-hero__tags i { font-style: normal; color: rgba(255, 90, 31, 0.45); margin: 0 7px; }
+.menu-hero__body {
+  margin: 0; max-width: 44ch;
+  font: 500 clamp(12.5px, 1.15vw, 14.5px)/1.55 var(--body);
+  color: rgba(243, 240, 231, 0.78);
+  text-shadow: 0 2px 12px rgba(4, 6, 10, 0.9);
+}
+.menu-hero__status {
+  margin: 0;
+  font: 700 11px var(--mono); letter-spacing: 0.07em;
+  color: var(--gold);
+}
+
+.menu-cta {
+  all: unset; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 9px;
+  margin-top: 6px; padding: 10px 22px 10px 14px;
+  border-radius: 999px;
+  background: var(--orange);
+  font: var(--display); font-size: clamp(12px, 1.25vw, 15px); letter-spacing: 0.04em;
+  color: var(--chalk);
+  box-shadow: 0 10px 26px rgba(255, 90, 31, 0.30);
+  transition: transform 0.16s var(--ease), box-shadow 0.16s var(--ease), background 0.16s var(--ease);
+}
+.menu-cta:hover, .menu-cta:focus-visible {
+  transform: translateY(-1px);
+  background: color-mix(in srgb, var(--orange) 88%, #fff);
+  box-shadow: 0 14px 32px rgba(255, 90, 31, 0.44);
   outline: none;
 }
-.menu-item--lead { border-left-color: var(--orange); background: rgba(255, 90, 31, 0.10); }
-.menu-item--warn:hover, .menu-item--warn:focus-visible { border-left-color: var(--red); }
+.menu-cta__dot {
+  width: 15px; height: 15px; border-radius: 50%;
+  border: 2px solid rgba(243, 240, 231, 0.9);
+  box-shadow: inset 0 0 0 2px var(--orange);
+  background: var(--chalk);
+}
 
-.menu-item__k { font: var(--display); font-size: 17px; letter-spacing: 0.02em; color: var(--chalk); }
-.menu-item__d { font: 500 12.5px var(--body); color: var(--chalk-dim); }
+.menu__foot {
+  margin: 0; justify-self: start;
+  font: 600 10px var(--mono); color: rgba(243, 240, 231, 0.28); letter-spacing: 0.08em;
+}
 
-.menu-foot { font: 600 11px var(--mono); color: rgba(243,240,231,0.30); letter-spacing: 0.06em; }
+/* Short or narrow windows: the hero would collide with the tab row, so it
+   gives up its centring and the scene keeps whatever is left. */
+@media (max-height: 520px), (max-width: 700px) {
+  .menu-hero { align-self: start; margin-top: clamp(10px, 3vh, 26px); width: min(470px, 72vw); }
+  .menu-hero__body { display: none; }
+  .screen--main {
+    background: linear-gradient(120deg,
+      rgba(4,6,10,0.97) 0%, rgba(4,6,10,0.88) 45%, rgba(4,6,10,0.55) 75%, rgba(4,6,10,0.30) 100%);
+  }
+}
 
 /* -------------------------------------------------------------------- panel */
 .panel {
@@ -374,7 +502,7 @@ kbd {
 }
 .panel__head h2 { margin: 0; font: var(--display); font-size: 22px; color: var(--chalk); letter-spacing: 0.02em; }
 .panel__body { padding: 18px 22px 24px; overflow-y: auto; }
-.panel__actions { margin-top: 18px; display: flex; justify-content: flex-end; }
+.panel__actions { margin-top: 18px; display: flex; justify-content: flex-end; gap: 10px; }
 
 .group { margin-bottom: 22px; }
 .group h3 {
@@ -440,34 +568,118 @@ input[type="range"]::-moz-range-thumb {
 .swatch:hover, .swatch:focus-visible { transform: scale(1.15); outline: none; }
 .swatch.is-on { border-color: var(--chalk); box-shadow: 0 0 0 2px rgba(0,0,0,0.5); }
 
-.creator__layout { display: flex; gap: 24px; align-items: flex-start; }
-.creator__preview {
-  flex: 0 0 200px; display: flex; flex-direction: column; align-items: center; gap: 10px;
-  position: sticky; top: 0;
+/* ------------------------------------------------------------ player creator
+   Same composition as the front page it is opened from: a column of controls
+   down the left, the live figure on the right, and no card boxed around either
+   of them. The model is the preview — there is no drawing of the player
+   anywhere on this screen. */
+.screen--createPlayer {
+  align-items: stretch; justify-content: flex-start;
+  padding: 0;
+  /* One gradient, not a stack: the scrim only has to do one job, which is to
+     hold the column of controls against a lit floor. */
+  background: linear-gradient(95deg,
+    rgba(4,6,10,0.98) 0%, rgba(4,6,10,0.96) 40%, rgba(4,6,10,0.80) 52%,
+    rgba(4,6,10,0.30) 72%, rgba(4,6,10,0.06) 90%, rgba(4,6,10,0.00) 100%);
+  overflow: hidden;
 }
-.creator__preview canvas {
-  width: 200px; height: 250px; border-radius: 10px;
-  background: linear-gradient(180deg, #16324F 0%, #0E1E30 100%);
-  border: 1px solid rgba(243,240,231,0.10);
+
+.creator { position: relative; flex: 1; min-height: 0; display: flex; }
+
+.creator__col {
+  display: flex; flex-direction: column;
+  width: min(560px, 56vw);
+  padding: clamp(14px, 2.6vh, 28px) clamp(18px, 3vw, 40px) clamp(12px, 2vh, 20px);
+  gap: 12px; min-height: 0;
 }
-.creator__previewLabel {
-  font: 800 13px var(--mono); letter-spacing: 0.04em; color: var(--chalk);
-  text-align: center; line-height: 1.5;
+
+.creator__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.creator__eyebrow {
+  margin: 0 0 2px; font: 800 10px var(--mono); letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--orange);
 }
-.creator__previewLabel span { display: block; color: var(--chalk-dim); font-size: 11px; letter-spacing: 0.08em; }
-.creator__form { flex: 1 1 auto; min-width: 0; }
-.creator__form input[type="text"], .creator__form input[type="number"] {
+.creator__title {
+  margin: 0; font: var(--display); font-size: clamp(26px, 3.4vw, 38px);
+  letter-spacing: 0.02em; color: var(--chalk);
+}
+
+/* Identity card: overall on the left in the reward colour, then who this is. */
+.creator__card {
+  display: flex; align-items: center; gap: 14px;
+  padding: 10px 14px;
+  background: rgba(243, 240, 231, 0.05);
+  border: 1px solid rgba(243, 240, 231, 0.10);
+  border-left: 3px solid var(--orange);
+  border-radius: 8px;
+}
+.creator__ovr { display: flex; align-items: baseline; gap: 5px; }
+.creator__ovr b {
+  font: var(--display); font-size: 36px; line-height: 1; color: var(--gold);
+  font-variant-numeric: tabular-nums;
+}
+.creator__ovr span { font: 800 10px var(--mono); letter-spacing: 0.14em; color: var(--chalk-dim); }
+.creator__id { min-width: 0; }
+.creator__name {
+  font: var(--display); font-size: 18px; letter-spacing: 0.04em; color: var(--chalk);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.creator__meta { font: 600 11px var(--mono); letter-spacing: 0.05em; color: var(--chalk-dim); margin-top: 3px; }
+
+/* Only this scrolls, so the header, the identity card and the buttons stay
+   put while the options move under them. */
+.creator__scroll {
+  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  display: flex; flex-direction: column; gap: 14px;
+  padding-right: 6px;
+}
+.creator__scroll::-webkit-scrollbar { width: 8px; }
+.creator__scroll::-webkit-scrollbar-thumb { background: rgba(243,240,231,0.16); border-radius: 4px; }
+.creator__scroll::-webkit-scrollbar-track { background: transparent; }
+
+.creator__actions {
+  display: flex; gap: 10px; justify-content: flex-end;
+  padding-top: 10px; border-top: 1px solid rgba(243, 240, 231, 0.08);
+}
+
+/* Build shape: one bar per attribute group, in the Career screen's colours. */
+.creator__spread { display: flex; flex-direction: column; gap: 5px; margin: 4px 0 10px; }
+.spread__row { display: grid; grid-template-columns: 96px 1fr 26px; align-items: center; gap: 10px; }
+.spread__k {
+  font: 700 10px var(--mono); letter-spacing: 0.04em; color: var(--chalk-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.spread__bar {
+  height: 7px; border-radius: 4px; background: rgba(243, 240, 231, 0.08); overflow: hidden;
+}
+.spread__bar i {
+  display: block; height: 100%; border-radius: 4px;
+  background: var(--gc, var(--orange));
+  transition: width 0.25s var(--ease);
+}
+.spread__v {
+  font: 800 11px var(--mono); color: var(--chalk); text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 820px) {
+  .creator__col { width: 100%; }
+  .screen--createPlayer {
+    background: linear-gradient(180deg,
+      rgba(4,6,10,0.94) 0%, rgba(4,6,10,0.80) 60%, rgba(4,6,10,0.90) 100%);
+  }
+}
+
+/* Text and number inputs inside the creator column. */
+.creator__col input[type="text"], .creator__col input[type="number"] {
   all: unset; box-sizing: border-box; width: 100%;
   background: rgba(243,240,231,0.06); border: 1px solid rgba(243,240,231,0.14);
   border-radius: 6px; padding: 6px 10px;
   font: 600 13px var(--mono); color: var(--chalk); text-align: right;
 }
-.creator__form input[type="text"]:focus, .creator__form input[type="number"]:focus { border-color: var(--orange); }
+.creator__col input[type="text"]:focus,
+.creator__col input[type="number"]:focus { border-color: var(--orange); }
 .panel__actions { gap: 10px; }
-@media (max-width: 640px) {
-  .creator__layout { flex-direction: column; align-items: center; }
-  .creator__preview { position: static; }
-}
+
 .switch {
   position: relative; width: 40px; height: 22px; border-radius: 11px;
   background: rgba(243,240,231,0.14);
@@ -554,6 +766,10 @@ input:focus-visible + .switch { outline: 2px solid var(--mint); outline-offset: 
 }
 .career__form.is-w { background: rgba(34,228,160,0.22); color: var(--mint); }
 .career__form.is-l { background: rgba(226,59,78,0.22); color: #FFC9CF; }
+
+/* Overall sits with the other career numbers, in the reward colour, because
+   this screen is where it goes up. */
+.career__stat--ovr b { color: var(--gold); }
 
 .creator__form--full { max-width: none; }
 .row--attr { grid-template-columns: 112px 1fr 30px 26px; gap: 10px; }
@@ -661,6 +877,13 @@ input:focus-visible + .switch { outline: 2px solid var(--mint); outline-offset: 
 .matchend__level span { color: var(--chalk-dim); font-weight: 600; }
 
 @media (max-width: 560px) {
+  /* Narrow enough that the bug would run to both edges: drop the timeout dots
+     and tighten the cards. Score, clock and shot clock are what a glance is
+     for; the rest is detail nobody reads mid-possession. */
+  .hud-dots { display: none; }
+  .hud-team { min-width: 78px; padding: 3px 7px 5px; gap: 5px; }
+  .hud-clockblock { padding: 3px 8px; gap: 6px; }
+
   .row { grid-template-columns: 100px 1fr 42px; }
   .keys { grid-template-columns: 1fr; }
   .practice-stat { padding: 8px 12px; min-width: 52px; }
@@ -668,3 +891,634 @@ input:focus-visible + .switch { outline: 2px solid var(--mint); outline-offset: 
   .career__summary { flex-direction: column; align-items: stretch; }
   .career__recent { margin-left: 0; }
 }
+
+/* =============================================================================
+ * THE NBA 1K26 PACKAGE
+ * -----------------------------------------------------------------------------
+ * A broadcast package wants weight, edges and a single loud accent. The sheet
+ * above already had the bones — condensed display type, one reward colour, a
+ * scorebug that gets out of the way. What it did not have was COMPOSITION: the
+ * front page laid its words straight onto a lit court with nothing behind them,
+ * arranged every mode in a soft horizontal row, and finished with a rounded
+ * pill button that belongs on a signup form.
+ *
+ * This layer is the presentation pass over that structure. Three rules run
+ * through all of it:
+ *
+ *   1  Nothing rounded. Corners are cut on the diagonal, not filled in. A cut
+ *      corner reads as printed, a radius reads as a web page.
+ *   2  Type carries the hierarchy, not boxes. One enormous condensed title, one
+ *      wide-tracked eyebrow, and small tabular numerals for anything measured.
+ *   3  The accent is structural. Orange is a bar, a rail or an edge — a shape
+ *      the eye can follow down the screen — never a decorative glow.
+ *
+ * It is appended rather than merged so the cascade does the overriding and the
+ * layout underneath stays exactly as verified.
+ * ========================================================================== */
+
+:root {
+  /* Surfaces, darkest to lightest. Everything panelled picks one of these
+     rather than inventing another rgba() on the spot. */
+  --s0: #05070C;
+  --s1: #0B1018;
+  --s2: #121A26;
+  --s3: #1B2534;
+  --edge: rgba(243, 240, 231, 0.11);
+  --edge-hi: rgba(243, 240, 231, 0.22);
+
+  /* One cut corner, reused. Panels get the bottom-right, chips the top-right. */
+  --cut: 14px;
+  --cut-sm: 7px;
+}
+
+/* ------------------------------------------------------------- front page --
+   Modes move to a numbered rail down the left. A vertical list can be read in
+   one pass and ranked by eye; the horizontal row it replaces could do neither,
+   and it pushed the hero down into the middle of the floor where the scrim had
+   to fight the court to keep the words legible. */
+.screen--main {
+  background:
+    linear-gradient(96deg,
+      rgba(5,7,12,0.985) 0%, rgba(5,7,12,0.96) 30%, rgba(5,7,12,0.82) 46%,
+      rgba(5,7,12,0.34) 68%, rgba(5,7,12,0.06) 88%, rgba(5,7,12,0.00) 100%),
+    linear-gradient(0deg, rgba(5,7,12,0.86) 0%, rgba(5,7,12,0.00) 34%);
+}
+
+.screen--main .menu {
+  grid-template-columns: minmax(172px, 15.5vw) 1fr;
+  grid-template-rows: auto 1fr auto;
+  grid-template-areas:
+    "brand brand"
+    "tabs  hero"
+    "foot  foot";
+  column-gap: clamp(20px, 3.4vw, 52px);
+}
+.screen--main .menu__brand { grid-area: brand; }
+.screen--main .menu-tabs  { grid-area: tabs; }
+.screen--main .menu-hero  { grid-area: hero; }
+.screen--main .menu__foot { grid-area: foot; }
+
+/* ---- brand: a slab, not a rounded chip */
+.menu__brand { align-items: center; gap: 12px; }
+.menu__mark {
+  width: 26px; height: 26px; border-radius: 0;
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%);
+  background: linear-gradient(150deg, var(--orange) 0%, #FF8A3D 55%, var(--gold) 100%);
+  box-shadow: none;
+}
+.menu__mark::before { height: 1.5px; background: rgba(5,7,12,0.62); }
+.menu__mark::after  { width: 1.5px; background: rgba(5,7,12,0.62); }
+.menu__word { letter-spacing: 0.16em; font-size: clamp(18px, 2.2vw, 25px); }
+
+/* ---- the mode rail */
+.menu-tabs {
+  flex-direction: column; align-items: stretch; flex-wrap: nowrap;
+  gap: 0;
+  margin-top: clamp(18px, 3.4vh, 38px);
+  align-self: start;
+  counter-reset: mode;
+  border-left: 1px solid var(--edge);
+}
+.menu-tab {
+  counter-increment: mode;
+  display: flex; align-items: center; gap: 11px;
+  padding: clamp(7px, 1.35vh, 11px) 12px clamp(7px, 1.35vh, 11px) 15px;
+  font-size: clamp(12px, 1.32vw, 16px);
+  letter-spacing: 0.07em; text-transform: uppercase;
+  color: rgba(243, 240, 231, 0.44);
+  transition: color 0.16s var(--ease), background 0.16s var(--ease),
+              padding-left 0.16s var(--ease);
+}
+/* The number is the ranking device: it makes the rail a running order rather
+   than a pile of links, and it gives the eye a fixed left margin to travel. */
+.menu-tab::before {
+  content: counter(mode, decimal-leading-zero);
+  font: 800 9.5px var(--mono); letter-spacing: 0.1em;
+  color: rgba(243, 240, 231, 0.26);
+  transition: color 0.16s var(--ease);
+}
+/* The underline from the base sheet becomes a vertical bar riding the rail. */
+.menu-tab::after {
+  content: ''; position: absolute;
+  left: -1px; right: auto; top: 50%; bottom: auto;
+  width: 2px; height: 0; transform: translateY(-50%);
+  background: var(--orange);
+  transition: height 0.2s var(--ease), background-color 0.2s var(--ease);
+}
+.menu-tab:hover, .menu-tab:focus-visible {
+  color: var(--chalk); background: rgba(243, 240, 231, 0.045); padding-left: 18px;
+}
+.menu-tab:hover::before, .menu-tab:focus-visible::before { color: rgba(243,240,231,0.5); }
+.menu-tab.is-on {
+  color: var(--chalk);
+  background: linear-gradient(90deg, rgba(255,90,31,0.16), rgba(255,90,31,0));
+}
+.menu-tab.is-on::after { height: 100%; }
+.menu-tab.is-on::before { color: var(--orange); }
+.menu-tab:focus-visible::after { height: 100%; background: var(--gold); }
+
+/* ---- hero */
+.menu-hero {
+  align-self: center; width: min(560px, 52vw); gap: 14px;
+}
+/* The eyebrow is a printed slab: solid accent, dark type, one cut corner. Set
+   in the dark it reads as a label stamped on the page instead of another line
+   of orange text competing with the title above it. */
+.menu-hero__tags {
+  display: inline-block; padding: 5px 12px 5px 10px;
+  background: var(--orange); color: #160902;
+  clip-path: polygon(0 0, 100% 0, calc(100% - 9px) 100%, 0 100%);
+  font: 800 clamp(9.5px, 1vw, 11.5px) var(--mono);
+  letter-spacing: 0.18em; text-shadow: none;
+}
+.menu-hero__tags i { color: rgba(22, 9, 2, 0.42); margin: 0 6px; }
+.menu-hero__title {
+  font-size: clamp(38px, 6.4vw, 78px); line-height: 0.88;
+  letter-spacing: -0.005em; text-transform: uppercase;
+  text-shadow: 0 12px 44px rgba(0, 0, 0, 0.68);
+}
+.menu-hero__body {
+  font-size: clamp(12.5px, 1.12vw, 14.5px); line-height: 1.6;
+  color: rgba(243, 240, 231, 0.72);
+  padding-left: 13px; border-left: 1px solid var(--edge);
+}
+.menu-hero__status {
+  font: 800 10.5px var(--mono); letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--gold);
+}
+
+/* ---- the call to action */
+.menu-cta {
+  margin-top: 4px; padding: 13px 30px 13px 17px; border-radius: 0;
+  clip-path: polygon(0 0, 100% 0, calc(100% - 13px) 100%, 0 100%);
+  background: var(--orange); color: #160902;
+  font-size: clamp(12.5px, 1.3vw, 15.5px); letter-spacing: 0.1em;
+  text-transform: uppercase; box-shadow: none;
+  transition: background 0.16s var(--ease), transform 0.16s var(--ease),
+              padding-right 0.16s var(--ease);
+}
+.menu-cta:hover, .menu-cta:focus-visible {
+  transform: none; padding-right: 38px;
+  background: linear-gradient(90deg, var(--orange), var(--gold));
+  box-shadow: none;
+}
+.menu-cta__dot {
+  width: 0; height: 0; border-radius: 0; background: none; border: none;
+  border-top: 6px solid transparent; border-bottom: 6px solid transparent;
+  border-left: 9px solid #160902;
+  box-shadow: none;
+}
+
+.menu__foot {
+  margin-top: clamp(10px, 2vh, 20px); padding-top: 11px;
+  border-top: 1px solid var(--edge);
+  letter-spacing: 0.16em; text-transform: uppercase;
+  color: rgba(243, 240, 231, 0.24);
+}
+
+@media (max-height: 560px), (max-width: 820px) {
+  .screen--main .menu {
+    grid-template-columns: 1fr;
+    grid-template-areas: "brand" "tabs" "hero" "foot";
+  }
+  .menu-tabs { flex-direction: row; flex-wrap: wrap; border-left: none; margin-top: 12px; }
+  .menu-tab { padding: 6px 10px; }
+  .menu-tab::after { left: 0; right: 0; top: auto; bottom: 0; width: auto; height: 0; transform: none; }
+  .menu-tab.is-on::after { height: 2px; }
+  .menu-hero { width: auto; }
+}
+
+/* -------------------------------------------------------------- panels ----
+   Cut corner, accent rail up the left edge, and a head that is a bar rather
+   than a row with a line under it. */
+.panel {
+  background: linear-gradient(180deg, var(--s2) 0%, var(--s1) 100%);
+  border: 1px solid var(--edge); border-radius: 0;
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - var(--cut)),
+                     calc(100% - var(--cut)) 100%, 0 100%);
+  box-shadow: 0 30px 80px rgba(0,0,0,0.62);
+}
+.panel__head {
+  padding: 16px 22px; border-bottom: 1px solid var(--edge);
+  background: var(--s3);
+  position: relative;
+}
+/* The accent is a bar down the left of the head, carrying into the body. */
+.panel__head::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: var(--orange);
+}
+.panel__head h2 {
+  font-size: 19px; letter-spacing: 0.13em; text-transform: uppercase;
+}
+.panel__body { padding: 20px 22px 24px; }
+
+.group h3 {
+  color: var(--chalk); letter-spacing: 0.17em; font-size: 10.5px;
+  padding-bottom: 7px; border-bottom: 1px solid var(--edge);
+}
+
+/* -------------------------------------------------------------- buttons ---- */
+.btn {
+  /* `all: unset` in the base rule leaves display:inline, which is fine inside
+     the flex rows most buttons live in — they get blockified there. On its own
+     in flowing content a tiny button wraps its label mid-phrase and drops its
+     own top margin, so it is stated here instead of relied upon. */
+  display: inline-block; white-space: nowrap;
+  border-radius: 0; padding: 10px 18px;
+  clip-path: polygon(0 0, 100% 0, calc(100% - 8px) 100%, 0 100%);
+  font: 800 11.5px var(--mono); letter-spacing: 0.13em; text-transform: uppercase;
+  background: var(--orange); color: #160902;
+}
+.btn:hover, .btn:focus-visible { filter: none; background: var(--gold); }
+.btn--ghost {
+  background: transparent; color: var(--chalk);
+  border: 1px solid var(--edge-hi);
+  clip-path: none;
+}
+.btn--ghost:hover, .btn--ghost:focus-visible {
+  background: rgba(243,240,231,0.08); border-color: var(--chalk);
+}
+.btn--danger {
+  background: transparent; color: #FF8C99;
+  border: 1px solid rgba(226,59,78,0.5); clip-path: none;
+}
+.btn--danger:hover { background: rgba(226,59,78,0.18); color: #FFC9CF; }
+
+/* ---------------------------------------------------------------- swatches --
+   Square, because a round swatch of a jersey colour reads as a bullet point.
+   The selected one is marked by a ring outside its own edge so the colour
+   itself is never covered up. */
+.swatch {
+  width: 26px; height: 26px; border-radius: 0;
+  border: 1px solid rgba(0,0,0,0.45);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%);
+}
+.swatch:hover, .swatch:focus-visible { transform: translateY(-2px); }
+.swatch.is-on {
+  box-shadow: 0 0 0 2px var(--s0), 0 0 0 4px var(--orange);
+  transform: translateY(-2px);
+}
+
+/* -------------------------------------------------------------- creator ---- */
+.creator__card {
+  border-radius: 0; border-left: 3px solid var(--orange);
+  background: linear-gradient(90deg, rgba(255,90,31,0.10), rgba(243,240,231,0.035) 40%);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%);
+  padding: 12px 16px;
+}
+.creator__ovr b { font-size: 42px; color: var(--chalk); }
+.creator__ovr span { letter-spacing: 0.2em; }
+.creator__eyebrow { letter-spacing: 0.22em; }
+.creator__title { text-transform: uppercase; letter-spacing: 0.01em; }
+.creator__name { letter-spacing: 0.1em; }
+
+/* Segmented controls read as one continuous bar of options with a solid
+   active cell, the way a broadcast graphic would set them. */
+/* Nine haircuts do not fit on one line, so the dividers cannot be borders on
+   the buttons — a right border is wrong at the end of a wrapped row and a
+   bottom border is missing under it. The container's own colour showing
+   through a 1px gap draws the grid correctly however the options wrap. */
+.seg {
+  display: flex; flex-wrap: wrap; gap: 1px;
+  background: var(--edge); border: 1px solid var(--edge);
+}
+.seg__b {
+  border-radius: 0; border: none; background: var(--s1);
+  font: 800 11px var(--mono); letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 8px 12px; flex: 1 0 auto; text-align: center;
+}
+.seg__b.is-on { background: var(--orange); color: #160902; }
+
+/* ---- giving the words their own ground
+   A page-wide scrim has to be dark enough for the worst pixel behind ANY of
+   the text, which makes it too dark everywhere else, and it still loses when
+   the standby camera swings the lit half of the court under the hero. So the
+   rail and the hero carry their own backing, shaped to the content and fading
+   out to the right where the figure needs the light back.
+
+   The backing is a background on the element itself, not an inset pseudo-
+   element behind it. `.screen.is-in` carries a transform, which makes every
+   screen its own stacking context, and a z-index:-1 child inside one of those
+   ends up underneath the scrim it was supposed to sit on top of — the panel
+   renders, but veiled, at a fraction of the contrast it was set to. */
+.menu-tabs {
+  position: relative; z-index: 0;
+  padding: 16px 30px 20px 30px; margin-left: -30px;
+}
+.menu-tabs::before {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(100deg,
+    rgba(5,7,12,0.95) 0%, rgba(5,7,12,0.88) 64%, rgba(5,7,12,0.58) 100%);
+  -webkit-mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 30px), transparent 100%);
+  mask-image: linear-gradient(180deg, #000 0, #000 calc(100% - 30px), transparent 100%);
+  z-index: -1;
+}
+
+/* Positioned, and its own stacking context: the backing below is absolute
+   with inset 0, so without this it resolves against .menu and blacks out the
+   entire page instead of the panel. */
+.menu-hero { position: relative; z-index: 0; padding: 26px 78px 30px 26px; margin-left: -26px; }
+/* The backing is a masked layer rather than a background on the element: it
+   fades on all four sides, where a background can only fade along the one axis
+   its gradient runs on and cuts a hard line across the other two. The mask
+   never touches the text, which stays at full contrast. */
+.menu-hero::before {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(101deg,
+    rgba(5,7,12,0.94) 0%, rgba(5,7,12,0.90) 40%, rgba(5,7,12,0.70) 68%,
+    rgba(5,7,12,0.26) 87%, rgba(5,7,12,0.00) 100%);
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 22px,
+                      #000 calc(100% - 26px), transparent 100%);
+  mask-image: linear-gradient(180deg, transparent 0, #000 22px,
+              #000 calc(100% - 26px), transparent 100%);
+  z-index: -1;
+}
+/* The accent edge that says where the panel starts. */
+.menu-hero::after {
+  content: ''; position: absolute; left: 0; top: 22px; bottom: 26px; width: 2px;
+  background: linear-gradient(180deg, var(--orange), rgba(255,90,31,0));
+  z-index: -1;
+}
+
+/* With the content lit from underneath, the page scrim only has to keep the
+   top-left corner and the floor line from going white. */
+.screen--main {
+  background:
+    linear-gradient(96deg,
+      rgba(5,7,12,0.90) 0%, rgba(5,7,12,0.80) 34%, rgba(5,7,12,0.56) 52%,
+      rgba(5,7,12,0.22) 72%, rgba(5,7,12,0.04) 90%, rgba(5,7,12,0.00) 100%),
+    linear-gradient(0deg, rgba(5,7,12,0.70) 0%, rgba(5,7,12,0.00) 28%);
+}
+
+/* --------------------------------------------------------------- tutorial --
+   A manual, set like one: numbered chapters, a rule under each heading, and
+   the keys pulled out into their own column so the eye can run down the page
+   looking only at controls, or only at prose, without reading both. */
+.panel--xwide { width: min(880px, 96vw); }
+
+.tut .panel__body { padding-top: 16px; }
+
+.tut__ch { margin: 0 0 30px; }
+.tut__ch:last-child { margin-bottom: 6px; }
+
+.tut__chhead {
+  display: flex; align-items: baseline; gap: 12px;
+  padding-bottom: 8px; margin-bottom: 10px;
+  border-bottom: 1px solid var(--edge);
+}
+.tut__num {
+  font: 800 11px var(--mono); letter-spacing: 0.12em; color: var(--orange);
+}
+.tut__chhead h3 {
+  margin: 0; font: var(--display); font-size: 17px;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--chalk);
+}
+.tut__note {
+  margin: 0 0 14px; padding-left: 11px;
+  border-left: 2px solid rgba(255, 90, 31, 0.5);
+  font: 500 12.5px/1.5 var(--body); color: rgba(243, 240, 231, 0.62);
+}
+
+.tut__list { display: flex; flex-direction: column; gap: 2px; }
+
+.tut__lesson {
+  display: grid; grid-template-columns: 132px 1fr;
+  align-items: start; gap: 14px;
+  padding: 9px 10px 9px 0;
+  border-bottom: 1px solid rgba(243, 240, 231, 0.05);
+}
+.tut__lesson:last-child { border-bottom: none; }
+
+.tut__keys { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+/* A lesson with no key of its own is a rule of the game rather than a control.
+   It keeps the column so the prose stays aligned, and says so with a tick
+   instead of leaving a hole in the layout. */
+.tut__keys:empty::before {
+  content: '·'; color: rgba(243, 240, 231, 0.22);
+  font: 800 14px var(--mono);
+}
+
+.tut__copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.tut__copy b {
+  font: 800 12.5px var(--body); letter-spacing: 0.02em; color: var(--chalk);
+}
+.tut__copy span {
+  font: 500 12.5px/1.55 var(--body); color: rgba(243, 240, 231, 0.66);
+}
+
+.btn--tiny {
+  margin-top: 14px; padding: 7px 14px;
+  font-size: 10px; letter-spacing: 0.14em;
+}
+
+@media (max-width: 620px) {
+  .tut__lesson { grid-template-columns: 1fr; gap: 6px; }
+  .tut__keys { justify-content: flex-start; }
+}
+
+/* ---- the creator gets the same ground as the front page it opens from */
+.creator__col { position: relative; z-index: 0; }
+.creator__col::before {
+  content: ''; position: absolute; inset: 0 -30px 0 0;
+  background: linear-gradient(101deg,
+    rgba(5,7,12,0.95) 0%, rgba(5,7,12,0.92) 52%, rgba(5,7,12,0.72) 76%,
+    rgba(5,7,12,0.22) 92%, rgba(5,7,12,0.00) 100%);
+  z-index: -1;
+}
+
+/* ------------------------------------------------------- pause / match end --
+   These two screens shipped referring to a component that was never written.
+   `.menu-list` and `.menu-item` appear nowhere else in this sheet, so the pause
+   menu and the end-of-game screen — the two screens a player sees every single
+   session — were rendering as raw browser buttons: white boxes with default
+   chrome, and the accessibility outline as the only styling on them.
+
+   Built here as a stacked list rather than a row of buttons. A pause menu is a
+   list of decisions of unequal weight (resume is not the same size of choice as
+   leaving the game), and a stack can rank them where a row insists they are all
+   the same. */
+.pause {
+  width: min(420px, 92vw);
+  align-items: stretch; text-align: left;
+  gap: 0;
+  background: linear-gradient(180deg, rgba(18,26,38,0.97), rgba(11,16,24,0.98));
+  border: 1px solid var(--edge);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 18px), calc(100% - 18px) 100%, 0 100%);
+  box-shadow: 0 34px 90px rgba(0,0,0,0.66);
+  padding: 26px 26px 22px;
+}
+.pause__bar {
+  width: 40px; height: 3px; border-radius: 0; margin-bottom: 14px;
+}
+.pause__title {
+  font-size: 32px; letter-spacing: 0.09em; text-transform: uppercase; line-height: 1;
+}
+.pause__sub {
+  margin: 6px 0 0; letter-spacing: 0.18em; color: rgba(243,240,231,0.5);
+}
+
+.menu-list {
+  display: flex; flex-direction: column;
+  margin-top: 22px; border-top: 1px solid var(--edge);
+}
+.menu-list--tight { gap: 0; }
+
+.menu-item {
+  all: unset; cursor: pointer;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 13px 4px 13px 14px;
+  border-bottom: 1px solid var(--edge);
+  color: rgba(243, 240, 231, 0.72);
+  position: relative;
+  transition: color 0.15s var(--ease), background 0.15s var(--ease),
+              padding-left 0.15s var(--ease);
+}
+/* The marker rides the left edge the same way it does on the front page's
+   mode rail, so the two lists behave like one idea. */
+.menu-item::before {
+  content: ''; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  width: 2px; height: 0; background: var(--orange);
+  transition: height 0.15s var(--ease);
+}
+/* A chevron, so a row reads as something that goes somewhere. */
+.menu-item::after {
+  content: ''; width: 0; height: 0; margin-right: 10px;
+  border-top: 4px solid transparent; border-bottom: 4px solid transparent;
+  border-left: 6px solid rgba(243, 240, 231, 0.22);
+  transition: border-left-color 0.15s var(--ease), transform 0.15s var(--ease);
+}
+.menu-item:hover, .menu-item:focus-visible {
+  color: var(--chalk); background: rgba(243, 240, 231, 0.05);
+  padding-left: 18px; outline: none;
+}
+.menu-item:hover::before, .menu-item:focus-visible::before { height: 100%; }
+.menu-item:hover::after, .menu-item:focus-visible::after {
+  border-left-color: var(--orange); transform: translateX(3px);
+}
+.menu-item__k {
+  font: 800 13px var(--body); letter-spacing: 0.12em; text-transform: uppercase;
+}
+
+/* The one you most likely want, given as a solid bar instead of another line. */
+.menu-item--lead {
+  background: var(--orange); color: #160902; margin-bottom: 2px;
+  border-bottom-color: transparent;
+}
+.menu-item--lead::after { border-left-color: rgba(22, 9, 2, 0.55); }
+.menu-item--lead:hover, .menu-item--lead:focus-visible {
+  background: var(--gold); color: #160902;
+}
+.menu-item--lead:hover::after, .menu-item--lead:focus-visible::after {
+  border-left-color: #160902;
+}
+
+/* Leaving the game is the one row that should never be hit by accident. */
+.menu-item--warn { color: rgba(255, 140, 153, 0.78); }
+.menu-item--warn::before { background: var(--red); }
+.menu-item--warn:hover, .menu-item--warn:focus-visible {
+  color: #FFC9CF; background: rgba(226, 59, 78, 0.14);
+}
+.menu-item--warn:hover::after, .menu-item--warn:focus-visible::after {
+  border-left-color: var(--red);
+}
+
+.matchend__xp {
+  margin: 12px 0 0; font: var(--display); font-size: 24px;
+  letter-spacing: 0.06em; color: var(--gold);
+}
+.matchend__level {
+  margin-top: 10px; padding: 9px 12px;
+  background: rgba(34, 228, 160, 0.12);
+  border-left: 3px solid var(--mint);
+  font: 800 11px var(--mono); letter-spacing: 0.1em; color: var(--mint);
+}
+.matchend__level span { display: block; margin-top: 3px; color: rgba(243,240,231,0.6); letter-spacing: 0.06em; }
+
+/* ------------------------------------------------------------ the coach ----
+   The drill card, live on court during the walkthrough. Bottom-left, clear of
+   the scorebug at the top and clear of the shot meter, which hangs on the
+   shooter and can be anywhere up the floor. */
+.coach {
+  position: fixed; left: 22px; bottom: 22px;
+  width: min(340px, 42vw);
+  z-index: 45;
+  padding: 16px 18px 14px;
+  background: linear-gradient(180deg, rgba(18,26,38,0.95), rgba(9,13,20,0.96));
+  border: 1px solid var(--edge);
+  border-left: 3px solid var(--orange);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%);
+  box-shadow: 0 20px 50px rgba(0,0,0,0.55);
+  animation: coachIn 0.28s var(--ease-back) both;
+}
+@keyframes coachIn {
+  from { opacity: 0; transform: translateX(-14px); }
+  to { opacity: 1; transform: none; }
+}
+
+.coach__step {
+  font: 800 9.5px var(--mono); letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--orange);
+}
+.coach__title {
+  margin: 5px 0 0; font: var(--display); font-size: 19px;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--chalk);
+}
+.coach__task {
+  margin: 6px 0 0; font: 700 12.5px/1.45 var(--body); color: var(--chalk);
+}
+.coach__keys { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 9px; }
+
+.coach__bar {
+  margin-top: 11px; height: 4px;
+  background: rgba(243, 240, 231, 0.12);
+  overflow: hidden;
+}
+.coach__bar i {
+  display: block; height: 100%; width: 0;
+  background: linear-gradient(90deg, var(--orange), var(--gold));
+  transition: width 0.12s linear;
+}
+/* Finishing a drill has to land as an event, not as a panel that quietly
+   swaps text — the bar goes green and holds for a beat before the next one. */
+.coach.is-done { border-left-color: var(--mint); }
+.coach.is-done .coach__bar i { background: var(--mint); }
+.coach.is-done .coach__step { color: var(--mint); }
+
+.coach__why {
+  margin: 10px 0 0; padding-top: 9px;
+  border-top: 1px solid var(--edge);
+  font: 500 11.5px/1.5 var(--body); color: rgba(243, 240, 231, 0.56);
+}
+
+.coach__skip {
+  all: unset; cursor: pointer;
+  display: inline-block; margin-top: 10px;
+  font: 800 9.5px var(--mono); letter-spacing: 0.14em; text-transform: uppercase;
+  color: rgba(243, 240, 231, 0.34);
+  border-bottom: 1px solid rgba(243, 240, 231, 0.18);
+}
+.coach__skip:hover, .coach__skip:focus-visible {
+  color: var(--chalk); border-bottom-color: var(--chalk); outline: none;
+}
+
+.tut__start { margin: 0 0 16px; border-top: none; }
+
+@media (max-width: 700px) {
+  .coach { left: 12px; right: 12px; bottom: 12px; width: auto; }
+  .coach__why { display: none; }
+}
+
+/* ------------------------------------------------------------- the mark ----
+   Badge, then the number, set the way a sports-title lockup is: a squared
+   badge holding the silhouette, and the year split across two weights so the
+   eye reads "1K" and "26" as one word in two colours. Drawn as inline SVG so
+   it stays sharp at any size and needs no font file — the whole game has to
+   open from disk with nothing to fetch. */
+.logo { display: block; height: 100%; width: auto; overflow: visible; }
+
+.menu__word { display: block; height: clamp(30px, 3.6vw, 44px); letter-spacing: 0; }
+.menu__brand { gap: 0; }
+
+.boot__word { height: clamp(46px, 9vw, 78px); }
+.boot__word .logo { filter: drop-shadow(0 8px 26px rgba(0,0,0,0.6)); }

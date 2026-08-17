@@ -127,86 +127,220 @@
    * ===================================================================== */
   function registerScreens(M) {
 
-    /* ------------------------------------------------------------ main menu */
+    /* ------------------------------------------------------------ main menu
+     *
+     * A front page rather than a list: one row of modes across the top, and
+     * whichever mode the cursor is on gets the whole left column to explain
+     * itself — what kind of thing it is, a sentence about it, and one button
+     * that starts it. Nothing is buried in a submenu, and the scene behind is
+     * left showing on the right, where the standby camera holds a live player
+     * who changes what he is doing with the selection. The front end and the
+     * game are obviously the same thing, because they are.
+     *
+     * MODES is the entire menu. Every mode this build has appears here exactly
+     * once and owns its own copy, its action, and the pose the standby player
+     * strikes while it is selected.
+     */
+    const MODES = [
+      {
+        id: 'oneVone', tab: '1 vs 1', title: '1 vs 1', pose: 'dribble',
+        tags: ['Half Court', 'First to 11', 'Live Defender'],
+        body: 'Take an AI defender off the dribble, one on one. Crossovers, ' +
+              'step-backs and contested jumpers, with the real ruleset behind ' +
+              'them — travels, fouls, and a shot clock that does not care ' +
+              'how open you thought you were.',
+        cta: 'Play 1 vs 1',
+        act: function () { M.closeAll(); BB.Engine.setState('oneVone'); }
+      },
+      {
+        id: 'fiveVfive', tab: '5 vs 5', title: '5 vs 5', pose: 'guard',
+        tags: ['Full Court', 'Quarters', 'Team Control'],
+        body: 'A full team game with a running clock, quarters, team fouls ' +
+              'and the bonus. Control any player on the floor and switch on ' +
+              'the fly — the other nine run their own offence and defence ' +
+              'while you do.',
+        cta: 'Play 5 vs 5',
+        act: function () { M.closeAll(); BB.Engine.setState('fiveVfive'); }
+      },
+      {
+        id: 'shootaround', tab: 'Shootaround', title: 'Shootaround', pose: 'shoot',
+        tags: ['Free Practice', 'No Clock', 'Streaks'],
+        body: 'An open gym and as many shots as you want. Learn the release ' +
+              'meter, work on your range, and watch the streak counter climb. ' +
+              'Nothing is guarding you and nothing is being scored against you.',
+        cta: 'Start Shooting',
+        act: function () { M.closeAll(); BB.Engine.setState('shootaround'); }
+      },
+      {
+        id: 'tutorial', tab: 'How to Play', title: 'How to Play', pose: 'dribble',
+        tags: ['Every Control', 'Every Rule', 'Start Here'],
+        body: 'The whole game, explained in order: how to move, how to keep ' +
+              'the ball, how to score, how to guard somebody, and which rules ' +
+              'the referee is actually watching for. Every key shown is the ' +
+              'key you have bound right now.',
+        cta: 'Open How to Play',
+        act: function () { M.push('tutorial'); }
+      },
+      {
+        id: 'createPlayer', tab: 'My Player', title: 'My Player', pose: 'idle',
+        tags: ['Build', 'Appearance', 'Ratings'],
+        body: 'Name, number, position, height, build and colours, plus the ' +
+              'ratings that decide how this player actually moves and shoots. ' +
+              'Whoever you make here is who you are in every other mode.',
+        cta: 'Open Creator',
+        status: function () {
+          const p = BB.PlayerProfile.load();
+          return p ? (p.name + '  ·  #' + p.number + '  ·  ' + p.position)
+                   : 'No player saved yet';
+        },
+        act: function () { M.push('createPlayer'); }
+      },
+      {
+        id: 'career', tab: 'Career', title: 'Career', pose: 'celebrate',
+        tags: ['Progression', 'Upgrades', 'Record'],
+        body: 'Every game banks experience. Level up to earn attribute points ' +
+              'and spend them wherever you want them — your record and ' +
+              'everything you have earned follow you from mode to mode.',
+        cta: 'Open Career',
+        status: function () {
+          const r = BB.Career.record();
+          return 'Level ' + r.level + '  ·  ' + r.wins + '-' + r.losses +
+                 (r.points > 0 ? '  ·  ' + r.points + ' point' +
+                  (r.points === 1 ? '' : 's') + ' to spend' : '');
+        },
+        act: function () { M.push('career'); }
+      },
+      {
+        id: 'settings', tab: 'Settings', title: 'Settings', pose: 'idle',
+        tags: ['Audio', 'Presentation', 'Difficulty'],
+        body: 'Mix the crowd against the commentary, pick a camera, set a ' +
+              'render quality your machine is happy with, and choose how hard ' +
+              'the AI plays — Rookie through Hall of Fame.',
+        cta: 'Open Settings',
+        act: function () { M.push('settings'); }
+      },
+      {
+        id: 'controls', tab: 'Controls', title: 'Controls', pose: 'guard',
+        tags: ['Keyboard', 'Gamepad', 'Rebindable'],
+        body: 'The full layout for keyboard and controller, every action ' +
+              'rebindable. Worth a minute before your first game: the dribble ' +
+              'moves and the pickup live on keys of their own.',
+        cta: 'Open Controls',
+        act: function () { M.push('controls'); }
+      }
+    ];
+
+    function modeById(id) {
+      for (let i = 0; i < MODES.length; i++) if (MODES[i].id === id) return MODES[i];
+      return MODES[0];
+    }
+
+    /** Tells the standby scene how to pose, when it is the scene running. */
+    function spotlight(mode) {
+      const s = BB.Engine && BB.Engine.scene;
+      if (s && s.spotlight) s.spotlight(mode.pose);
+    }
+
+    function heroHtml(mode) {
+      const status = mode.status ? mode.status() : '';
+      return `
+        <p class="menu-hero__tags">${mode.tags.join('<i aria-hidden="true">|</i>')}</p>
+        <h2 class="menu-hero__title">${mode.title}</h2>
+        <p class="menu-hero__body">${mode.body}</p>
+        ${status ? `<p class="menu-hero__status">${status}</p>` : ''}
+        <button class="menu-cta" data-nav data-autofocus data-go>
+          <span class="menu-cta__dot" aria-hidden="true"></span>${mode.cta}
+        </button>`;
+    }
+
     M.define({
       id: 'main',
-      build() {
+      build(params) {
+        const active = modeById(params && params.mode);
         return `
-          <div class="menu-stage">
-            <div class="menu-brand">
-              <div class="menu-brand__mark" aria-hidden="true">
-                <span></span><span></span><span></span>
-              </div>
-              <h1 class="menu-brand__word">HARDWOOD</h1>
-              <p class="menu-brand__tag">A basketball simulation</p>
+          <div class="menu">
+            <div class="menu__brand">
+              <span class="menu__word"><svg class="logo" viewBox="0 0 300 76" role="img" aria-label="NBA 1K26"> <defs> <clipPath id="lgBadge"><rect x="0" y="4" width="52" height="68" rx="9"/></clipPath> </defs> <g clip-path="url(#lgBadge)"> <rect x="0" y="4" width="26" height="68" fill="#1D428A"/> <rect x="26" y="4" width="26" height="68" fill="#C8102E"/> <path d="M32.5 15.5c2.6 0 4.7 2.1 4.7 4.7s-2.1 4.7-4.7 4.7-4.7-2.1-4.7-4.7 2.1-4.7 4.7-4.7z" fill="#fff"/> <path d="M30.8 27c3.4-1.2 6.2.4 7 3.2l2.2 8.2 4.6 3.1-2 3.4-5.7-3.6-1.2-4-1.4 7.9 5.2 6.3-1.4 12.9-4.3-.5 1-11.2-6.4-6.9-3.6 8-8.1 5.3-2.2-3.5 6.6-4.6 3.6-9.2c1-4.9 3.3-13.2 6.1-14.9z" fill="#fff"/> <circle cx="21.5" cy="33.5" r="5.2" fill="#fff"/><circle cx="21.5" cy="33.5" r="5.2" fill="none" stroke="#C8102E" stroke-width="0.9"/><path d="M16.3 33.5h10.4M21.5 28.3v10.4" stroke="#C8102E" stroke-width="0.9" fill="none"/></g> <rect x="0" y="4" width="52" height="68" rx="9" fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="1.5"/> <g transform="skewX(-12)"> <text x="76" y="58" fill="#C8102E" font-family="'Arial Narrow','Helvetica Neue Condensed',Arial,sans-serif" font-weight="800" font-size="62" letter-spacing="-1">1K</text> <text x="152" y="58" fill="#F3F0E7" font-family="'Arial Narrow','Helvetica Neue Condensed',Arial,sans-serif" font-weight="800" font-size="62" letter-spacing="-1">26</text> </g> </svg></span>
             </div>
-            <nav class="menu-list" aria-label="Main menu">
-              <button class="menu-item menu-item--lead" data-nav data-autofocus data-act="oneVone">
-                <span class="menu-item__k">1 vs 1</span>
-                <span class="menu-item__d">Half-court game against an AI defender — first to 11</span>
-              </button>
-              <button class="menu-item" data-nav data-act="fiveVfive">
-                <span class="menu-item__k">5 vs 5</span>
-                <span class="menu-item__d">Full-court team game — switch control between teammates</span>
-              </button>
-              <button class="menu-item" data-nav data-act="play">
-                <span class="menu-item__k">Shootaround</span>
-                <span class="menu-item__d">Free shooting on a live court</span>
-              </button>
-              <button class="menu-item" data-nav data-act="createPlayer">
-                <span class="menu-item__k">Create Player</span>
-                <span class="menu-item__d">${(function () {
-                  const p = BB.PlayerProfile.load();
-                  return p ? ('Editing ' + p.name + ' \u2014 #' + p.number + ', ' + p.position) : 'Build your player — name, look, height, ability';
-                })()}</span>
-              </button>
-              <button class="menu-item" data-nav data-act="career">
-                <span class="menu-item__k">Career</span>
-                <span class="menu-item__d">${(function () {
-                  const r = BB.Career.record();
-                  return 'Level ' + r.level + ' \u00B7 ' + r.wins + '-' + r.losses
-                    + (r.points > 0 ? ' \u00B7 ' + r.points + ' point' + (r.points === 1 ? '' : 's') + ' to spend' : '');
-                })()}</span>
-              </button>
-              <button class="menu-item" data-nav data-act="settings">
-                <span class="menu-item__k">Settings</span>
-                <span class="menu-item__d">Audio, presentation, difficulty</span>
-              </button>
-              <button class="menu-item" data-nav data-act="controls">
-                <span class="menu-item__k">Controls</span>
-                <span class="menu-item__d">Keyboard and controller layout</span>
-              </button>
+            <nav class="menu-tabs" role="tablist" aria-label="Game modes">
+              ${MODES.map((m) => `
+                <button class="menu-tab${m === active ? ' is-on' : ''}" role="tab"
+                        aria-selected="${m === active}" data-nav data-tab="${m.id}"
+                  >${m.tab}</button>`).join('')}
             </nav>
-            <p class="menu-foot">Build ${BB.C.VERSION} · ${BB.C.BUILD}</p>
+            <div class="menu-hero" id="menu-hero">${heroHtml(active)}</div>
+            <p class="menu__foot">Build ${BB.C.VERSION} · ${BB.C.BUILD}</p>
           </div>`;
       },
-      mount(el) {
-        el.addEventListener('click', (e) => {
-          const b = e.target.closest('[data-act]');
-          if (!b) return;
-          A.unlock();
-          switch (b.dataset.act) {
-            case 'oneVone':
-              M.closeAll();
-              BB.Engine.setState('oneVone');
-              break;
-            case 'fiveVfive':
-              M.closeAll();
-              BB.Engine.setState('fiveVfive');
-              break;
-            case 'play':
-              M.closeAll();
-              BB.Engine.setState('shootaround');
-              break;
-            case 'createPlayer': M.push('createPlayer'); break;
-            case 'career': M.push('career'); break;
-            case 'settings': M.push('settings'); break;
-            case 'controls': M.push('controls'); break;
+
+      mount(el, params) {
+        let active = modeById(params && params.mode);
+        const hero = el.querySelector('#menu-hero');
+        const tabs = Array.prototype.slice.call(el.querySelectorAll('[data-tab]'));
+
+        /* Changing mode rewrites the hero panel in place instead of pushing a
+         * screen. The tab row has to stay exactly where it is, and a mode you
+         * are reading about is not a place you have gone to — only the
+         * button takes you anywhere. */
+        function select(mode) {
+          if (mode === active) return;
+          // Rewriting the panel destroys whatever is focused inside it. If
+          // that was the button, the focus falls to <body>, which is outside
+          // this screen — and every key handler on it, so the arrow keys that
+          // just changed the mode would stop working after one press.
+          const hadCta = document.activeElement &&
+                         document.activeElement.hasAttribute('data-go');
+          active = mode;
+          for (const t of tabs) {
+            const on = t.dataset.tab === mode.id;
+            t.classList.toggle('is-on', on);
+            t.setAttribute('aria-selected', String(on));
           }
+          hero.innerHTML = heroHtml(mode);
+          hero.classList.remove('is-swap');
+          void hero.offsetWidth;              // restart the wipe
+          hero.classList.add('is-swap');
+          if (hadCta) hero.querySelector('[data-go]').focus();
+          spotlight(mode);
+          A.play('uiMove');
+        }
+
+        el.addEventListener('click', (e) => {
+          const tab = e.target.closest('[data-tab]');
+          if (tab) { A.unlock(); select(modeById(tab.dataset.tab)); return; }
+          if (e.target.closest('[data-go]')) { A.unlock(); active.act(); }
         });
+
+        // Sweeping the row previews as it goes, the way a console front end
+        // does under a thumbstick.
+        el.addEventListener('mouseover', (e) => {
+          const tab = e.target.closest('[data-tab]');
+          if (tab) select(modeById(tab.dataset.tab));
+        });
+        el.addEventListener('focusin', (e) => {
+          const tab = e.target.closest('[data-tab]');
+          if (tab) select(modeById(tab.dataset.tab));
+        });
+
+        // Left/right walk the row. Up/down still cycles every control on the
+        // screen through the manager, so both habits work.
+        el.addEventListener('keydown', (e) => {
+          if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+          e.preventDefault();
+          const n = MODES.length;
+          const next = MODES[(MODES.indexOf(active) + (e.key === 'ArrowRight' ? 1 : n - 1)) % n];
+          select(next);
+          tabs[MODES.indexOf(next)].focus();
+        });
+
+        spotlight(active);
       },
+
       onCancel() { /* main menu is the root; nothing to cancel to */ }
     });
+
+    /* Exposed so tools can enumerate the front page without scraping the DOM. */
+    M.MODES = MODES;
 
     /* -------------------------------------------------------------- settings */
     M.define({
@@ -235,8 +369,10 @@
                 ${segmented('quality', 'Render quality', S.get('quality'),
                   [['high', 'High'], ['balanced', 'Balanced'], ['performance', 'Performance']])}
                 ${segmented('cameraMode', 'Camera', S.get('cameraMode'),
-                  [['broadcast', 'Broadcast'], ['wide', 'Wide'], ['tight', 'Tight']])}
+                  [['broadcast', 'Broadcast'], ['wide', 'Wide'], ['tight', 'Tight'],
+                   ['forward', 'Forward']])}
                 ${slider('screenShake', 'Screen shake', S.get('screenShake'))}
+                ${toggle('instantReplay', 'Slow-motion replays', S.get('instantReplay'))}
                 ${toggle('showDebug', 'Show performance readout', S.get('showDebug'))}
               </section>
               <section class="group">
@@ -246,6 +382,7 @@
                 ${toggle('shotMeter', 'Show shot meter', S.get('shotMeter'))}
               </section>
               <div class="panel__actions">
+                <button class="btn btn--danger" data-nav data-act="wipe">Reset all progress</button>
                 <button class="btn btn--danger" data-nav data-act="reset">Reset to defaults</button>
               </div>
             </div>
@@ -267,6 +404,8 @@
           if (!b) return;
           if (b.dataset.act === 'back') M.pop();
           if (b.dataset.act === 'reset') { S.reset(); M.pop(); M.push('settings'); }
+          // Erasing a career is not something to do on one click, so it asks.
+          if (b.dataset.act === 'wipe') M.push('resetProgress');
         });
         el.addEventListener('input', (e) => {
           const r = e.target.closest('input[type=range]');
@@ -285,14 +424,112 @@
       onCancel() { M.pop(); }
     });
 
+    /* --------------------------------------------------- reset all progress
+     * Its own screen rather than a second click on the button. This is the one
+     * action in the game that cannot be undone, so it says exactly what it is
+     * about to destroy — in the player's own numbers — and what it is going to
+     * leave alone, and it puts the way out first.
+     */
+    function resetConfirmView() {
+      const rec = BB.Career.record();
+      const saved = BB.PlayerProfile.load();
+      const rows = [
+        ['Player', saved
+          ? (saved.name || 'YOU') + '  ·  #' + (saved.number == null ? 23 : saved.number) +
+            '  ·  ' + (saved.position || 'SF')
+          : 'none saved yet'],
+        ['Career level', rec.level + (rec.points
+          ? '   (' + rec.points + ' unspent point' + (rec.points === 1 ? '' : 's') + ')' : '')],
+        ['Record', rec.gamesPlayed
+          ? rec.wins + ' won, ' + rec.losses + ' lost   ·   ' + rec.ppg.toFixed(1) + ' ppg'
+          : 'no games played'],
+        ['Best streak', rec.bestStreak ? rec.bestStreak + ' in a row' : '—']
+      ];
+
+      return `
+        <div class="panel">
+          <header class="panel__head">
+            <h2>Reset all progress?</h2>
+            <button class="btn btn--ghost" data-nav data-act="back">Back</button>
+          </header>
+          <div class="panel__body">
+            <p class="note">This erases your created player and everything your
+              career has earned. It cannot be undone.</p>
+            <section class="group">
+              <h3>What goes</h3>
+              ${rows.map(([k, v]) => `
+                <div class="row row--seg">
+                  <span class="row__k">${k}</span>
+                  <span class="row__val">${v}</span>
+                </div>`).join('')}
+            </section>
+            <p class="note">Settings, audio levels and your key bindings are not
+              progress and are left alone — use “Reset to defaults” for those.</p>
+            <div class="panel__actions">
+              <button class="btn btn--ghost" data-nav data-act="back">Keep it</button>
+              <button class="btn btn--danger" data-nav data-act="erase">Erase everything</button>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    function resetDoneView() {
+      return `
+        <div class="panel">
+          <header class="panel__head"><h2>Progress erased</h2></header>
+          <div class="panel__body">
+            <p class="note">Your player and your career are back to a fresh
+              start. Settings and controls were left as they were.</p>
+            <div class="panel__actions">
+              <button class="btn" data-nav data-act="done">Done</button>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    M.define({
+      id: 'resetProgress',
+      build() { return resetConfirmView(); },
+      mount(el) {
+        el.addEventListener('click', (e) => {
+          const b = e.target.closest('[data-act]');
+          if (!b) return;
+          if (b.dataset.act === 'back' || b.dataset.act === 'done') { M.pop(); return; }
+          if (b.dataset.act !== 'erase') return;
+
+          BB.Career.reset();
+          BB.PlayerProfile.clear();
+          // The front page is standing there showing a player who no longer
+          // exists; rebuild the figure from what is saved now, which is nothing.
+          const scene = BB.Engine && BB.Engine.scene;
+          if (scene && scene.refreshHero) scene.refreshHero();
+
+          /* Swapped in place rather than pushed or replaced. replace() unwinds
+           * the WHOLE stack, so the acknowledgement would be the only screen
+           * left and dismissing it would drop the player on a front page that
+           * had been thrown away. The click handler is delegated off this
+           * element, so it goes on working across the swap. */
+          el.innerHTML = resetDoneView();
+          focusFirst(el);
+        });
+      },
+      onCancel() { M.pop(); }
+    });
+
     /* -------------------------------------------------------------- controls */
     M.define({
       id: 'controls',
       build() {
         const rows = [
           ['up', 'Move up'], ['down', 'Move down'], ['left', 'Move left'], ['right', 'Move right'],
-          ['sprint', 'Sprint'], ['shoot', 'Shoot / gather'], ['pass', 'Pass / steal'],
-          ['lob', 'Lob / block'], ['dribble', 'Dribble move (+ direction/Shift)'],
+          ['sprint', 'Sprint'], ['shoot', 'Shoot / gather / layup'],
+          ['dunk', 'Dunk — driving at the rim'],
+          ['pass', 'Pass / steal'],
+          ['lob', 'Lob / block'],
+          ['dribbleCross', 'Crossover'], ['dribbleTween', 'Between the legs'],
+          ['dribbleBehind', 'Behind the back'], ['dribbleHesi', 'Hesitation'],
+          ['dribbleInOut', 'In and out'], ['dribbleSpin', 'Spin'],
+          ['dribble', 'Dribble move — picks one for you (also the gamepad button)'],
           ['pickup', 'Pick up dribble (press again to fake a re-dribble)'],
           ['switchMan', 'Switch defender'],
           ['intense', 'Intense defence'], ['timeout', 'Timeout'], ['pause', 'Pause']
@@ -366,7 +603,232 @@
       onCancel() { M.pop(); }
     });
 
-    /* ------------------------------------------------------------ createPlayer */
+    /* --------------------------------------------------------------- tutorial
+     *
+     * Everything the game knows how to do, in the order somebody would need to
+     * learn it: move, keep the ball, score, pass, guard, and what the referee
+     * is watching for.
+     *
+     * Every key printed here is read from Input.label at build time rather
+     * than typed into the copy, so a rebound control teaches the truth instead
+     * of teaching the default. A manual that can go stale is worse than none,
+     * because the player has no way of knowing which half is lying.
+     *
+     * Chapters carry the mode they are best practised in, so a lesson ends
+     * with the floor rather than with more reading.
+     */
+    const CHAPTERS = [
+      {
+        name: 'Moving',
+        note: 'Movement is relative to the camera, not to the court. Push the ' +
+              'stick the way you want to go on screen and that is where you go.',
+        practice: ['shootaround', 'Try it in Shootaround'],
+        lessons: [
+          ['up,left,down,right', 'Run', 'Hold a direction to move. Your top speed comes off the Speed rating, and acceleration decides how fast you reach it.'],
+          ['sprint', 'Sprint', 'Held, not tapped. Sprinting burns stamina, and a gassed player is slower, jumps lower and shoots worse. Let go and it comes back.'],
+          [null, 'Stamina', 'The bar under your name on the scorebug. It drains while you sprint and refills whenever you are not.']
+        ]
+      },
+      {
+        name: 'Keeping the ball',
+        note: 'A dribble move buys you a step. Chaining one into another buys ' +
+              'more, but the defender is reading the same window you are. ' +
+              'Which way a move goes is not up to you — the ball is in one ' +
+              'hand and there is only one way out of it.',
+        practice: ['oneVone', 'Try it in 1 vs 1'],
+        lessons: [
+          ['dribbleCross', 'Crossover', 'One hard bounce across the front of your feet, into the other hand. The quickest way to change direction and the easiest to read.'],
+          ['dribbleTween', 'Between the legs', 'Through the gap, into the other hand. Your legs are between the ball and the defender the whole way, so it is the safest of the changes — and the slowest.'],
+          ['dribbleBehind', 'Behind the back', 'Round your hips, into the other hand. Keeps the ball furthest from a defender who is reaching, and buys the biggest step; it is also the easiest to lose.'],
+          ['dribbleHesi', 'Hesitation', 'Catch it high and stand up as if you are pulling up, then go. Same hand throughout — nothing changes but the defender\'s mind.'],
+          ['dribbleInOut', 'In and out', 'Push it toward the middle and take it straight back. A crossover you do not finish; it sells the same lean for half the risk.'],
+          ['dribbleSpin', 'Spin', 'Turn your back and take the ball round with you. It beats a defender who has committed, and it costs you sight of the floor while you do it.'],
+          ['dribble', 'Or let it pick', 'One key, and the game chooses a move to fit. Press it again inside the window to chain: crossover, then between the legs, then behind the back. This is also the gamepad button.'],
+          ['pickup', 'Pick up your dribble', 'Gathers the ball into two hands. Press it again to fake a re-dribble — but you cannot legally start dribbling again, and the referee is watching.'],
+          [null, 'Travelling', 'Moving too far after you have gathered is a travel and a turnover. Gather when you are ready to do something with it.']
+        ]
+      },
+      {
+        name: 'Scoring',
+        note: 'Every shot is a timing test. Hold to gather, release at the top ' +
+              'of the meter that appears on the shooter.',
+        practice: ['shootaround', 'Practise the meter'],
+        lessons: [
+          ['shoot', 'Shoot', 'Hold to rise into the shot, release to let it go. Release inside the green window for the best chance the shot has.'],
+          [null, 'The green window', 'A narrow band near the top of the meter. Better ratings widen it. A perfect release is worth far more than an open look with bad timing.'],
+          [null, 'Layups', 'Hold Sprint, drive at the rim and press Shoot. Close in, the shoot button becomes a layup — the window is huge, so getting there is the hard part, not the timing.'],
+          [null, 'Dunking', 'Same move, but you only get one if your body can actually put the ball over a ten-foot rim: it is decided by your height and your Vertical, not by a dice roll. Clear the rim comfortably and there is no meter at all — it just goes down. Only just clear it and you get a meter, with a green window as forgiving as a free throw. Too short, too little hops, and it stays a layup however hard you drive.'],
+          [null, 'Range and contest', 'Distance hurts your chances and so does a hand in your face. A defender who is set, square and close takes a shot from makeable to bad.']
+        ]
+      },
+      {
+        name: 'Passing',
+        note: 'In 5 vs 5 the other four are moving whether you look at them or not.',
+        practice: ['fiveVfive', 'Try it in 5 vs 5'],
+        lessons: [
+          ['pass', 'Pass', 'Fires at the team-mate you are closest to facing. Pass accuracy and vision decide whether it arrives clean.'],
+          ['lob', 'Lob', 'Over the top, for a cutter with a head start on their man.'],
+          ['switchMan', 'Switch player', 'On defence, take control of whoever is nearest the ball.']
+        ]
+      },
+      {
+        name: 'Defence',
+        note: 'Defence is position, not speed. Being in the right place is ' +
+              'worth more than being quick to the wrong one.',
+        practice: ['oneVone', 'Try it in 1 vs 1'],
+        lessons: [
+          ['intense', 'Get in a stance', 'Held, not tapped. Your hips drop, your base widens and your hands go to work. In a stance you face the ball handler no matter which way you slide.'],
+          [null, 'Slide, do not run', 'In a stance you shuffle. You change direction quicker than a sprinter can, but you cannot sprint out of it.'],
+          [null, 'What good position is', 'Four things at once: close to your man, between them and the basket, square to them, and in a stance. Miss one and the rest count for much less.'],
+          [null, 'The ring at your feet', 'It grows and brightens as your position improves, and turns gold once you have held good position long enough to have genuinely locked somebody up.'],
+          ['pass', 'Steal', 'The pass button on defence. Miss and it is a reach — a foul, and the ball stays theirs.'],
+          ['lob', 'Block', 'The lob button on defence. Time it to the shot, not to the jump.']
+        ]
+      },
+      {
+        name: 'The rules',
+        note: 'A streetball ruleset, refereed properly.',
+        practice: ['fiveVfive', 'See it in 5 vs 5'],
+        lessons: [
+          [null, 'Shot clock', '24 seconds, reset to 14 on an offensive rebound. Let it hit zero and you have handed the ball over.'],
+          [null, 'Fouls', 'Charging is on you. Shooting fouls put you on the line, and contact away from a shot just gives the ball back.'],
+          [null, 'The bonus', 'Enough team fouls in a quarter and every foul after it shoots free throws.'],
+          [null, 'Out of bounds', 'Called the moment the ball lands out, not when it finally stops rolling.']
+        ]
+      },
+      {
+        name: 'Your player',
+        note: 'Everyone starts at 60 overall. The number is earned, never set.',
+        practice: null,
+        lessons: [
+          [null, 'The build', 'Archetype decides the SHAPE of your 60 — what you are already good at and what you are not. It is not a head start.'],
+          [null, 'Position caps', 'Your position sets a hard ceiling on each attribute. A Center will never shoot threes like a guard, however long you grind.'],
+          [null, 'Career points', 'Games bank experience. Levelling up earns points, and you spend them wherever you want them — inside the caps.']
+        ]
+      }
+    ];
+
+    M.define({
+      id: 'tutorial',
+      build() {
+        const cap = (action) => {
+          if (!action) return '';
+          return action.split(',')
+            .map((a) => '<kbd class="key__cap">' + BB.Input.label(a.trim()) + '</kbd>')
+            .join('');
+        };
+        return `
+          <div class="panel panel--xwide tut">
+            <header class="panel__head">
+              <h2>How to Play</h2>
+              <button class="btn btn--ghost" data-nav data-act="back">Back</button>
+            </header>
+            <div class="panel__body">
+              <nav class="menu-list menu-list--tight tut__start">
+                <button class="menu-item menu-item--lead" data-nav data-autofocus data-act="walk">
+                  <span class="menu-item__k">Start the walkthrough</span>
+                </button>
+              </nav>
+              <p class="note">Seven drills on a live court — you have to actually do each one before it moves on. Or read the whole thing below: every key shown is the key bound to that action right now, so rebinding anything in Controls updates this page too.</p>
+              ${CHAPTERS.map((ch, i) => `
+                <section class="tut__ch">
+                  <div class="tut__chhead">
+                    <span class="tut__num">${String(i + 1).padStart(2, '0')}</span>
+                    <h3>${ch.name}</h3>
+                  </div>
+                  <p class="tut__note">${ch.note}</p>
+                  <div class="tut__list">
+                    ${ch.lessons.map(([k, title, text]) => `
+                      <div class="tut__lesson">
+                        <div class="tut__keys">${cap(k)}</div>
+                        <div class="tut__copy">
+                          <b>${title}</b>
+                          <span>${text}</span>
+                        </div>
+                      </div>`).join('')}
+                  </div>
+                  ${ch.practice ? `<button class="btn btn--tiny" data-nav data-play="${ch.practice[0]}">${ch.practice[1]}</button>` : ''}
+                </section>`).join('')}
+            </div>
+          </div>`;
+      },
+      mount(el) {
+        el.addEventListener('click', (e) => {
+          const play = e.target.closest('[data-play]');
+          if (play) {
+            A.play('uiSelect');
+            M.closeAll();
+            BB.Engine.setState(play.dataset.play);
+            return;
+          }
+          const b = e.target.closest('[data-act]');
+          if (!b) return;
+          if (b.dataset.act === 'walk') {
+            A.play('uiSelect');
+            M.closeAll();
+            BB.Engine.setState('tutorialDrills');
+            return;
+          }
+          if (b.dataset.act === 'back') M.pop();
+        });
+      },
+      onCancel() { M.pop(); }
+    });
+
+    /* Shown once the last drill is done. */
+    M.define({
+      id: 'tutorialDone',
+      build() {
+        return `
+          <div class="pause">
+            <div class="pause__bar" style="background:var(--mint)"></div>
+            <h2 class="pause__title">Drills complete</h2>
+            <p class="pause__sub">You have run the whole walkthrough</p>
+            <p class="matchend__xp">That is the game</p>
+            <nav class="menu-list menu-list--tight">
+              <button class="menu-item menu-item--lead" data-nav data-autofocus data-act="play">
+                <span class="menu-item__k">Play 1 vs 1</span>
+              </button>
+              <button class="menu-item" data-nav data-act="again">
+                <span class="menu-item__k">Run the drills again</span>
+              </button>
+              <button class="menu-item" data-nav data-act="read">
+                <span class="menu-item__k">Read How to Play</span>
+              </button>
+              <button class="menu-item" data-nav data-act="menu">
+                <span class="menu-item__k">Main menu</span>
+              </button>
+            </nav>
+          </div>`;
+      },
+      mount(el) {
+        el.addEventListener('click', (e) => {
+          const b = e.target.closest('[data-act]');
+          if (!b) return;
+          switch (b.dataset.act) {
+            case 'play': M.closeAll(); BB.Engine.setState('oneVone'); break;
+            case 'again': M.closeAll(); BB.Engine.setState('tutorialDrills'); break;
+            case 'read': M.pop(); M.push('tutorial'); break;
+            case 'menu': M.pop(); break;
+          }
+        });
+      },
+      onCancel() { M.pop(); }
+    });
+
+    /* ------------------------------------------------------------ createPlayer
+     *
+     * The creator edits the player you can SEE. It borrows the standby scene's
+     * live figure — the same skinned 3D model the game plays with — and writes
+     * every change straight onto it: skin, hair, kit, height. The old flat
+     * canvas portrait beside the form could only ever be an impression of the
+     * player, and a badly cropped one; this is the article itself, turning on
+     * the spot in the middle of the court.
+     *
+     * The form sits in a column down the left with the floor showing through
+     * beside it, so the layout matches the front page it was opened from and
+     * the model never leaves the same part of the screen.
+     */
     M.define({
       id: 'createPlayer',
       build() {
@@ -374,109 +836,130 @@
         const draft = P.newDraft();
         const archOpts = Object.keys(P.ARCHETYPES).map((k) => [k, P.ARCHETYPES[k].label]);
         return `
-          <div class="panel panel--wide">
-            <header class="panel__head">
-              <h2>Create Player</h2>
-              <button class="btn btn--ghost" data-nav data-act="back">Back</button>
-            </header>
-            <div class="panel__body">
-              <div class="creator__layout">
-                <div class="creator__preview">
-                  <canvas id="cp-canvas" width="220" height="280"></canvas>
-                  <div class="creator__previewLabel" id="cp-label">
-                    <span id="cp-label-name">${(draft.name || 'YOU').toUpperCase()}</span>
-                    <span id="cp-label-sub">#${draft.number} \u00B7 ${draft.position} \u00B7 ${P.heightLabel(draft.height)}</span>
-                  </div>
+          <div class="creator">
+            <div class="creator__col">
+              <header class="creator__head">
+                <div>
+                  <p class="creator__eyebrow">Player</p>
+                  <h2 class="creator__title">My Player</h2>
                 </div>
-                <div class="creator__form">
-                  <section class="group">
-                    <h3>Identity</h3>
-                    <label class="row"><span class="row__k">Name</span>
-                      <input type="text" id="cp-name" data-key="name" maxlength="16" value="${escapeAttr(draft.name)}">
-                      <span></span>
-                    </label>
-                    <label class="row"><span class="row__k">Number</span>
-                      <input type="number" id="cp-number" data-key="number" min="0" max="99" value="${draft.number}">
-                      <span></span>
-                    </label>
-                    ${segmented('position', 'Position', draft.position,
-                      [['PG', 'PG'], ['SG', 'SG'], ['SF', 'SF'], ['PF', 'PF'], ['C', 'C']])}
-                  </section>
-                  <section class="group">
-                    <h3>Appearance</h3>
-                    ${swatchRow('skin', 'Skin tone', P.SKIN_TONES, draft.skin)}
-                    ${swatchRow('hair', 'Hair color', P.HAIR_COLORS, draft.hair)}
-                    ${swatchRow('jerseyMain', 'Jersey', P.JERSEY_COLORS, draft.jerseyMain)}
-                    ${swatchRow('jerseyTrim', 'Trim', P.JERSEY_COLORS, draft.jerseyTrim)}
-                    <div class="row">
-                      <span class="row__k">Height</span>
-                      <input type="range" id="cp-height" data-key="height" min="66" max="84" value="${draft.height}">
-                      <span class="row__val" id="cp-height-val">${P.heightLabel(draft.height)}</span>
-                    </div>
-                  </section>
-                  <section class="group">
-                    <h3>Ability</h3>
-                    ${segmented('archetype', 'Archetype', draft.archetype, archOpts)}
-                    <div class="row">
-                      <span class="row__k">Overall</span>
-                      <input type="range" id="cp-overall" data-key="overall" min="60" max="99" value="${draft.overall}">
-                      <span class="row__val" id="cp-overall-val">${draft.overall}</span>
-                    </div>
-                    <p class="note">Archetype shapes the full attribute spread that drives the sim — shooting touch, speed, hands on defence, all of it — not just this number.</p>
-                  </section>
+                <button class="btn btn--ghost" data-nav data-act="back">Back</button>
+              </header>
+
+              <div class="creator__card">
+                <div class="creator__ovr">
+                  <b id="cp-ovr">${P.overallOf(draft)}</b><span>OVR</span>
+                </div>
+                <div class="creator__id">
+                  <div class="creator__name" id="cp-label-name">${(draft.name || 'YOU').toUpperCase()}</div>
+                  <div class="creator__meta" id="cp-label-sub">#${draft.number} · ${draft.position} · ${P.heightLabel(draft.height)} · ${(P.ARCHETYPES[draft.archetype] || P.ARCHETYPES.balanced).label}</div>
                 </div>
               </div>
-              <div class="panel__actions">
-                <button class="btn btn--ghost" data-act="randomize">Randomize</button>
-                <button class="btn btn--danger" data-act="clear">Reset</button>
-                <button class="btn" data-act="save">Save Player</button>
+
+              <div class="creator__scroll">
+                <section class="group">
+                  <h3>Identity</h3>
+                  <label class="row"><span class="row__k">Name</span>
+                    <input type="text" id="cp-name" data-key="name" maxlength="16" value="${escapeAttr(draft.name)}">
+                    <span></span>
+                  </label>
+                  <label class="row"><span class="row__k">Number</span>
+                    <input type="number" id="cp-number" data-key="number" min="0" max="99" value="${draft.number}">
+                    <span></span>
+                  </label>
+                  ${segmented('position', 'Position', draft.position,
+                    [['PG', 'PG'], ['SG', 'SG'], ['SF', 'SF'], ['PF', 'PF'], ['C', 'C']])}
+                </section>
+
+                <section class="group">
+                  <h3>Appearance</h3>
+                  ${swatchRow('skin', 'Skin tone', P.SKIN_TONES, draft.skin)}
+                  ${segmented('hairStyle', 'Hair', draft.hairStyle, P.HAIR_STYLES)}
+                  ${swatchRow('hair', 'Hair color', P.HAIR_COLORS, draft.hair)}
+                  ${swatchRow('jerseyMain', 'Jersey', P.JERSEY_COLORS, draft.jerseyMain)}
+                  ${swatchRow('jerseyTrim', 'Trim', P.JERSEY_COLORS, draft.jerseyTrim)}
+                  <div class="row">
+                    <span class="row__k">Height</span>
+                    <input type="range" id="cp-height" data-key="height" min="66" max="84" value="${draft.height}"
+                           style="--fill:${Math.round((draft.height - 66) / 18 * 100)}%">
+                    <span class="row__val" id="cp-height-val">${P.heightLabel(draft.height)}</span>
+                  </div>
+                </section>
+
+                <section class="group">
+                  <h3>Ability</h3>
+                  ${segmented('archetype', 'Archetype', draft.archetype, archOpts)}
+                  <div class="creator__spread" id="cp-spread">${spreadHtml(draft)}</div>
+                  <p class="note">
+                    Everyone starts at <b>${P.START_OVERALL} overall</b>. The archetype decides the
+                    SHAPE of that 60 — what you are already good at and what you are not — and your
+                    position sets the ceiling each attribute can ever reach. Overall goes up by
+                    playing: win games, level up, and spend the points in Career.
+                  </p>
+                </section>
+              </div>
+
+              <div class="creator__actions">
+                <button class="btn btn--ghost" data-nav data-act="randomize">Randomize</button>
+                <button class="btn btn--danger" data-nav data-act="clear">Reset</button>
+                <button class="btn" data-nav data-act="save">Save Player</button>
               </div>
             </div>
           </div>`;
       },
+
       mount(el) {
         const P = BB.PlayerProfile;
         const draft = P.newDraft();
-        const canvas = el.querySelector('#cp-canvas');
-        const ctx = canvas.getContext('2d');
 
-        const preview = new BB.Player(P.toPlayerConfig(draft, { x: 0, y: 0 }));
-        P.applyAppearance(preview, draft);
-        preview.facing = 0;
-        preview.targetHoop = null;
+        /* The live model. The standby scene owns it; the creator just borrows
+         * it, spins it, and hands it back the way it found it. */
+        const scene = BB.Engine && BB.Engine.scene;
+        const model = scene && scene.previewMode ? scene.previewMode(true) : null;
 
-        const refreshLabel = () => {
+        const applyLook = () => {
+          if (!model) return;
+          model.skin = draft.skin;
+          model.hair = draft.hair;
+          model.hairStyle = draft.hairStyle;
+          model.jerseyMain = draft.jerseyMain;
+          model.jerseyTrim = draft.jerseyTrim;
+          model.heightIn = draft.height;
+          model.name = draft.name;
+          model.number = draft.number;
+        };
+
+        const refresh = () => {
+          const arch = (P.ARCHETYPES[draft.archetype] || P.ARCHETYPES.balanced).label;
           el.querySelector('#cp-label-name').textContent = (draft.name || 'YOU').toUpperCase();
           el.querySelector('#cp-label-sub').textContent =
-            '#' + draft.number + ' \u00B7 ' + draft.position + ' \u00B7 ' + P.heightLabel(draft.height);
+            '#' + draft.number + ' · ' + draft.position + ' · ' +
+            P.heightLabel(draft.height) + ' · ' + arch;
+          el.querySelector('#cp-ovr').textContent = P.overallOf(draft);
+          el.querySelector('#cp-spread').innerHTML = spreadHtml(draft);
         };
 
-        let last = performance.now();
-        let raf = null;
-        const tick = (now) => {
-          const dt = Math.min(0.05, (now - last) / 1000);
-          last = now;
-          preview._updatePose(dt);
-
-          ctx.setTransform(1, 0, 0, 1, 0, 0);
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-          const scale = 62;
-          ctx.setTransform(scale, 0, 0, scale, canvas.width / 2, canvas.height * 0.86);
-          preview.drawPreview(ctx);
-          ctx.setTransform(1, 0, 0, 1, 0, 0);
-
-          raf = requestAnimationFrame(tick);
+        /* Position and archetype are the two things that reshape the build,
+         * so both throw the generated spread away and roll a new one — but
+         * only for a player who has never banked a career point into it.
+         * Rerolling somebody's spent progression because they tapped a
+         * different position would be theft. */
+        const reshape = () => {
+          if (BB.Career.load().gamesPlayed === 0) draft.ratings = null;
+          P.enforceCaps(draft);
+          P.ensureRatings(draft);
+          refresh();
         };
-        raf = requestAnimationFrame(tick);
-        this._cleanup = () => { if (raf) cancelAnimationFrame(raf); };
+
+        applyLook();
 
         el.addEventListener('click', (e) => {
           const sw = e.target.closest('[data-swatch]');
           if (sw) {
             const key = sw.parentNode.dataset.key;
             draft[key] = sw.dataset.swatch;
-            preview[key] = sw.dataset.swatch;
             Array.prototype.forEach.call(sw.parentNode.children, (c) => c.classList.toggle('is-on', c === sw));
+            applyLook();
             A.play('uiMove');
             return;
           }
@@ -485,7 +968,9 @@
             const key = seg.parentNode.dataset.key;
             draft[key] = seg.dataset.seg;
             Array.prototype.forEach.call(seg.parentNode.children, (c) => c.classList.toggle('is-on', c === seg));
-            if (key === 'position') refreshLabel();
+            if (key === 'position' || key === 'archetype') reshape();
+            else refresh();
+            applyLook();
             A.play('uiMove');
             return;
           }
@@ -506,14 +991,14 @@
           if (b.dataset.act === 'randomize') {
             const arch = Object.keys(P.ARCHETYPES);
             draft.archetype = arch[U.rng.i(0, arch.length - 1)];
-            draft.overall = U.rng.i(65, 96);
             draft.skin = P.SKIN_TONES[U.rng.i(0, P.SKIN_TONES.length - 1)];
             draft.hair = P.HAIR_COLORS[U.rng.i(0, P.HAIR_COLORS.length - 1)];
+            draft.hairStyle = P.HAIR_STYLES[U.rng.i(0, P.HAIR_STYLES.length - 1)][0];
             draft.jerseyMain = P.JERSEY_COLORS[U.rng.i(0, P.JERSEY_COLORS.length - 1)];
             draft.jerseyTrim = P.JERSEY_COLORS[U.rng.i(0, P.JERSEY_COLORS.length - 1)];
             draft.height = U.rng.i(68, 82);
             draft.position = ['PG', 'SG', 'SF', 'PF', 'C'][U.rng.i(0, 4)];
-            draft.ratings = null; // regenerate from the new overall/archetype below
+            draft.ratings = null;         // a new build rolls a new spread
             P.save(draft);
             M.pop(); M.push('createPlayer');
           }
@@ -521,22 +1006,22 @@
 
         el.addEventListener('input', (e) => {
           const t = e.target;
-          if (t.id === 'cp-name') { draft.name = t.value.slice(0, 16) || 'YOU'; preview.name = draft.name; refreshLabel(); return; }
-          if (t.id === 'cp-number') { draft.number = U.clamp(parseInt(t.value, 10) || 0, 0, 99); preview.number = draft.number; refreshLabel(); return; }
-          if (t.id === 'cp-height') {
+          if (t.id === 'cp-name') { draft.name = t.value.slice(0, 16) || 'YOU'; }
+          else if (t.id === 'cp-number') { draft.number = U.clamp(parseInt(t.value, 10) || 0, 0, 99); }
+          else if (t.id === 'cp-height') {
             draft.height = parseInt(t.value, 10);
-            preview.heightIn = draft.height;
+            t.style.setProperty('--fill', Math.round((draft.height - 66) / 18 * 100) + '%');
             el.querySelector('#cp-height-val').textContent = P.heightLabel(draft.height);
-            refreshLabel();
-            return;
-          }
-          if (t.id === 'cp-overall') {
-            draft.overall = parseInt(t.value, 10);
-            el.querySelector('#cp-overall-val').textContent = draft.overall;
-          }
+          } else return;
+          applyLook();
+          refresh();
         });
       },
-      unmount() { if (this._cleanup) this._cleanup(); },
+
+      unmount() {
+        const scene = BB.Engine && BB.Engine.scene;
+        if (scene && scene.previewMode) scene.previewMode(false);
+      },
       onCancel() { M.pop(); }
     });
 
@@ -594,6 +1079,7 @@
                   ${r.points > 0 ? `<div class="career__points">${r.points} point${r.points === 1 ? '' : 's'} to spend below</div>` : ''}
                 </div>
                 <div class="career__stats">
+                  <div class="career__stat career__stat--ovr"><b>${P.overallOf(draft)}</b><span>Overall</span></div>
                   <div class="career__stat"><b>${r.wins}-${r.losses}</b><span>Record</span></div>
                   <div class="career__stat"><b>${(r.winPct * 100).toFixed(0)}%</b><span>Win rate</span></div>
                   <div class="career__stat"><b>${r.ppg.toFixed(1)}</b><span>PPG</span></div>
@@ -749,6 +1235,23 @@
             `<button class="swatch ${c === selected ? 'is-on' : ''}" data-nav data-swatch="${c}" style="--c:${c}" aria-label="${label} ${c}"></button>`).join('')}
         </div>
       </div>`;
+  }
+
+  /** The build's shape at a glance: one bar per attribute group, coloured the
+   * way the Career screen colours them, so an archetype reads as a shape
+   * rather than as a word. */
+  function spreadHtml(draft) {
+    const r = BB.PlayerProfile.ensureRatings(draft);
+    return BB.Career.GROUPS.map((g) => {
+      const avg = g.keys.reduce((sum, k) => sum + (r[k] || 0), 0) / g.keys.length;
+      const pct = Math.round(U.clamp01((avg - 25) / 74) * 100);
+      return `
+        <div class="spread__row" style="--gc:${g.color}">
+          <span class="spread__k">${g.label}</span>
+          <span class="spread__bar"><i style="width:${pct}%"></i></span>
+          <span class="spread__v">${Math.round(avg)}</span>
+        </div>`;
+    }).join('');
   }
 
   function escapeAttr(s) {

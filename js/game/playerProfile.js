@@ -19,6 +19,21 @@
     '#111721', '#F3F0E7', '#1AA6A0', '#B0242E', '#3D3D3D'
   ];
 
+  /* The haircuts, in the order the creator offers them. The key must match a
+   * shell baked into the mesh by tools/rig_model.js — except 'bald', which
+   * draws no shell at all and repaints the scalp as skin. */
+  const HAIR_STYLES = [
+    ['fade', 'Fade'],
+    ['buzz', 'Buzz'],
+    ['bald', 'Shaved'],
+    ['afro', 'Afro'],
+    ['highTop', 'High Top'],
+    ['waves', 'Waves'],
+    ['cornrows', 'Cornrows'],
+    ['locs', 'Locs'],
+    ['puff', 'Puff']
+  ];
+
   const ARCHETYPES = {
     balanced: { label: 'Balanced', boost: [], cut: [] },
     sharpshooter: {
@@ -92,15 +107,25 @@
     }
   };
 
+  /* Every created player starts here, and nowhere else.
+   *
+   * There is no overall slider any more: a new player is a 60 and gets better
+   * by playing, spending the points a level-up earns on whichever attributes
+   * they want (see career.js). Overall is not a stored number either — it is
+   * the weighted average of the ratings, so it rises on its own the moment one
+   * of them does, and there is nothing to keep in sync. */
+  const START_OVERALL = 60;
+
   const DEFAULT_DRAFT = {
     name: 'YOU', number: 23, position: 'SF',
-    height: 79, skin: SKIN_TONES[2], hair: HAIR_COLORS[0],
+    height: 79, skin: SKIN_TONES[2], hair: HAIR_COLORS[0], hairStyle: 'fade',
     jerseyMain: JERSEY_COLORS[0], jerseyTrim: JERSEY_COLORS[8],
-    overall: 82, archetype: 'balanced'
+    archetype: 'balanced'
   };
 
   const PlayerProfile = {
-    SKIN_TONES, HAIR_COLORS, JERSEY_COLORS, ARCHETYPES, POSITION_CAPS,
+    SKIN_TONES, HAIR_COLORS, JERSEY_COLORS, HAIR_STYLES, ARCHETYPES, POSITION_CAPS,
+    START_OVERALL,
 
     /** The saved player, or null if nobody's ever saved one yet. */
     load() { return U.store.get('createdPlayer', null); },
@@ -163,19 +188,68 @@
      * career points - see career.js, which respects the same caps. */
     generateRatings(draft) {
       const arch = ARCHETYPES[draft.archetype] || ARCHETYPES.balanced;
-      const base = U.clamp(draft.overall || 75, 60, 99);
-      const r = {};
+      const raw = {};
       for (const k of BB.Player.RATING_KEYS) {
-        let v = base + U.rng.gauss(0, 5);
-        if (arch.boost.indexOf(k) >= 0) v += 11;
-        if (arch.cut.indexOf(k) >= 0) v -= 9;
-        const cap = this.capFor(draft.position, draft.archetype, k);
-        r[k] = U.clamp(Math.round(v), 25, cap);
+        let v = START_OVERALL + U.rng.gauss(0, 4);
+        if (arch.boost.indexOf(k) >= 0) v += 9;
+        if (arch.cut.indexOf(k) >= 0) v -= 8;
+        raw[k] = v;
       }
-      r.shotTendency = U.clamp(Math.round(U.rng.f(55, 85)), 0, 100);
-      r.driveTendency = U.clamp(Math.round(U.rng.f(40, 75)), 0, 100);
-      r.passTendency = U.clamp(Math.round(U.rng.f(35, 65)), 0, 100);
-      return r;
+
+      /* An archetype is a SHAPE, not a head start. Left alone, a build that
+       * boosts four attributes and cuts two comes out several points of
+       * overall ahead of the balanced one for free, which turns picking a
+       * build into picking a number. So the whole spread slides until the
+       * weighted overall lands on START_OVERALL. It takes a few passes
+       * because clamping to the caps bends the average back. */
+      let out = null;
+      for (let pass = 0; pass < 6; pass++) {
+        out = {};
+        for (const k of BB.Player.RATING_KEYS) {
+          out[k] = U.clamp(Math.round(raw[k]), 25, this.capFor(draft.position, draft.archetype, k));
+        }
+        const err = START_OVERALL - BB.Player.computeOverall(out);
+        if (err === 0) break;
+        for (const k of BB.Player.RATING_KEYS) raw[k] += err;
+      }
+
+      /* The passes above shift the WHOLE spread, which is exactly what an
+       * attribute sitting on its cap cannot do — it absorbs nothing and the
+       * average never travels the last step. Roughly one build in 700 used to
+       * walk out of here a point light or a point heavy, which is how a
+       * creator screen promising "everyone starts at 60" would quietly show
+       * 59. So the last point is closed by hand: nudge only the attributes
+       * that still have room, one at a time, and stop the moment the weighted
+       * overall reads exactly. It moves a handful of ratings by a single
+       * point in the rare case it fires at all, so the archetype's shape
+       * survives intact. */
+      let settle = 0;
+      let gap = START_OVERALL - BB.Player.computeOverall(out);
+      while (gap !== 0 && settle++ < 200) {
+        const dir = gap > 0 ? 1 : -1;
+        let moved = false;
+        for (const k of BB.Player.RATING_KEYS) {
+          const next = out[k] + dir;
+          if (next < 25 || next > this.capFor(draft.position, draft.archetype, k)) continue;
+          out[k] = next;
+          moved = true;
+          if (BB.Player.computeOverall(out) === START_OVERALL) break;
+        }
+        // Every attribute pinned against the wall in the direction we need:
+        // nothing further is reachable, so take what we have rather than spin.
+        if (!moved) break;
+        gap = START_OVERALL - BB.Player.computeOverall(out);
+      }
+
+      out.shotTendency = U.clamp(Math.round(U.rng.f(55, 85)), 0, 100);
+      out.driveTendency = U.clamp(Math.round(U.rng.f(40, 75)), 0, 100);
+      out.passTendency = U.clamp(Math.round(U.rng.f(35, 65)), 0, 100);
+      return out;
+    },
+
+    /** This player's overall right now: read off the ratings, never stored. */
+    overallOf(draft) {
+      return BB.Player.computeOverall(this.ensureRatings(draft));
     },
 
     /** Attaches persisted ratings to a draft if it doesn't have any yet
@@ -190,8 +264,7 @@
       return Object.assign({
         human: true, name: draft.name || 'YOU', number: draft.number,
         position: draft.position, height: draft.height,
-        skin: draft.skin, hair: draft.hair,
-        overall: U.clamp(draft.overall || 75, 60, 99),
+        skin: draft.skin, hair: draft.hair, hairStyle: draft.hairStyle,
         ratings: this.ensureRatings(draft)
       }, extra || {});
     },

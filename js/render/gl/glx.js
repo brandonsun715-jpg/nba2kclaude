@@ -184,7 +184,7 @@
 
     /* ------------------------------------------------------------- textures */
     /**
-     * Uploads a 2D canvas as a mipmapped texture. Used for the baked hardwood
+     * Uploads a 2D canvas as a mipmapped texture. Used for the baked blacktop
      * floor, which is drawn once with the existing Canvas2D court art and then
      * lives on the GPU for the rest of the session.
      */

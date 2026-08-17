@@ -1,5 +1,5 @@
 /* =============================================================================
- * verify_render.js  —  Headless render verification for HARDWOOD's 3D build.
+ * verify_render.js  —  Headless render verification for NBA 1K26's 3D build.
  * -----------------------------------------------------------------------------
  * Runs the real game in headless Chrome with WebGL2 (SwiftShader), boots each
  * scene, and checks the things that silently break a 3D renderer:
@@ -26,6 +26,10 @@ const CHROME = process.env.CHROME_BIN ||
 const ROOT = path.resolve(__dirname, '..');
 const OUT = path.resolve(__dirname, 'shots');
 
+/* Court dimensions, mirrored from js/core/constants.js so checks can talk
+ * about "past the baseline" without booting a page to ask. */
+const C_LEN = 94, C_WID = 50;
+
 let pass = 0, fail = 0;
 function check(name, ok, detail) {
   if (ok) { pass++; console.log('  ok   ' + name); }
@@ -48,7 +52,13 @@ function runInPage(payload, label) {
   // registered after the game's and therefore runs once boot() has completed.
   // Everything is then done before the load event, which is the moment
   // --dump-dom captures the DOM — no timers, no waiting on real frames.
-  const probe = src.replace('</body>', `
+  /* Keep the drawing buffer around after a frame. Checks that read pixels back
+   * (see the facing check) render outside the animation loop, and without this
+   * the buffer's contents are undefined by the time readPixels runs. */
+  const withCapture = src.replace('<script src="js/core/constants.js"></script>',
+    '<script>window.__HW_CAPTURE = true;</script>\n  <script src="js/core/constants.js"></script>');
+
+  const probe = withCapture.replace('</body>', `
   <script>
   window.__pageErr = null;
   window.addEventListener('error', function (e) {
@@ -140,7 +150,7 @@ function screenshot(name, setup, ticks) {
 
 /* -------------------------------------------------------------------- tests */
 
-console.log('\nHARDWOOD — 3D render verification\n');
+console.log('\nNBA 1K26 — 3D render verification\n');
 
 console.log('[1] boot + GL health');
 {
@@ -219,7 +229,8 @@ console.log('\n[2] 1v1 scene renders real geometry');
         o.meshVerts > 1000 && o.bones >= 12,
         'verts=' + o.meshVerts + ' bones=' + o.bones);
   check('both players submitted a skinned pose', o.skinned === 2, 'poses=' + o.skinned);
-  check('crowd submitted', (o.counts && o.counts.crowd) > 500, 'crowd=' + (o.counts && o.counts.crowd));
+  // A park draws a crowd in the dozens, not an arena bowl in the thousands.
+  check('crowd submitted', (o.counts && o.counts.crowd) > 120, 'crowd=' + (o.counts && o.counts.crowd));
   check('floor submitted', (o.counts && o.counts.floor) === 1, 'floor=' + (o.counts && o.counts.floor));
   check('net/glass submitted', (o.counts && (o.counts.segT + o.counts.panelT)) > 50,
         'segT=' + (o.counts && o.counts.segT) + ' panelT=' + (o.counts && o.counts.panelT));
@@ -349,6 +360,11 @@ console.log('\n[6] defensive stance spreads sideways');
     // the spread has to arrive as a roll angle out of that plane instead.
     for (var i = 0; i < 60; i++) pl._updatePose(1 / 60);
     var rest = pl.pose.armRoll;
+    var restSpreadX = Math.abs(pl.pose.handR.x - pl.pose.handL.x);
+    // Hands hang the same distance in front of their own shoulder, or the
+    // figure stands mid-stumble with one arm forward and one arm back.
+    var restFore = Math.abs((pl.pose.handL.x + BB.Player.BONE.shoulderW)
+                          - (pl.pose.handR.x - BB.Player.BONE.shoulderW));
 
     pl.isGuarding = true;
     for (var j = 0; j < 60; j++) pl._updatePose(1 / 60);
@@ -368,7 +384,8 @@ console.log('\n[6] defensive stance spreads sideways');
     return {
       rest: rest, guarding: guarding, released: released, shooting: shooting,
       handSpreadX: handSpreadX,
-      restSpreadX: Math.abs(0.30 * 2)
+      restSpreadX: restSpreadX,
+      restFore: restFore
     };
   `, 'probe');
   if (r.err) check('stance probe ran', false, r.err);
@@ -382,7 +399,10 @@ console.log('\n[6] defensive stance spreads sideways');
         'armRoll=' + (o.shooting || 0).toFixed(4));
   check('spread does not leak into fore/aft hand targets',
         Math.abs(o.handSpreadX - o.restSpreadX) < 0.02,
-        'guarding=' + (o.handSpreadX || 0).toFixed(3) + ' rest=' + o.restSpreadX);
+        'guarding=' + (o.handSpreadX || 0).toFixed(3) +
+        ' rest=' + (o.restSpreadX || 0).toFixed(3));
+  check('a standing player hangs both hands level with each other',
+        o.restFore < 0.001, 'fore/aft mismatch ' + (o.restFore || 0).toFixed(3));
 }
 
 console.log('\n[7] the dribbled ball sits in the drawn hand');
@@ -434,7 +454,7 @@ console.log('\n[7] the dribbled ball sits in the drawn hand');
         'gap=' + (o.topGap || 0).toFixed(3) + 'ft');
 }
 
-console.log('\n[8] the floor does not fight the arena deck');
+console.log('\n[8] the court does not fight the ground under it');
 {
   const r = runInPage(`
     var BB = window.BB;
@@ -444,9 +464,11 @@ console.log('\n[8] the floor does not fight the arena deck');
 
     // Nudge the rig by inches and re-render. Two coplanar surfaces cannot be
     // separated by the depth buffer at broadcast distance, so which one wins
-    // flips with sub-pixel camera movement — whole stretches of hardwood turn
-    // into dark deck and back, which is what reads on screen as the court
-    // glitching. A scene with real depth separation barely moves at all.
+    // flips with sub-pixel camera movement — whole stretches of court turn
+    // into the ground underneath and back, which is what reads on screen as
+    // the court glitching. A scene with real depth separation barely moves at
+    // all. There are three stacked surfaces to keep apart now (grass, then
+    // the blacktop pad, then the painted court), not two.
     var W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
     var buf = new Uint8Array(W * H * 4), nudge = 0;
     cam._rebuild = function () {
@@ -460,12 +482,16 @@ console.log('\n[8] the floor does not fight the arena deck');
     for (var i = 0; i < 16; i++) {
       nudge = i; cam._rebuild(); sc.render(0);
       gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-      var warm = 0, n = 0;
+      /* Count the painted surface specifically. Teal acrylic is the only thing
+       * in the park that is this far green-of-red: the grass past the fence is
+       * darker and much less blue, and the sky is barely green-biased at all,
+       * so neither can stand in for the court if the court stops drawing. */
+      var court = 0, n = 0;
       for (var o = 0; o < buf.length; o += 4) {
-        if (buf[o] - buf[o + 2] > 30 && buf[o] > 70) warm++;
+        if (buf[o + 1] - buf[o] > 80 && buf[o + 1] > 90) court++;
         n++;
       }
-      cov.push(warm / n);
+      cov.push(court / n);
     }
     var mn = Math.min.apply(null, cov), mx = Math.max.apply(null, cov);
     // The mip chain is capped so the smallest level the hardware may fall back
@@ -477,9 +503,9 @@ console.log('\n[8] the floor does not fight the arena deck');
   `, 'probe');
   if (r.err) check('floor probe ran', false, r.err);
   const o = r.out || {};
-  check('court floor is visible at broadcast distance', o.min > 0.2,
+  check('the painted court is visible at broadcast distance', o.min > 0.2,
         'min coverage=' + ((o.min || 0) * 100).toFixed(1) + '%');
-  check('floor does not flicker as the camera moves', o.spread < 0.03,
+  check('court does not flicker as the camera moves', o.spread < 0.03,
         'spread=' + ((o.spread || 0) * 100).toFixed(1) + ' points');
   check('court mip chain is capped on every GPU', o.maxLevel > 0 && o.maxLevel <= 6,
         'TEXTURE_MAX_LEVEL=' + o.maxLevel);
@@ -500,11 +526,9 @@ console.log('\n[9] a running player plants their feet');
     for (var i = 0; i < 240; i++) {
       pl.vx = speed; pl.vy = 0;
       pl.x += speed * dt;
-      // Drive the stride exactly as updateMovement does.
-      var top = Math.max(pl.phys.maxSpeed, 1);
-      var strideLen = U.lerp(0.17, 0.50, U.clamp01(speed / top));
-      var perCycle = Math.max(0.35, 4 * strideLen * pl.bodyScale);
-      pl.stridePhase += (speed * dt / perCycle) * Math.PI * 2;
+      // Drive the stride through the same call updateMovement makes, so this
+      // cannot drift out of step with the gait the pose is built from.
+      pl._advanceStride(speed, Math.max(pl.phys.maxSpeed, 1), dt);
       pl._updatePose(dt);
 
       pl.footAt(-1, a); pl.footAt(1, b);
@@ -516,13 +540,85 @@ console.log('\n[9] a running player plants their feet');
       }
       prevLow = low;
     }
-    return { slideRatio: bodyMove > 0 ? footMove / bodyMove : 1, samples: n };
+
+    /* Walk the cycle again, this time reading the joints themselves.
+     *
+     * The solver works in a flat plane whose x becomes the player's FORWARD
+     * axis, so a joint's x relative to its own limb root IS how far in front
+     * of that root it sits — which makes every claim below a number rather
+     * than something to squint at. */
+    var B = BB.Player.BONE, STEPS = 24;
+    /** Which side of its own root-to-tip line a middle joint sits on. */
+    function bendSide(o, j, e) {
+      return (j[0] - o[0]) * (e[1] - j[1]) - (j[1] - o[1]) * (e[0] - j[0]);
+    }
+    var kneeBend = 1e9, elbowBend = -1e9, clamp = 0, contra = 0;
+    var handSwing = 0, hipHi = -1e9, hipLo = 1e9;
+    var hLs = [], hRs = [];
+    for (var s = 0; s < STEPS; s++) {
+      pl.vx = speed; pl.vy = 0;
+      pl.stridePhase = s * Math.PI * 2 / STEPS;
+      pl._updatePose(dt);
+      var p = pl.pose;
+      // A knee bends one way and an elbow the other, and each pair agrees with
+      // itself: this is the sign the IK's bend flag picks, read back off the
+      // solved joints.
+      kneeBend = Math.min(kneeBend,
+        bendSide([-B.hipW, p.hipY], [p.kneeL.jx, p.kneeL.jy], [p.kneeL.ex, p.kneeL.ey]),
+        bendSide([B.hipW, p.hipY], [p.kneeR.jx, p.kneeR.jy], [p.kneeR.ex, p.kneeR.ey]));
+      elbowBend = Math.max(elbowBend,
+        bendSide([-B.shoulderW, p.shoulderY], [p.elbowL.jx, p.elbowL.jy], [p.elbowL.ex, p.elbowL.ey]),
+        bendSide([B.shoulderW, p.shoulderY], [p.elbowR.jx, p.elbowR.jy], [p.elbowR.ex, p.elbowR.ey]));
+      // Nothing asked for is out of reach: a clamped target freezes the limb.
+      clamp = Math.max(clamp,
+        Math.hypot(p.kneeL.ex - p.footL.x, p.kneeL.ey - p.footL.y),
+        Math.hypot(p.kneeR.ex - p.footR.x, p.kneeR.ey - p.footR.y),
+        Math.hypot(p.elbowL.ex - p.handL.x, p.elbowL.ey - p.handL.y),
+        Math.hypot(p.elbowR.ex - p.handR.x, p.elbowR.ey - p.handR.y));
+      var hL = p.handL.x + B.shoulderW, hR = p.handR.x - B.shoulderW;
+      var fL = p.footL.x + B.hipW, fR = p.footR.x - B.hipW;
+      hLs.push(hL); hRs.push(hR);
+      handSwing = Math.max(handSwing, Math.abs(hL));
+      // Correlated over the whole cycle, not merely at one lucky frame: a hand
+      // and the OPPOSITE foot reach forward together.
+      contra += hL * fR + hR * fL;
+      hipHi = Math.max(hipHi, -p.hipY); hipLo = Math.min(hipLo, -p.hipY);
+    }
+    // The two arms run the same swing, half a cycle apart.
+    var anti = 0;
+    for (var q = 0; q < STEPS; q++) {
+      anti = Math.max(anti, Math.abs(hLs[q] - hRs[(q + STEPS / 2) % STEPS]));
+    }
+    return {
+      slideRatio: bodyMove > 0 ? footMove / bodyMove : 1, samples: n,
+      kneeBend: kneeBend, elbowBend: elbowBend, clamp: clamp,
+      anti: anti, handSwing: handSwing, contra: contra / STEPS,
+      bob: hipHi - hipLo
+    };
   `, 'probe');
   if (r.err) check('stride probe ran', false, r.err);
   const o = r.out || {};
   // A foot driven on a timer slides at very nearly the body's own speed.
   check('planted foot does not skate under the player', o.slideRatio < 0.55,
         'foot travels ' + ((o.slideRatio || 1) * 100).toFixed(0) + '% of body speed');
+  // A knee only bends one way, and it is the same way on both legs. Mirroring
+  // the IK bend flag left-to-right reverses one of them, which is a leg that
+  // folds backwards at the knee.
+  check('both knees fold forward, all cycle long', o.kneeBend > 0,
+        'worst bend ' + (o.kneeBend || 0).toFixed(4) + ' (negative = a reversed knee)');
+  check('both elbows fold the other way', o.elbowBend < 0,
+        'worst bend ' + (o.elbowBend || 0).toFixed(4) + ' (positive = a reversed elbow)');
+  check('no limb target is out of reach mid-stride', o.clamp < 0.005,
+        'largest shortfall ' + (o.clamp || 0).toFixed(4));
+  check('the arms swing, half a cycle apart from each other',
+        o.handSwing > 0.15 && o.anti < 0.001,
+        'swing ' + (o.handSwing || 0).toFixed(3) + ', mismatch ' + (o.anti || 0).toFixed(4));
+  // Contralateral: the left arm reaches forward with the RIGHT leg. Same-side
+  // arm and leg swinging together is the toy-soldier walk.
+  check('each arm swings forward with the opposite leg', o.contra > 0,
+        'mean opposite-side product ' + (o.contra || 0).toFixed(4));
+  check('the body rises and falls through the cycle', o.bob > 0.005,
+        'hip travels ' + (o.bob || 0).toFixed(3) + ' vertically');
 }
 
 console.log('\n[10] player creator preview');
@@ -579,13 +675,4863 @@ console.log('\n[10] player creator preview');
         'span=' + (o.spanFrac || 0).toFixed(2));
 }
 
+console.log('\n[11] the shot meter hangs on the shooter, and clears the scorebug');
+{
+  const r = runInPage(`
+    var BB = window.BB;
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene;
+    for (var i = 0; i < 60; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+    var cam = BB.Camera, dpr = cam.dpr || 1;
+    var safe = BB.HUD.safeTop();
+
+    /* Measure what the meter actually paints rather than re-deriving it: wrap
+     * the context and walk every arc it strokes. A clamp that is right in the
+     * arithmetic and wrong in the drawing call would pass any check written
+     * the other way round. */
+    var ctx = BB.Renderer.ctx, realArc = ctx.arc, realStroke = ctx.stroke;
+    var minY = 1e9, maxY = -1e9, minX = 1e9, maxX = -1e9, pending = null;
+    /* The green window specifically, picked out by the colour it is painted in
+     * — it is the one part of the bar the player is actually timing against,
+     * and the only one whose position on screen matters to them. */
+    // Canvas normalises a colour string when it is read back ("rgba(34, 228,
+    // 160, 0.55)"), so compare with the spaces taken out of both.
+    var mint = BB.U.rgba(BB.C.PAL.mint, 0.55).split(' ').join('');
+    var green = null;
+    ctx.arc = function (x, y, r, a0, a1) {
+      pending = { x: x, y: y, r: r, a0: a0, a1: a1 };
+      return realArc.apply(this, arguments);
+    };
+    ctx.stroke = function () {
+      if (pending) {
+        var half = (this.lineWidth || 1) / 2;
+        var gy0 = 1e9, gy1 = -1e9;
+        for (var a = pending.a0; a <= pending.a1 + 1e-6; a += 0.02) {
+          var px = pending.x + Math.cos(a) * pending.r;
+          var py = pending.y + Math.sin(a) * pending.r;
+          minY = Math.min(minY, py - half); maxY = Math.max(maxY, py + half);
+          minX = Math.min(minX, px - half); maxX = Math.max(maxX, px + half);
+          gy0 = Math.min(gy0, py); gy1 = Math.max(gy1, py);
+        }
+        if (String(this.strokeStyle).split(' ').join('') === mint) green = (gy0 + gy1) * 0.5;
+        pending = null;
+      }
+      return realStroke.apply(this, arguments);
+    };
+
+    // A shooter whose anchor projects way above the top of the frame: without
+    // a clamp the whole green end of the bar lands under the scorebug.
+    var pl = scene.player;
+    pl.placeAt(scene.hoop.x - 20, 25, 0);
+    pl.meter.start(pl.releaseProfileJumper, { x: pl.x, y: pl.y, z: 26 });
+    pl.meter.value = 0.9;
+    pl.meter.draw(ctx, cam);
+    var high = { minY: minY, maxY: maxY, minX: minX, maxX: maxX };
+
+    // And one at the near baseline, where it would fall off the bottom.
+    minY = 1e9; maxY = -1e9; minX = 1e9; maxX = -1e9;
+    pl.meter.setAnchor({ x: pl.x, y: pl.y, z: -30 });
+    pl.meter.draw(ctx, cam);
+    var low = { minY: minY, maxY: maxY, minX: minX, maxX: maxX };
+
+    /* And now an ordinary shot from an ordinary spot, which is what the player
+     * spends the whole game looking at. Measured against the figure itself:
+     * where the green window sits relative to the head, and whether the bar
+     * runs down beside the body or straight across it. */
+    pl.meter.cancel();
+    scene.ai.x = -90; scene.ai.y = -90;          // nobody to shove the shooter
+    pl.placeAt(scene.hoop.x - 18, 25, 0);
+    pl.vx = pl.vy = 0;
+    // Let the rig settle onto them first: the bar is placed by projecting a
+    // point in the world, so it is only where the player sees it once the
+    // camera is actually looking at the player.
+    for (var s = 0; s < 240; s++) {
+      scene.fixedUpdate(1 / 120);
+      if (s % 2 === 0) scene.update(1 / 60, 1 / 60);
+    }
+    /* A real shot, taken the way the game takes one — so this measures where
+     * the shot code ANCHORS the bar as well as where draw() puts it. Setting
+     * an anchor by hand here would pass just as happily with the bar strung
+     * off the shooting hand nine feet in the air. */
+    pl.giveBall(scene.ball);
+    pl._beginShot();
+    for (var m = 0; m < 60 && pl.action !== BB.Player.ACTION.METER; m++) {
+      scene.fixedUpdate(1 / 120);
+      if (m % 2 === 0) scene.update(1 / 60, 1 / 60);
+    }
+    for (var m2 = 0; m2 < 24; m2++) {
+      scene.fixedUpdate(1 / 120);
+      if (m2 % 2 === 0) scene.update(1 / 60, 1 / 60);
+    }
+    minY = 1e9; maxY = -1e9; minX = 1e9; maxX = -1e9; green = null;
+    pl.meter.draw(ctx, cam);
+    var live = { minY: minY, maxY: maxY, minX: minX, maxX: maxX, green: green,
+                 action: pl.action };
+
+    var crownZ = pl.z + (-pl.pose.headY + BB.Player.BONE.headR) * pl.bodyScale;
+    var head = cam.project(pl.x, pl.y, crownZ, null);
+    var feet = cam.project(pl.x, pl.y, pl.z, null);
+    // Half the figure's on-screen width, taken at chest height off the same
+    // radius the physics uses, so "beside them" is measured, not eyeballed.
+    var chest = cam.project(pl.x, pl.y, crownZ * 0.55, null);
+    var side = cam.project(pl.x, pl.y + pl.radius, crownZ * 0.55, null);
+
+    ctx.arc = realArc; ctx.stroke = realStroke;
+    return {
+      safe: safe, dpr: dpr, vw: cam.vw, vh: cam.vh, high: high, low: low,
+      live: live, headY: head.y, headX: head.x, feetY: feet.y,
+      halfW: Math.abs(side.x - chest.x)
+    };
+  `, 'probe');
+  if (r.err) check('meter probe ran', false, r.err);
+  const o = r.out || {};
+  const hi = o.high || {}, lo = o.low || {};
+  // The bug is DOM over canvas, so anything the meter paints above its bottom
+  // edge is simply gone — and the meter fills upward, so what is lost is the
+  // green window.
+  check('the scorebug stays a thin strip', o.safe > 0 && o.safe < 46,
+        'bug ends ' + Math.round(o.safe || 0) + 'px down the screen');
+  check('meter stays clear of the scorebug', hi.minY >= o.safe * o.dpr,
+        'meter top at ' + Math.round(hi.minY) + 'px, bug ends at ' +
+        Math.round((o.safe || 0) * (o.dpr || 1)) + 'px');
+  check('meter stays on screen at the near baseline', lo.maxY <= o.vh,
+        'meter bottom at ' + Math.round(lo.maxY) + 'px of ' + o.vh);
+  /* Where the bar hangs on an ordinary shot. The bar is screen-space, the
+   * player is not, so everything here is in units of the figure's own
+   * on-screen height — that holds at any resolution and any camera distance. */
+  const live = o.live || {};
+  const bodyPx = (o.feetY || 0) - (o.headY || 0);
+  const aboveHead = ((o.headY || 0) - (live.green || 0)) / Math.max(1, bodyPx);
+  check('the meter is up for a real shot', live.action === 'meter',
+        'shooter was in action "' + live.action + '"');
+  check('the green window sits at the shooter, not floating above them',
+        live.green != null && aboveHead > -0.35 && aboveHead < 0.25,
+        'green window is ' + (aboveHead * 100).toFixed(0) +
+        '% of a body-height above the head');
+  // Brought down to head height, a bar centred over the shooter would be drawn
+  // across their chest for the whole shot.
+  check('the bar hangs beside the shooter, not across them',
+        (o.headX || 0) - live.maxX > o.halfW * 0.5,
+        'bar ends ' + ((o.headX || 0) - live.maxX).toFixed(0) +
+        'px clear of a figure ' + (o.halfW || 0).toFixed(0) + 'px half-wide');
+
+  check('meter stays inside the frame sideways',
+        hi.minX >= 0 && hi.maxX <= o.vw,
+        'meter spans ' + Math.round(hi.minX) + '..' + Math.round(hi.maxX) + ' of ' + o.vw);
+}
+
+console.log('\n[12] the front page carries every mode');
+{
+  const r = runInPage(`
+    var BB = window.BB;
+    BB.Engine.setState('menu'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene;
+    for (var i = 0; i < 40; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+
+    var tabs = [].slice.call(document.querySelectorAll('[data-tab]'));
+    var ids = tabs.map(function (t) { return t.dataset.tab; });
+
+    // Every mode the build can actually enter, and where it is reachable from.
+    var states = Object.keys(BB.Engine.states || {});
+    var screens = Object.keys(BB.Menus.screens || {});
+
+    // Each tab has to produce a complete hero: tags, title, body, button.
+    var incomplete = [], poses = {};
+    for (var k = 0; k < tabs.length; k++) {
+      tabs[k].click();
+      var h = document.getElementById('menu-hero');
+      if (!h.querySelector('.menu-hero__tags') || !h.querySelector('.menu-hero__title') ||
+          !h.querySelector('.menu-hero__body') || !h.querySelector('[data-go]') ||
+          !h.querySelector('.menu-hero__title').textContent.trim()) {
+        incomplete.push(tabs[k].dataset.tab);
+      }
+      poses[tabs[k].dataset.tab] = scene.pose;
+    }
+
+    // Exactly one tab reads as selected at a time.
+    var onCount = document.querySelectorAll('[data-tab].is-on').length;
+
+    /* The keyboard path all the way through: focus the button, walk the row
+     * with the arrow keys, and check the focus is still somewhere this
+     * screen can hear. Rebuilding the panel under a focused button is exactly
+     * how that gets lost. */
+    tabs[0].click();                       // known starting point
+    document.querySelector('[data-go]').focus();
+    var screenEl = document.querySelector('.screen--main');
+    for (var a = 0; a < 3; a++) {
+      screenEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    }
+    var focusHeld = screenEl.contains(document.activeElement);
+    var afterArrows = document.querySelector('[data-tab].is-on').dataset.tab;
+
+    return {
+      ids: ids, incomplete: incomplete, onCount: onCount,
+      focusHeld: focusHeld, afterArrows: afterArrows,
+      poses: poses, states: states, screens: screens,
+      heroOnCourt: !!(scene.hero && scene.hero.x > 0),
+      pageErr: window.__pageErr || null
+    };
+  `, 'probe');
+  if (r.err) check('front page probe ran', false, r.err);
+  const o = r.out || {};
+  const ids = o.ids || [];
+  // Everything this build can do is on the front page: the three playable
+  // scenes plus every screen the menu can open, minus the ones that only make
+  // sense from inside a game.
+  const want = ['oneVone', 'fiveVfive', 'shootaround', 'createPlayer', 'career', 'settings', 'controls'];
+  const missing = want.filter((w) => ids.indexOf(w) < 0);
+  check('every mode has a tab', missing.length === 0, 'missing: ' + missing.join(', '));
+  check('no tab is a dead end', (o.incomplete || []).length === 0,
+        'incomplete: ' + (o.incomplete || []).join(', '));
+  check('exactly one tab reads as selected', o.onCount === 1, 'selected=' + o.onCount);
+  check('arrows walk the row', o.afterArrows === ids[3], 'landed on ' + o.afterArrows);
+  check('focus survives a mode change', o.focusHeld === true,
+        'focus left the screen after arrowing');
+  // The standby figure is the point of the layout: no player, no front page.
+  check('a live player stands in the frame', o.heroOnCourt === true);
+  check('modes drive different standby poses',
+        Object.keys(o.poses || {}).map((k) => o.poses[k])
+          .filter((v, i, all) => all.indexOf(v) === i).length >= 3,
+        'poses=' + JSON.stringify(o.poses));
+  check('front page raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[13] a created player starts at 60 and climbs');
+{
+  const r = runInPage(`
+    var BB = window.BB, P = BB.PlayerProfile;
+    BB.Engine.setState('menu'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene;
+    for (var i = 0; i < 40; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+
+    // Every build lands on the same starting overall — an archetype is a
+    // shape, not a head start, and a position is a set of ceilings.
+    var starts = [];
+    var archs = Object.keys(P.ARCHETYPES), poss = ['PG', 'SG', 'SF', 'PF', 'C'];
+    for (var a = 0; a < archs.length; a++) {
+      for (var p = 0; p < poss.length; p++) {
+        var d = P.newDraft();
+        d.archetype = archs[a]; d.position = poss[p]; d.ratings = null;
+        starts.push(P.overallOf(d));
+      }
+    }
+
+    // Spending a career point has to move the number the player sees.
+    BB.Career.reset();
+    P.clear();
+    var before = P.overallOf(P.newDraft());
+    var c = BB.Career.load(); c.points = 40; BB.Career.save(c);
+    var spent = 0;
+    for (var s = 0; s < 40; s++) if (BB.Career.spendPoint('midRange')) spent++;
+    var after = P.overallOf(P.newDraft());
+    BB.Career.reset(); P.clear();
+
+    BB.Menus.push('createPlayer');
+    var el = document.querySelector('.screen--createPlayer');
+    var hasOverallInput = !!el.querySelector('[data-key="overall"], #cp-overall');
+    var shownOvr = parseInt(el.querySelector('#cp-ovr').textContent, 10);
+    var usesModel = !!(scene.hero && scene.preview);
+    // Editing has to reach the live model, not a picture of it.
+    var sw = el.querySelectorAll('[data-key="jerseyMain"] [data-swatch]')[4];
+    sw.click();
+    var modelTookColour = scene.hero.jerseyMain === sw.dataset.swatch;
+    var h = el.querySelector('#cp-height');
+    h.value = 84; h.dispatchEvent(new Event('input', { bubbles: true }));
+    var modelTookHeight = scene.hero.heightIn === 84;
+    BB.Menus.pop();
+
+    return {
+      startMin: Math.min.apply(null, starts), startMax: Math.max.apply(null, starts),
+      before: before, after: after, spent: spent,
+      hasOverallInput: hasOverallInput, shownOvr: shownOvr, usesModel: usesModel,
+      modelTookColour: modelTookColour, modelTookHeight: modelTookHeight,
+      start: P.START_OVERALL, pageErr: window.__pageErr || null
+    };
+  `, 'probe');
+  if (r.err) check('creator probe ran', false, r.err);
+  const o = r.out || {};
+  check('every build starts on the same overall',
+        o.startMin === o.start && o.startMax === o.start,
+        'range ' + o.startMin + '..' + o.startMax + ', expected ' + o.start);
+  check('the overall slider is gone', o.hasOverallInput === false);
+  check('the creator shows the starting overall', o.shownOvr === o.start,
+        'shows ' + o.shownOvr);
+  // The whole point of removing the slider: the number is earned, not set.
+  check('spending career points raises the overall', o.spent > 0 && o.after > o.before,
+        o.before + ' -> ' + o.after + ' after ' + o.spent + ' points');
+  check('the creator edits the live 3D player', o.usesModel === true);
+  check('a colour change reaches the model', o.modelTookColour === true);
+  check('a height change reaches the model', o.modelTookHeight === true);
+  check('creator raised no errors', !o.pageErr, o.pageErr);
+}
+
+{
+  /* Every build starts on 60 — for EVERY roll of the dice, not merely most.
+   *
+   * The checks above roll the ratings a few dozen times per run, off an RNG
+   * seeded from Math.random at boot, so a generator that lands right 99.85% of
+   * the time reads as a suite that fails about one run in sixteen for no
+   * reason anybody can reproduce. That was section 13's long-standing flake.
+   *
+   * The cause was structural, not statistical: generateRatings converges by
+   * sliding the entire spread until the weighted overall hits the target, and
+   * an attribute already pinned against its position cap cannot slide. When
+   * enough of them were pinned the average stopped a point short and the loop
+   * gave up quietly after six passes.
+   *
+   * So this sweeps the space hard enough that a regression cannot hide, off
+   * FIXED seeds — a check written to catch a flake has no business being one.
+   * 7500 rolls against the old code caught 11; the odds of it catching none
+   * are about one in seventy thousand.
+   */
+  const r = runInPage(`
+    var BB = window.BB, P = BB.PlayerProfile, U = BB.U;
+    var archs = Object.keys(P.ARCHETYPES), poss = ['PG', 'SG', 'SF', 'PF', 'C'];
+    var rolls = 0, off = 0, worst = 0, example = null;
+    var capBreaks = 0, floorBreaks = 0;
+
+    for (var s = 0; s < 300; s++) {
+      for (var a = 0; a < archs.length; a++) {
+        for (var p = 0; p < poss.length; p++) {
+          U.rng = U.makeRng(s * 7919 + a * 131 + p * 17 + 1);
+          var d = P.newDraft();
+          d.archetype = archs[a]; d.position = poss[p]; d.ratings = null;
+          var ovr = P.overallOf(d);
+          rolls++;
+          var gap = ovr - P.START_OVERALL;
+          if (gap !== 0) {
+            off++;
+            if (Math.abs(gap) > Math.abs(worst)) worst = gap;
+            if (!example) example = archs[a] + '/' + poss[p] + ' rolled ' + ovr;
+          }
+          // The settle step moves individual ratings, so it must still
+          // respect the ceilings the position sets and the floor of 25.
+          for (var k = 0; k < BB.Player.RATING_KEYS.length; k++) {
+            var key = BB.Player.RATING_KEYS[k];
+            var v = d.ratings[key];
+            if (v > P.capFor(d.position, d.archetype, key)) capBreaks++;
+            if (v < 25) floorBreaks++;
+          }
+        }
+      }
+    }
+
+    return {
+      rolls: rolls, off: off, worst: worst, example: example,
+      capBreaks: capBreaks, floorBreaks: floorBreaks,
+      start: P.START_OVERALL, pageErr: window.__pageErr || null
+    };
+  `, 'starting overall');
+  if (r.err) check('starting-overall sweep ran', false, r.err);
+  const o = r.out || {};
+  check('the sweep actually rolled a full spread of builds', o.rolls === 7500,
+        'rolled ' + o.rolls);
+  check('every roll of every build lands exactly on the starting overall',
+        o.off === 0,
+        o.off + ' of ' + o.rolls + ' missed, worst by ' + o.worst +
+        (o.example ? ' (' + o.example + ')' : ''));
+  check('no rating is nudged above its position cap', o.capBreaks === 0,
+        o.capBreaks + ' over cap');
+  check('no rating is nudged below the floor', o.floorBreaks === 0,
+        o.floorBreaks + ' under 25');
+  check('starting-overall sweep raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[14] the figure faces the way it is facing, and wears its own colours');
+{
+  /* Read the head back off the framebuffer.
+   *
+   * Painting the skin pure green and the hair pure red turns "which way is
+   * this figure looking" into something countable. The rigger puts hair on the
+   * crown and the BACK of the head, so a figure looking at the camera reads
+   * green and one looking away reads red. That catches a reversed facing AND a
+   * model drawing inside out, which from out here are the same pixel.
+   *
+   * One page per look: reading pixels back is only reliable for the frame the
+   * page rendered, so each case gets its own run rather than sharing one.
+   */
+  const look = (facing, skin, hair) => runInPage(`
+    var BB = window.BB;
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene;
+    for (var i = 0; i < 60; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+    var pl = scene.player, cam = BB.Camera, gl = BB.GLX.gl, M4 = BB.M4;
+    scene.ai.x = -80; scene.ai.y = -80;
+    if (scene.ball) { scene.ball.owner = null; scene.ball.x = -80; scene.ball.y = -80; }
+    pl.placeAt(47, 25, 0);
+    pl.vx = pl.vy = 0; pl.hasBall = false; pl.action = null; pl.armRaise = 0;
+    pl.skin = '${skin}'; pl.hair = '${hair}';
+    pl.facing = ${facing};
+    pl._updatePose(1 / 60);
+
+    // A tight head shot from the camera side: the broadcast rig is 25 feet
+    // out, where the head is a dozen pixels and the crowd behind it votes.
+    var headZ = -pl.pose.headY * pl.bodyScale;
+    cam._rebuild = function () {
+      this.eye[0] = pl.x; this.eye[1] = headZ; this.eye[2] = pl.y + 5;
+      this.target[0] = pl.x; this.target[1] = headZ; this.target[2] = pl.y;
+      M4.perspective(this.proj, 20 * Math.PI / 180, this.vw / Math.max(1, this.vh), 0.3, 420);
+      M4.lookAt(this.view, this.eye, this.target, [0, 1, 0]);
+      M4.multiply(this.viewProj, this.proj, this.view);
+    };
+    cam._rebuild();
+    scene.render(0);
+
+    var n = Math.round(Math.min(cam.vw, cam.vh) * 0.13);
+    var buf = new Uint8Array(n * n * 4);
+    gl.readPixels(Math.round(cam.vw / 2 - n / 2), Math.round(cam.vh / 2 - n / 2), n, n,
+                  gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    var green = 0, red = 0;
+    for (var p = 0; p < buf.length; p += 4) {
+      /* Classify by RATIO, not brightness. The back of a head is lit from the
+       * front, so its hair comes back at a third the value the face does —
+       * a threshold on absolute brightness reads "unlit" as "not there". */
+      var rr = buf[p], gg = buf[p + 1], bb2 = buf[p + 2];
+      if (gg > 24 && gg > rr * 2 && gg > bb2 * 2) green++;
+      else if (rr > 24 && rr > gg * 2 && rr > bb2 * 2) red++;
+    }
+    var mr=0,mg=0,mb=0;
+    for (var q = 0; q < buf.length; q += 4) { mr+=buf[q]; mg+=buf[q+1]; mb+=buf[q+2]; }
+    var np = buf.length/4;
+    return { green: green, red: red, total: n * n,
+             mean: [Math.round(mr/np), Math.round(mg/np), Math.round(mb/np)],
+             headZ: +headZ.toFixed(2), n: n, vw: cam.vw, vh: cam.vh,
+             pageErr: window.__pageErr || null };
+  `, 'facing');
+
+  // The rig sits outside the +y sideline, so +PI/2 looks straight at it.
+  const toward = (look(Math.PI / 2, '#00FF00', '#FF0000').out) || {};
+  const away = (look(-Math.PI / 2, '#00FF00', '#FF0000').out) || {};
+  const repaint = (look(Math.PI / 2, '#0000FF', '#0000FF').out) || {};
+
+  // The crown is hair from either side, so neither look is pure; what matters
+  // is which one wins, and that it wins clearly.
+  check('a player looking at the camera shows their face',
+        toward.green > toward.red * 1.3,
+        'facing camera: ' + toward.green + ' skin px vs ' + toward.red + ' hair px');
+  check('a player looking away shows the back of their head',
+        away.red > away.green * 1.3,
+        'facing away: ' + away.red + ' hair px vs ' + away.green + ' skin px');
+  // Inside-out geometry shows the far surface, which flips both of those.
+  check('the head is drawn solid, not inside out',
+        toward.green > 40 && away.red > 40,
+        'front ' + toward.green + ' skin px, back ' + away.red + ' hair px');
+  check('skin and hair colours reach the screen',
+        repaint.green < 10 && repaint.red < 10,
+        'after repainting blue: ' + repaint.green + ' green px, ' + repaint.red + ' red px');
+}
+
+console.log('\n[15] a sprinting drive finishes with a layup');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, S = BB.Shooting;
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene;
+    for (var i = 0; i < 60; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+    var pl = scene.player, hoop = scene.hoop;
+    scene.ai.x = -80; scene.ai.y = -80; scene.ai.hasBall = false;
+
+    /** Sets up a drive from N feet out and asks what kind of shot it is. */
+    function attempt(dist, sprint, speedFrac) {
+      pl.placeAt(hoop.x - dist, hoop.y, 0);
+      pl.sprinting = sprint;
+      pl.vx = (sprint ? pl.phys.maxSprint : pl.phys.maxSpeed) * speedFrac;
+      pl.vy = 0; pl.z = 0; pl.jumping = false;
+      pl.action = null; pl.armRaise = 0; pl.hasBall = true;
+      pl._beginShot();
+      return pl.shotType;
+    }
+
+    var kinds = {
+      sprintNine: attempt(9, true, 0.9),
+      sprintSix: attempt(6, true, 0.9),
+      standingNine: attempt(9, false, 0),
+      standingLong: attempt(20, false, 0),
+      sprintTooFar: attempt(16, true, 0.9)
+    };
+
+    // Windows, for the same player, at the same rating scale.
+    var rt = pl.ratings;
+    var win = {
+      layup: S.greenWindowFor(rt.layup, 5, 'layup', 0),
+      layupContested: S.greenWindowFor(rt.layup, 5, 'layup', 1),
+      jumper: S.greenWindowFor(rt.midRange, 15, 'jumper', 0)
+    };
+
+    // Grade a spread of release timings: everything past a flick of the
+    // button should read green, which is what "just hold it" means.
+    var prof = { riseTime: 0.30, target: 0.94, greenWindow: win.layup, name: 'Layup' };
+    var green = ['PERFECT', 'EXCELLENT', 'SLIGHTLY_EARLY', 'SLIGHTLY_LATE'];
+    var timings = [0.25, 0.45, 0.7, 0.94, 1.15, 1.34];
+    var missed = timings.filter(function (v) {
+      return green.indexOf(S.grade(v, prof).tier.key) < 0;
+    });
+
+    /* The rise pose. A layup is asymmetric — one knee driven up, the trailing
+     * leg extended, the ball up on one side — and a jump shot is not, so the
+     * two poses have to measure differently or the layup is still a jumper
+     * wearing a different name. */
+    function poseOf(type) {
+      attempt(9, true, 0.9);
+      // Both of these leave the floor in the real game — a jump shot starts
+      // its jump the instant the meter opens — and the jumper's feet only sit
+      // level while it is airborne. Posed on the ground it picks up the run
+      // cycle underneath instead, and this would be measuring a stride.
+      pl.jumping = true;
+      pl.action = BB.Player.ACTION.METER; pl.shotType = type; pl.driving = true;
+      pl.meter.start({ riseTime: 0.3, target: 0.94, greenWindow: 0.3, name: 'x' },
+                     { x: pl.x, y: pl.y, z: 0 });
+      pl.meter.value = 0.8;
+      pl._updatePose(1 / 60);
+      return {
+        knee: -pl.pose.footL.y,
+        split: Math.abs(pl.pose.footL.y - pl.pose.footR.y),
+        hands: Math.abs(pl.pose.handL.y - pl.pose.handR.y)
+      };
+    }
+    var layupPose = poseOf('layup'), jumperPose = poseOf('jumper');
+
+    /* End to end: drive, shoot, release mid-meter, and watch the ball. */
+    var made = 0, tries = 0;
+    for (var t = 0; t < 6; t++) {
+      var ball = scene.ball;
+      pl.placeAt(hoop.x - 9, hoop.y, 0);
+      pl.sprinting = true; pl.vx = pl.phys.maxSprint * 0.9; pl.vy = 0;
+      pl.z = 0; pl.jumping = false; pl.action = null; pl.armRaise = 0;
+      pl.giveBall(ball);
+      pl._beginShot();
+      var scored = false;
+      var off = ball.events.on('score', function () { scored = true; });
+      var fired = false;
+      for (var f = 0; f < 420; f++) {
+        scene.fixedUpdate(1 / 120);
+        if (!fired && pl.action === BB.Player.ACTION.METER && pl.meter.value > 0.35 + t * 0.12) {
+          pl._releaseShot(); fired = true;
+        }
+        if (scored) break;
+      }
+      if (typeof off === 'function') off();
+      ball.events.off && ball.events.off('score');
+      tries++; if (scored) made++;
+    }
+
+    return {
+      kinds: kinds,
+      win: { layup: +win.layup.toFixed(3), contested: +win.layupContested.toFixed(3),
+             jumper: +win.jumper.toFixed(3) },
+      missedTimings: missed,
+      layupPose: layupPose, jumperPose: jumperPose,
+      made: made, tries: tries,
+      pageErr: window.__pageErr || null
+    };
+  `, 'layup');
+  if (r.err) check('layup probe ran', false, r.err);
+  const o = r.out || {}, k = o.kinds || {}, w = o.win || {};
+  check('sprinting at the rim gives a layup, not a jumper',
+        k.sprintNine === 'layup' && k.sprintSix === 'layup',
+        'from 9ft: ' + k.sprintNine + ', from 6ft: ' + k.sprintSix);
+  check('standing in the same spot still gives a jump shot',
+        k.standingNine === 'jumper' && k.standingLong === 'jumper',
+        'from 9ft: ' + k.standingNine + ', from 20ft: ' + k.standingLong);
+  check('a drive from out of takeoff range is still a jumper',
+        k.sprintTooFar === 'jumper', 'from 16ft: ' + k.sprintTooFar);
+  check('the layup window is enormous next to a jumper', w.layup > w.jumper * 4,
+        'layup ' + w.layup + ' vs jumper ' + w.jumper);
+  check('a contest still tightens it', w.contested < w.layup * 0.7 && w.contested > w.jumper,
+        'contested ' + w.contested);
+  check('any real release on a layup reads green',
+        (o.missedTimings || []).length === 0,
+        'these timings did not: ' + JSON.stringify(o.missedTimings));
+  const lp = o.layupPose || {}, jp = o.jumperPose || {};
+  // An absolute margin, not a ratio: a jump shot holds its feet level, so the
+  // number it is being compared against is around zero and a ratio against it
+  // means nothing.
+  check('the layup rise drives a knee up', lp.knee > 0.3 && lp.knee > jp.knee + 0.25,
+        'layup knee ' + (lp.knee || 0).toFixed(2) + ' vs jumper ' + (jp.knee || 0).toFixed(2));
+  check('the layup rise is asymmetric, a jump shot is not',
+        lp.split > 0.4 && lp.hands > jp.hands,
+        'legs ' + (lp.split || 0).toFixed(2) + ' apart, hands ' + (lp.hands || 0).toFixed(2));
+  check('driving layups go in', o.made === o.tries,
+        o.made + ' of ' + o.tries + ' released across the meter');
+  check('layup probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[16] the forward camera looks down the floor');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U;
+    BB.Settings.set('cameraMode', 'forward');
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene, cam = BB.Camera, hoop = scene.hoop;
+    for (var i = 0; i < 240; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+    var pl = scene.player;
+    pl.placeAt(hoop.x - 20, hoop.y, 0);
+    for (var j = 0; j < 120; j++) { scene.fixedUpdate(1 / 120); if (j % 2 === 0) scene.update(1 / 60, 1 / 60); }
+    scene.render(0);
+
+    // GL space: [0] is court x, [2] is court y.
+    var eyeToHoop = Math.hypot(hoop.x - cam.eye[0], hoop.y - cam.eye[2]);
+    var focusToHoop = Math.hypot(hoop.x - cam.x, hoop.y - cam.y);
+    var rim = cam.project(hoop.x, hoop.y, 10, null);
+    var player = cam.project(pl.x, pl.y, 3, null);
+
+    // Walk out to each wing and measure whether the arena turned underneath
+    // the play. Project a 20ft line running along the court's length: if the
+    // rig is square to the floor that line runs straight up the screen, and
+    // if the rig has yawed to chase the basket it comes out slanted.
+    var sign = hoop.x >= pl.x ? 1 : -1;
+    function wing(offY) {
+      pl.placeAt(hoop.x - 24, hoop.y + offY, 0);
+      cam.setAim(hoop.x, hoop.y);
+      for (var n = 0; n < 240; n++) cam.update(1 / 60, { x: pl.x, y: pl.y }, null);
+      var a = cam.project(pl.x, pl.y, 0, null);
+      var b = cam.project(pl.x + 20 * sign, pl.y, 0, null);
+      return {
+        tilt: Math.abs(b.x - a.x) / Math.max(1, Math.abs(b.y - a.y)),
+        heading: Math.atan2(cam._dy, cam._dx),
+        follow: cam.eye[2] - pl.y
+      };
+    }
+    var wingL = wing(-20), wingR = wing(20);
+    pl.placeAt(hoop.x - 20, hoop.y, 0);
+    for (var m = 0; m < 120; m++) cam.update(1 / 60, { x: pl.x, y: pl.y }, null);
+
+    // Aim at the OTHER basket: the rig has to swing around behind the play.
+    var other = BB.C.HOOPS[0].x === hoop.x ? BB.C.HOOPS[1] : BB.C.HOOPS[0];
+    cam.setAim(other.x, other.y);
+    for (var k = 0; k < 180; k++) cam.update(1 / 60, { x: pl.x, y: pl.y }, null);
+    var flippedEyeToOther = Math.hypot(other.x - cam.eye[0], other.y - cam.eye[2]);
+    var flippedFocusToOther = Math.hypot(other.x - cam.x, other.y - cam.y);
+
+    return {
+      mode: cam.mode,
+      behind: eyeToHoop - focusToHoop,
+      rimX: rim.x / cam.vw, rimY: rim.y / cam.vh, rimBehind: rim.behind,
+      playerX: player.x / cam.vw,
+      wingL: wingL, wingR: wingR,
+      flippedBehind: flippedEyeToOther - flippedFocusToOther,
+      pageErr: window.__pageErr || null
+    };
+  `, 'forward');
+  if (r.err) check('forward camera probe ran', false, r.err);
+  const o = r.out || {};
+  check('forward mode is what the scene selected', o.mode === 'forward', 'mode=' + o.mode);
+  // The whole point: the rig stands off on the far side of the player FROM the
+  // basket, so the basket is downrange rather than off a shoulder.
+  check('the rig sits behind the play', o.behind > 12,
+        'camera is ' + (o.behind || 0).toFixed(1) + 'ft further from the rim than the player');
+  check('the rim is dead ahead, not off to one side',
+        !o.rimBehind && Math.abs(o.rimX - 0.5) < 0.14,
+        'rim at ' + ((o.rimX || 0) * 100).toFixed(0) + '% across the frame');
+  check('the rim sits in the upper half of the frame', o.rimY < 0.5,
+        'rim at ' + ((o.rimY || 0) * 100).toFixed(0) + '% down the frame');
+  check('the player is centred too', Math.abs(o.playerX - 0.5) < 0.14,
+        'player at ' + ((o.playerX || 0) * 100).toFixed(0) + '% across');
+  /* Drifting off centre must not rotate the world. The heading is pinned to
+   * the court's length axis, so both wings look down the same line and the
+   * court's length still runs straight up the screen. */
+  const wl = o.wingL || {}, wr = o.wingR || {};
+  check('the floor does not turn under you on the wing',
+        wl.tilt < 0.06 && wr.tilt < 0.06,
+        'length axis slants ' + ((wl.tilt || 0) * 100).toFixed(0) + '% / ' +
+        ((wr.tilt || 0) * 100).toFixed(0) + '% off vertical');
+  check('both wings share one heading',
+        Math.abs((wl.heading || 0) - (wr.heading || 0)) < 0.02,
+        'headings ' + ((wl.heading || 0) * 57.3).toFixed(1) + ' vs ' +
+        ((wr.heading || 0) * 57.3).toFixed(1) + ' degrees');
+  // Locked heading, but the rig still slides across to keep the play in shot.
+  check('the rig still dollies across to follow',
+        Math.abs(wl.follow) < 1 && Math.abs(wr.follow) < 1,
+        'rig sits ' + (wl.follow || 0).toFixed(1) + 'ft / ' +
+        (wr.follow || 0).toFixed(1) + 'ft off the player');
+  // Possession changes have to turn the camera around, not leave it backwards.
+  check('it swings around on a change of possession', o.flippedBehind > 12,
+        'after flipping aim: ' + (o.flippedBehind || 0).toFixed(1) + 'ft behind');
+  check('forward camera raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[17] WASD moves the way the screen looks');
+{
+  const r = runInPage(`
+    var BB = window.BB;
+    function press(dx, dy) {
+      return { moveVector: function (out) { out.x = dx; out.y = dy; out.mag = 1; return out; },
+               down: function () { return false; }, pressed: function () { return false; },
+               released: function () { return false; } };
+    }
+    function run(mode) {
+      BB.Settings.set('cameraMode', mode);
+      BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+      var scene = BB.Engine.scene, pl = scene.player, cam = BB.Camera, hoop = scene.hoop;
+      for (var i = 0; i < 240; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+      pl.placeAt(hoop.x - 25, hoop.y, 0);
+      for (var j = 0; j < 60; j++) { scene.fixedUpdate(1 / 120); if (j % 2 === 0) scene.update(1 / 60, 1 / 60); }
+
+      var keys = { w: [0, -1], s: [0, 1], a: [-1, 0], d: [1, 0] }, out = {};
+      Object.keys(keys).forEach(function (k) {
+        pl.readInput(press(keys[k][0], keys[k][1]));
+        var here = cam.project(pl.x, pl.y, 3, null);
+        var step = cam.project(pl.x + pl.intentX * 5, pl.y + pl.intentY * 5, 3, null);
+        out[k] = { sx: step.x - here.x, sy: step.y - here.y,
+                   toHoop: Math.hypot(hoop.x - (pl.x + pl.intentX * 5), hoop.y - (pl.y + pl.intentY * 5))
+                         - Math.hypot(hoop.x - pl.x, hoop.y - pl.y) };
+      });
+      return out;
+    }
+    return { forward: run('forward'), broadcast: run('broadcast'), pageErr: window.__pageErr || null };
+  `, 'wasd');
+  if (r.err) check('wasd probe ran', false, r.err);
+  const o = r.out || {};
+  /* Every rig has to agree with the screen: W up, S down, A left, D right.
+   * The court's axes are not the screen's, and the forward rig runs the
+   * court's length INTO the screen — bound to world axes, W walked sideways. */
+  ['forward', 'broadcast'].forEach((mode) => {
+    const m = o[mode] || {}, w = m.w || {}, s2 = m.s || {}, a = m.a || {}, d = m.d || {};
+    check(mode + ': W goes up the screen, S goes down', w.sy < -4 && s2.sy > 4,
+          'W ' + (w.sy || 0).toFixed(0) + 'px, S ' + (s2.sy || 0).toFixed(0) + 'px');
+    check(mode + ': A goes left, D goes right', a.sx < -10 && d.sx > 10,
+          'A ' + (a.sx || 0).toFixed(0) + 'px, D ' + (d.sx || 0).toFixed(0) + 'px');
+  });
+  // Under the forward rig, up the screen is also toward the basket.
+  const fw = (o.forward || {}).w || {};
+  check('forward: W drives toward the basket', fw.toHoop < -3,
+        'W closes ' + (-(fw.toHoop || 0)).toFixed(1) + 'ft');
+  check('wasd probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[18] shooting works while moving');
+{
+  const r = runInPage(`
+    var BB = window.BB;
+    function trial(withSprint) {
+      BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+      var scene = BB.Engine.scene, pl = scene.player, hoop = scene.hoop;
+      for (var i = 0; i < 400; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+      scene.ai.x = -80; scene.ai.y = -80;
+      pl.placeAt(hoop.x - 14, hoop.y, 0);
+      pl.giveBall(scene.ball);
+      var att0 = pl.stats.att;
+
+      // Stand in for the keyboard: run forward the whole time, tap shoot.
+      var held = {}, pressedNow = {}, releasedNow = {}, real = BB.Input;
+      BB.Input = Object.create(real);
+      BB.Input.down = function (a) { return !!held[a]; };
+      BB.Input.pressed = function (a) { return !!pressedNow[a]; };
+      BB.Input.released = function (a) { return !!releasedNow[a]; };
+      BB.Input.moveVector = function (out) {
+        out = out || { x: 0, y: 0, mag: 0 };
+        out.x = 0; out.y = held.up ? -1 : 0; out.mag = held.up ? 1 : 0; return out;
+      };
+      held.up = true; held.sprint = !!withSprint;
+
+      var sawMeter = false;
+      for (var f = 0; f < 400; f++) {
+        pressedNow = {}; releasedNow = {};
+        if (f === 120) { pressedNow.shoot = true; held.shoot = true; }
+        if (f === 160) { held.shoot = false; releasedNow.shoot = true; }
+        scene.fixedUpdate(1 / 120);
+        if (f % 2 === 0) scene.update(1 / 60, 1 / 60);
+        if (pl.action === BB.Player.ACTION.METER) sawMeter = true;
+      }
+      BB.Input = real;
+      return { attempts: pl.stats.att - att0, sawMeter: sawMeter };
+    }
+    return { running: trial(false), sprinting: trial(true), pageErr: window.__pageErr || null };
+  `, 'moveshoot');
+  if (r.err) check('move-and-shoot probe ran', false, r.err);
+  const o = r.out || {}, run = o.running || {}, spr = o.sprinting || {};
+  /* Movement intent used to overwrite the shot action every tick, so a shot
+   * begun while running was cancelled before the meter ticked once. */
+  check('a shot taken while running actually fires',
+        run.attempts === 1 && run.sawMeter, 'attempts=' + run.attempts);
+  check('holding sprint does not cancel the shot',
+        spr.attempts === 1 && spr.sawMeter, 'attempts=' + spr.attempts);
+  check('move-and-shoot probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[19] the camera is pinned to the player, and glides');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U;
+    BB.Settings.set('cameraMode', 'forward');
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene, cam = BB.Camera, pl = scene.player;
+    var hoop = scene.hoop, ball = scene.ball, dt = 1 / 60;
+    scene.ai.x = -90; scene.ai.y = -90; scene.ai.hasBall = false;
+
+    /* ---- A. a real shot, watched from where it was taken ----------------
+     * The rig used to switch its focus to the ball the moment it left the
+     * hand, which flies the frame down to the rim and leaves the player — the
+     * thing the user is steering — somewhere off behind the shot. */
+    pl.placeAt(hoop.x - 26, hoop.y, 0);
+    pl.vx = pl.vy = 0;
+    cam.reset(pl.x, pl.y, 1);
+    for (var i = 0; i < 180; i++) scene.update(dt, dt);
+    pl.giveBall(ball);
+    pl._beginShot();
+    var fired = false, flightFrames = 0, offPlayer = 0, ballRan = 0;
+    for (var f = 0; f < 500; f++) {
+      scene.fixedUpdate(1 / 120);
+      if (f % 2 === 0) scene.update(dt, dt);
+      if (!fired && pl.action === BB.Player.ACTION.METER && pl.meter.value > 0.9) {
+        pl._releaseShot(); fired = true;
+      }
+      if (fired && ball.inFlight) {
+        flightFrames++;
+        offPlayer = Math.max(offPlayer, Math.hypot(cam.x - pl.x, cam.y - pl.y));
+        ballRan = Math.max(ballRan, Math.hypot(ball.x - pl.x, ball.y - pl.y));
+      } else if (fired) break;
+    }
+    var shot = { off: offPlayer, ballRan: ballRan, frames: flightFrames };
+
+    /* ---- B. the other guy has the ball ---------------------------------- */
+    ball.owner = null; pl.hasBall = false;
+    pl.placeAt(hoop.x - 26, hoop.y, 0); pl.vx = pl.vy = 0;
+    cam.reset(pl.x, pl.y, 1);
+    for (var b = 0; b < 60; b++) scene.update(dt, dt);
+    scene.ai.placeAt(hoop.x - 6, hoop.y + 20, 0);
+    scene.ai.giveBall(ball);
+    for (var b2 = 0; b2 < 90; b2++) scene.update(dt, dt);
+    var theirs = { off: Math.hypot(cam.x - pl.x, cam.y - pl.y),
+                   away: Math.hypot(scene.ai.x - pl.x, scene.ai.y - pl.y) };
+    ball.owner = null; scene.ai.hasBall = false;
+    scene.ai.x = -90; scene.ai.y = -90;
+
+    /* ---- C. how the rig moves over a sprint, a hold and a hard stop -----
+     * Driven straight at the camera on the player's own acceleration curve,
+     * so the numbers describe the rig and nothing else. */
+    var top = pl.phys.maxSprint, accel = pl.phys.accel, decel = pl.phys.decel;
+    pl.placeAt(hoop.x - 60, hoop.y, 0); pl.vx = pl.vy = 0;
+    cam.reset(pl.x, pl.y, 1);
+    for (var s = 0; s < 240; s++) cam.update(dt, { x: pl.x, y: pl.y }, { x: 0, y: 0 });
+
+    var es = [], px = [], v = 0;
+    for (var k = 0; k < 300; k++) {
+      var want = (k * dt < 2.2) ? top : 0;
+      v = U.moveToward(v, want, (want > v ? accel : decel) * dt);
+      pl.x += v * dt;
+      cam.update(dt, { x: pl.x, y: pl.y }, { x: v, y: 0 });
+      es.push(cam.eye[0]); px.push(pl.x);
+    }
+    var vs = [], as = [];
+    for (var q = 1; q < es.length; q++) vs.push((es[q] - es[q - 1]) / dt);
+    for (var w = 1; w < vs.length; w++) as.push((vs[w] - vs[w - 1]) / dt);
+    var maxSpd = 0, back = 0, maxAcc = 0, maxJerk = 0, maxLag = 0;
+    for (var a = 0; a < vs.length; a++) { maxSpd = Math.max(maxSpd, vs[a]); back = Math.min(back, vs[a]); }
+    for (var c = 0; c < as.length; c++) maxAcc = Math.max(maxAcc, Math.abs(as[c]));
+    for (var d = 1; d < as.length; d++) maxJerk = Math.max(maxJerk, Math.abs(as[d] - as[d - 1]) / dt);
+    // Lag is measured against the standoff the rig started at, so it is how
+    // far the player slid through the frame, not where the rig sits.
+    var base = px[0] - es[0];
+    for (var e = 0; e < es.length; e++) maxLag = Math.max(maxLag, Math.abs((px[e] - es[e]) - base));
+    var settled = Math.abs((px[px.length - 1] - es[es.length - 1]) - base);
+
+    /* ---- D. a teleport is an edit, not a move --------------------------- */
+    pl.placeAt(20, 25, 0); pl.vx = pl.vy = 0;
+    cam.reset(pl.x, pl.y, 1);
+    for (var g = 0; g < 120; g++) cam.update(dt, { x: pl.x, y: pl.y }, { x: 0, y: 0 });
+    pl.placeAt(70, 25, 0);
+    cam.update(dt, { x: pl.x, y: pl.y }, { x: 0, y: 0 });
+    var cutErr = Math.hypot(cam._x - pl.x, cam._y - pl.y);
+
+    // And an ordinary stride is still smoothed, not cut — from its own settled
+    // start, so this stands up whatever the line above did.
+    pl.placeAt(20, 25, 0);
+    cam.reset(pl.x, pl.y, 1);
+    for (var g2 = 0; g2 < 120; g2++) cam.update(dt, { x: pl.x, y: pl.y }, { x: 0, y: 0 });
+    pl.placeAt(20.4, 25, 0);
+    cam.update(dt, { x: pl.x, y: pl.y }, { x: 0, y: 0 });
+    var strideErr = Math.hypot(cam._x - pl.x, cam._y - pl.y);
+
+    return {
+      shot: shot, theirs: theirs,
+      top: top, accel: accel, decel: decel,
+      maxSpd: maxSpd, back: back, maxAcc: maxAcc, maxJerk: maxJerk,
+      maxLag: maxLag, settled: settled,
+      cutErr: cutErr, strideErr: strideErr,
+      pageErr: window.__pageErr || null
+    };
+  `, 'follow');
+  if (r.err) check('follow probe ran', false, r.err);
+  const o = r.out || {};
+  const sh = o.shot || {}, th = o.theirs || {};
+
+  check('the rig stays on the player while the shot is in the air',
+        sh.frames > 20 && sh.ballRan > 12 && sh.off < 1.5,
+        'ball ran ' + (sh.ballRan || 0).toFixed(1) + 'ft, rig wandered ' +
+        (sh.off || 0).toFixed(1) + 'ft off the player over ' + sh.frames + ' frames');
+  check('the other guy having the ball does not steal the camera',
+        th.away > 15 && th.off < 1.5,
+        'they are ' + (th.away || 0).toFixed(1) + 'ft away, rig sits ' +
+        (th.off || 0).toFixed(1) + 'ft off the player');
+
+  // A rig that has to outrun its subject to keep up is a rig that is chasing
+  // something else — or throwing itself at a lead it will have to give back.
+  check('the rig never outruns the player it is following',
+        o.maxSpd < o.top * 1.15,
+        'rig peaked at ' + (o.maxSpd || 0).toFixed(1) + 'ft/s, player at ' +
+        (o.top || 0).toFixed(1) + 'ft/s');
+  check('the rig pulls no harder than the player does',
+        o.maxAcc < o.accel * 1.5,
+        'rig ' + (o.maxAcc || 0).toFixed(0) + 'ft/s^2 against a player at ' +
+        (o.accel || 0).toFixed(0));
+  // Jerk is where "not smooth" actually lives: a step in the rig's
+  // acceleration is a frame that visibly snaps.
+  check('the follow has no kinks in it', o.maxJerk < 600,
+        'peak jerk ' + (o.maxJerk || 0).toFixed(0) + 'ft/s^3');
+  check('the frame does not slide backwards when the player pulls up',
+        o.back > -2.5,
+        'rig ran backwards at ' + (-(o.back || 0)).toFixed(1) + 'ft/s');
+  check('the player never slides out of the shot', o.maxLag < 5,
+        'player drifted ' + (o.maxLag || 0).toFixed(1) + 'ft through the frame');
+  check('the rig settles exactly on the player', o.settled < 0.15,
+        'left ' + (o.settled || 0).toFixed(2) + 'ft of error');
+
+  // An inbound, a new quarter, a switch to another defender: the focus moves
+  // further than anyone could run, and smoothing it flies the rig across the
+  // arena with the play already underway at the other end.
+  check('a teleport cuts instead of flying across the floor', o.cutErr < 0.6,
+        'rig was ' + (o.cutErr || 0).toFixed(1) + 'ft out one frame after a 50ft jump');
+  check('an ordinary stride is still smoothed, not cut',
+        o.strideErr > 0.1 && o.strideErr < 0.45,
+        'rig was ' + (o.strideErr || 0).toFixed(2) + 'ft behind after a 0.4ft step');
+  check('follow probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[20] the court is outdoors, in a park, in daylight');
+{
+  const r = runInPage(`
+    var BB = window.BB;
+    BB.Settings.set('cameraMode', 'forward');
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene, gl = BB.GLX.gl, cam = BB.Camera;
+    for (var i = 0; i < 300; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+    scene.render(0);
+
+    var W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
+    var buf = new Uint8Array(W * H * 4);
+    gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+
+    /* readPixels puts row 0 at the BOTTOM of the image. Sample the top band
+     * of the frame — the part that used to be arena roof and black void, and
+     * out here has to be open sky. */
+    var lum = 0, dark = 0, court = 0, n = 0;
+    var skyR = 0, skyG = 0, skyB = 0, skyN = 0;
+    for (var y = 0; y < H; y++) {
+      for (var x = 0; x < W; x++) {
+        var o = (y * W + x) * 4;
+        var l = (buf[o] + buf[o + 1] + buf[o + 2]) / 3;
+        lum += l;
+        if (l < 30) dark++;
+        if (buf[o + 1] - buf[o] > 80 && buf[o + 1] > 90) court++;
+        if (y > H * 0.86) { skyR += buf[o]; skyG += buf[o + 1]; skyB += buf[o + 2]; skyN++; }
+        n++;
+      }
+    }
+
+    /* Where the crowd actually is. Instance layout is 16 matrix floats then
+     * colour then params; matrix column 3 is the translation, and in GL space
+     * its second component is height. A seated bowl puts fans twenty feet up
+     * the back of a stand; a park puts them on the ground at the fence. */
+    /* Guarded, so that a build with no Park in it still reports what it put on
+     * the screen instead of throwing and taking the pixel checks with it. */
+    var P = BB.Park || { _crowd: [], _crowdCount: 0, _structure: [], _structureCount: 0,
+                         _foliageCount: 0 };
+    var hi = -1e9, lo = 1e9;
+    for (var c = 0; c < P._crowdCount; c++) {
+      var t = P._crowd[c * 24 + 13];
+      if (t > hi) hi = t;
+      if (t < lo) lo = t;
+    }
+
+    /* And how far out the fence stands from the court on each side. The blocks
+     * are laid out as 16 matrix floats first: [0] is the footprint along court
+     * x, [5] the height, [10] the footprint along court y, and [12]/[14] the
+     * position. A fence post is the only thing in the park with a footprint
+     * under half a foot square and more than ten feet of height. */
+    var bounds = { x0: 1e9, x1: -1e9, y0: 1e9, y1: -1e9, posts: 0 };
+    for (var s = 0; s < P._structureCount; s++) {
+      var b = s * 24;
+      if (P._structure[b] > 0.5 || P._structure[b + 10] > 0.5) continue;
+      var sz = P._structure[b + 5];
+      if (sz < 10 || sz > 25) continue;
+      var px = P._structure[b + 12], py = P._structure[b + 14];
+      bounds.x0 = Math.min(bounds.x0, px); bounds.x1 = Math.max(bounds.x1, px);
+      bounds.y0 = Math.min(bounds.y0, py); bounds.y1 = Math.max(bounds.y1, py);
+      bounds.posts++;
+    }
+
+    return {
+      meanLum: lum / n, darkFrac: dark / n, courtFrac: court / n,
+      sky: [Math.round(skyR / skyN), Math.round(skyG / skyN), Math.round(skyB / skyN)],
+      crowdHi: hi, crowdLo: lo,
+      crowd: P._crowdCount, foliage: P._foliageCount, structure: P._structureCount,
+      fence: bounds,
+      hasArena: typeof BB.Arena !== 'undefined',
+      hasSky: !!BB.S3.progSky,
+      glError: gl.getError(),
+      pageErr: window.__pageErr || null
+    };
+  `, 'park');
+  if (r.err) check('park probe ran', false, r.err);
+  const o = r.out || {};
+  const sky = o.sky || [0, 0, 0];
+
+  check('the arena is gone', o.hasArena === false);
+  // The single loudest signal that there is no building: you can see the sky.
+  check('open sky over the top of the frame',
+        sky[2] > 150 && sky[2] > sky[0] + 25 && sky[2] >= sky[1],
+        'top band reads rgb(' + sky.join(',') + ')');
+  check('the sky is drawn as its own pass', o.hasSky === true);
+  // "Court at Night" put a bright island of floor inside a black room. In the
+  // park nothing falls away: the whole frame is lit.
+  check('the frame is bright edge to edge', o.meanLum > 95,
+        'mean luminance ' + (o.meanLum || 0).toFixed(0) + ' of 255');
+  check('almost nothing in frame falls to black', o.darkFrac < 0.16,
+        ((o.darkFrac || 0) * 100).toFixed(1) + '% of the frame is near-black');
+  check('the court is painted acrylic, not blacktop', o.courtFrac > 0.2,
+        'painted surface covers ' + ((o.courtFrac || 0) * 100).toFixed(1) + '% of frame');
+
+  /* The crowd stands on the ground behind a fence. In the bowl they were
+   * stacked up fifteen rows of risers, the top row twenty-odd feet in the
+   * air — which is the one thing a park can never have. */
+  check('the crowd stands on the ground, not up a stand',
+        o.crowd > 60 && o.crowdHi < 8 && o.crowdLo > -3,
+        o.crowd + ' instances between ' + (o.crowdLo || 0).toFixed(1) +
+        'ft and ' + (o.crowdHi || 0).toFixed(1) + 'ft up');
+  const f = o.fence || {};
+  check('a fence rings the court, well clear of the floor',
+        f.posts > 30 &&
+        f.x0 < -30 && f.x1 > C_LEN + 30 && f.y0 < -20 && f.y1 > C_WID + 40,
+        f.posts + ' posts spanning x ' + Math.round(f.x0) + '..' + Math.round(f.x1) +
+        ', y ' + Math.round(f.y0) + '..' + Math.round(f.y1));
+  check('there are trees', o.foliage >= 30, 'foliage instances=' + o.foliage);
+  check('gl clean in the park', o.glError === 0, 'code=' + o.glError);
+  check('park raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[21] the ball is the right size and comes back to the hand');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, C = BB.C;
+    BB.Engine.setState('shootaround'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene, pl = scene.player, ball = scene.ball, hoop = scene.hoop;
+    for (var i = 0; i < 120; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+
+    /* ---- what the renderer actually submits -------------------------- */
+    pl.placeAt(hoop.x - 14, hoop.y, 0); pl.vx = pl.vy = 0;
+    pl.giveBall(ball);
+    scene.update(1 / 60, 1 / 60);
+    scene.render(0);
+    /* Find the ball in the submitted instance data by its position rather than
+     * by asking any particular mesh for it — the point of this section is to
+     * measure what the renderer was told to draw, whichever primitive it chose
+     * to draw it with. Instance layout is 16 matrix floats first: [0] is the
+     * scale across, and the translation is at [12..14] in GL order (court x,
+     * height, court y). */
+    var S3 = BB.S3;
+    var drawnR = -1, ballMesh = null, ballVerts = 0;
+    var sphereVerts = S3.meshes.sphere.indexCount;
+    var names = ['ball', 'sphere'];
+    for (var mi = 0; mi < names.length; mi++) {
+      var mesh = S3.meshes[names[mi]];
+      if (!mesh) continue;
+      for (var k = 0; k < mesh.n; k++) {
+        var b = k * 24;
+        if (Math.abs(mesh.data[b + 12] - ball.x) < 0.01 &&
+            Math.abs(mesh.data[b + 13] - ball.z) < 0.01 &&
+            Math.abs(mesh.data[b + 14] - ball.y) < 0.01) {
+          drawnR = mesh.data[b] / 2;
+          ballMesh = names[mi];
+          ballVerts = mesh.indexCount;
+        }
+      }
+    }
+
+    // Against the figure carrying it, both measured at the same spot so the
+    // perspective cancels and this is purely a statement about proportion.
+    var crown = (-pl.pose.headY + BB.Player.BONE.headR) * pl.bodyScale;
+    var vsPlayer = (drawnR * 2) / crown;
+
+    /* ---- take a shot, make it, and watch what comes back ------------- */
+    var scored = false;
+    ball.events.on('score', function () { scored = true; });
+    var stateAtScore = null;
+    var wasScored = false;
+    pl._beginShot();
+    var fired = false, armDuringFlight = [];
+    for (var f = 0; f < 1400; f++) {
+      scene.fixedUpdate(1 / 120);
+      if (f % 2 === 0) scene.update(1 / 60, 1 / 60);
+      if (!fired && pl.action === BB.Player.ACTION.METER && pl.meter.value > 0.9) {
+        pl._releaseShot(); fired = true;
+      }
+      if (scored && !wasScored) { stateAtScore = ball.state; wasScored = true; }
+      if (fired) armDuringFlight.push(pl.armRaise);
+      if (wasScored && pl.hasBall) break;
+    }
+
+    var armAfter = pl.armRaise;
+    var headZ = -pl.pose.headY * pl.bodyScale;
+
+    /* One full dribble cycle, once the ball is back. */
+    var lo = 1e9, hi = -1e9, hand = { x: 0, y: 0, z: 0 };
+    for (var q = 0; q < 140; q++) {
+      scene.fixedUpdate(1 / 120);
+      if (q % 2 === 0) scene.update(1 / 60, 1 / 60);
+      if (ball.owner === pl) { lo = Math.min(lo, ball.z); hi = Math.max(hi, ball.z); }
+    }
+    pl.handAt(hand);
+
+    /* And the bottom of a bounce measured straight off the carry, with the
+     * arms forced down. Asked this way it is a statement about the drawn ball
+     * alone, and cannot be answered by a ball that is not being dribbled. */
+    var bottom = 1e9;
+    pl.armRaise = 0;
+    for (var s = 0; s <= 40; s++) {
+      pl.dribblePhase = s / 40;
+      pl._updatePose(1 / 60);
+      bottom = Math.min(bottom, pl.handPosition(null).z);
+    }
+
+    return {
+      drawnR: drawnR, trueR: C.BALL_RADIUS, rimR: C.RIM_RADIUS,
+      ballMesh: ballMesh, ballVerts: ballVerts, sphereVerts: sphereVerts,
+      vsPlayer: vsPlayer, crown: crown,
+      scored: scored, stateAtScore: stateAtScore,
+      armAfter: armAfter, held: ball.owner === pl,
+      ballZ: ball.z, headZ: headZ, drawnHandZ: hand.z,
+      dribbleLo: lo, dribbleHi: hi, bottom: bottom,
+      pageErr: window.__pageErr || null
+    };
+  `, 'ball');
+  if (r.err) check('ball probe ran', false, r.err);
+  const o = r.out || {};
+
+  /* --- size ---------------------------------------------------------- */
+  check('the ball is drawn at its true physical size',
+        Math.abs(o.drawnR - o.trueR) < 0.005,
+        'drawn radius ' + (o.drawnR || 0).toFixed(3) + 'ft against a real ' +
+        (o.trueR || 0).toFixed(3) + 'ft');
+  // A size 7 ball is about 9.4in across and the ring is 18in: over four inches
+  // of clearance all the way round. Inflate the ball and it starts to look
+  // like it could not physically go in.
+  check('it clears the ring the way a real ball does',
+        o.rimR - o.drawnR > 0.30 && o.rimR - o.drawnR < 0.42,
+        ((o.rimR - o.drawnR) * 12).toFixed(1) + 'in of clearance each side');
+  // And against the man holding it. A real ball is about an eighth of a
+  // player's height; the figure here is deliberately compressed, so a sixth is
+  // right and a quarter is a beach ball.
+  check('the ball is a ball next to the player, not a beach ball',
+        o.vsPlayer > 0.10 && o.vsPlayer < 0.20,
+        'ball is ' + ((o.vsPlayer || 0) * 100).toFixed(0) + '% of a ' +
+        (o.crown || 0).toFixed(1) + 'ft figure');
+  // Held at the bottom of the bounce the ball touches the floor; drawn any
+  // bigger it goes straight through it.
+  check('the ball never sinks through the floor at the bounce',
+        o.bottom - o.drawnR > -0.02,
+        'lowest point ' + ((o.bottom - o.drawnR) * 12).toFixed(1) + 'in above the floor');
+  check('the ball has a mesh of its own, and a finer one',
+        o.ballMesh === 'ball' && o.ballVerts > o.sphereVerts * 2,
+        'drawn from "' + o.ballMesh + '" at ' + o.ballVerts +
+        ' indices, against the shared sphere at ' + o.sphereVerts);
+
+  /* --- coming back after a make -------------------------------------- */
+  check('the shot went in', o.scored === true);
+  // The one that used to strand the ball over the shooter's head forever.
+  check('the arm comes all the way down after a shot', o.armAfter === 0,
+        'armRaise settled at ' + (o.armAfter || 0).toFixed(4));
+  check('the ball is back in the hand, not floating over the head',
+        o.held === true && o.ballZ < o.headZ,
+        'ball at ' + (o.ballZ || 0).toFixed(2) + 'ft, head at ' + (o.headZ || 0).toFixed(2) + 'ft');
+  check('and it is being dribbled, not carried',
+        o.dribbleHi - o.dribbleLo > 1.2 && o.dribbleLo < 0.9,
+        'travels ' + (o.dribbleHi - o.dribbleLo).toFixed(2) + 'ft, down to ' +
+        (o.dribbleLo || 0).toFixed(2) + 'ft');
+  // Through the net it is a live ball; it used to stay "in flight" for the
+  // whole time it spent bouncing afterwards, which no rebound could touch.
+  check('a made basket leaves a live ball, not a shot in flight',
+        o.stateAtScore === 'loose', 'ball state on the score was ' + o.stateAtScore);
+  check('ball probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[22] a highlight gets a slow-motion replay');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, C = BB.C;
+    if (!BB.Replay) return { missing: true };
+
+    BB.Settings.set('cameraMode', 'forward');
+    BB.Settings.set('instantReplay', true);
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene, pl = scene.player, hoop = scene.hoop, R = BB.Replay;
+    // A pure shooter, so a perfect release reliably swishes and this section is
+    // about the replay rather than about the shot solver's error term.
+    pl.ratings.threePoint = 99; pl.ratings.midRange = 99;
+
+    var DT = 1 / 60;
+    /* The engine's own frame, by hand: the replay hooks into it, so a probe
+     * that called fixedUpdate directly would never exercise the freeze.
+     *
+     * The defender is held off the floor only while the shot is being set up.
+     * Left held there it would keep being shoved back between the snapshot of
+     * the live world and the frame the replay parks it on, and the hand-back
+     * check would be measuring the probe rather than the replay. */
+    var parkAI = true;
+    function frame() {
+      if (parkAI) { scene.ai.x = -95; scene.ai.y = -95; scene.ai.hasBall = false; }
+      BB.Input.beginFrame();
+      var frozen = R.beginFrame(DT, scene);
+      if (!frozen) {
+        scene.fixedUpdate(1 / 120); scene.fixedUpdate(1 / 120);
+        scene.update(DT, DT);
+      }
+      BB.Input.endFrame();
+      return frozen;
+    }
+
+    for (var i = 0; i < 120; i++) frame();
+
+    /**
+     * Drops one through clean from behind the arc.
+     *
+     * Built rather than shot. Taking a real jumper and hoping for a swish
+     * leaves this section at the mercy of the shot solver's error term, which
+     * is seeded fresh every page — it will land one most runs and no runs at
+     * all on some, and a check that fails a fifth of the time is worse than no
+     * check. The ball is put on the exact line a swish takes instead, so the
+     * scene's own scoring path, its rating of the play and the replay it arms
+     * are all still the real ones.
+     */
+    var scored = false, seen = null;
+    scene.ball.events.on('score', function (e) { scored = true; seen = { three: e.three, clean: e.clean }; });
+    function cleanThree() {
+      scored = false; seen = null;
+      R.reset();
+      scene.phase = 'live'; scene.score.you = 0; scene.score.cpu = 0;
+      pl.placeAt(hoop.x - 27, hoop.y - 1, 0);
+      pl.vx = pl.vy = 0; pl.z = 0; pl.jumping = false; pl.action = null;
+      pl.giveBall(scene.ball);
+      // Enough live frames behind the moment for the replay to have something
+      // to cut back to.
+      for (var w = 0; w < 240; w++) frame();
+
+      var ball = scene.ball;
+      pl.hasBall = false;
+      ball.release(BB.Ball.STATE.SHOT);
+      ball.shooter = pl;
+      ball.shotWasThree = true;
+      ball.touchedRim = false;
+      ball.place(hoop.x, hoop.y, C.RIM_HEIGHT + 0.35);
+      ball.vx = 0; ball.vy = 0; ball.vz = -9;
+      for (var f = 0; f < 60 && !scored; f++) frame();
+      return !!(seen && seen.three && seen.clean);
+    }
+
+    var got = cleanThree();
+    var armed = R.phase;
+
+    /* Everything about the live world at the moment of the cut. This is what
+     * has to come back untouched. */
+    function snap() {
+      return [pl.x, pl.y, pl.z, pl.facing, pl.pose.hipY, pl.pose.handR.x,
+              scene.ai.x, scene.ai.y, scene.ai.pose.hipY,
+              scene.ball.x, scene.ball.y, scene.ball.z];
+    }
+    parkAI = false;
+    var live = snap();
+    var scoreAtCut = scene.score.you;
+    var camMode = BB.Camera.mode;
+
+    frame();                                     // armed -> playing
+    var playing = R.playing, cine = BB.Camera.cine;
+    var atStart = snap();
+    var eye0 = [BB.Camera.eye[0], BB.Camera.eye[1], BB.Camera.eye[2]];
+
+    var frames = 1, steps = [], zeros = 0, eyeTravel = 0, moved = 0;
+    var prevZ = scene.ball.z, prevEye = eye0.slice();
+    var restored = null, scoreAfter = scene.score.you;
+    /* The engine's frame, opened up: the state has to be read the instant the
+     * replay hands back and BEFORE the simulation gets a tick, or what is
+     * measured is one frame of live play rather than the hand-back. */
+    while (frames < 3000) {
+      BB.Input.beginFrame();
+      var frozen = R.beginFrame(DT, scene);
+      if (!frozen) { restored = snap(); scoreAfter = scene.score.you; BB.Input.endFrame(); break; }
+      var d = Math.abs(scene.ball.z - prevZ);
+      // Only while the ball is actually travelling: the tail is a deliberate
+      // freeze-frame and would read as a stall.
+      if (R._playT < R.PRE_ROLL * 0.9) { steps.push(d); if (d < 1e-5) zeros++; }
+      prevZ = scene.ball.z;
+      eyeTravel += Math.hypot(BB.Camera.eye[0] - prevEye[0], BB.Camera.eye[2] - prevEye[2]);
+      prevEye = [BB.Camera.eye[0], BB.Camera.eye[1], BB.Camera.eye[2]];
+      moved = Math.max(moved, Math.abs(pl.x - live[0]));
+      BB.Input.endFrame();
+      frames++;
+    }
+    var realSeconds = frames * DT;
+    if (!restored) restored = snap();
+    for (var k = 0; k < 30; k++) frame();        // and back to live play
+
+    var worstDrift = 0;
+    for (var s = 0; s < live.length; s++) worstDrift = Math.max(worstDrift, Math.abs(live[s] - restored[s]));
+
+    var maxStep = 0, sum = 0;
+    for (var q = 0; q < steps.length; q++) { maxStep = Math.max(maxStep, steps[q]); sum += steps[q]; }
+    var meanStep = steps.length ? sum / steps.length : 0;
+    var zeroFrac = steps.length ? zeros / steps.length : 1;
+
+    /* Rating, without needing a shot to land: a three that rattles in is a
+     * good shot and not a picture worth stopping the game for. */
+    var rateClean = R.rateShot({ three: true, clean: true }, pl);
+    var rateRattle = R.rateShot({ three: true, clean: false }, { stats: { streak: 0 } });
+    var rateTwo = R.rateShot({ three: false, clean: true }, { stats: { streak: 0 } });
+
+    /* And with the setting off, nothing fires at all. */
+    R.reset();
+    BB.Settings.set('instantReplay', false);
+    for (var z = 0; z < 200; z++) frame();
+    var offTook = R.highlight({ weight: 1, label: 'X', x: pl.x, y: pl.y, hoopX: hoop.x, hoopY: hoop.y });
+    BB.Settings.set('instantReplay', true);
+
+    return {
+      got: got, seen: seen, armed: armed, playing: playing, cine: cine,
+      label: R.label, frames: frames, realSeconds: realSeconds,
+      span: R.PRE_ROLL + R.HOLD_TAIL, playRate: R.PLAY_RATE,
+      rewindBall: Math.hypot(atStart[9] - live[9], atStart[11] - live[11]),
+      rewindPlayer: Math.hypot(atStart[0] - live[0], atStart[1] - live[1]),
+      playersMoved: moved,
+      eyeTravel: eyeTravel,
+      worstDrift: worstDrift,
+      scoreAtCut: scoreAtCut, scoreAfter: scoreAfter,
+      maxStep: maxStep, meanStep: meanStep, stepCount: steps.length, zeroFrac: zeroFrac,
+      cineAfter: BB.Camera.cine, phaseAfter: R.phase, playingAfter: R.playing,
+      camMode: camMode, camModeAfter: BB.Camera.mode,
+      rateClean: rateClean, rateRattle: rateRattle, rateTwo: rateTwo,
+      threshold: R.THRESHOLD,
+      offTook: offTook,
+      bufferFloats: R._buf.length,
+      bufferExpected: R.RATE * R.SECONDS * (R.BALL_STRIDE + R.MAX_PLAYERS * R.PLAYER_STRIDE),
+      pageErr: window.__pageErr || null
+    };
+  `, 'replay');
+  if (r.err) check('replay probe ran', false, r.err);
+  const o = r.out || {};
+  if (o.missing) check('the replay system exists', false, 'BB.Replay is not defined');
+
+  check('a clean three from deep triggers a replay',
+        o.got === true && o.playing === true && o.label === 'SWISH FROM DEEP',
+        'phase after the make was "' + o.armed + '", label "' + o.label + '"');
+  // Not every bucket. A three that rattles in is a good shot and an ugly
+  // picture, and stopping the game for one would wear out fast.
+  check('a rattled three and a plain two do not',
+        (o.rateRattle || {}).weight < o.threshold && !o.rateTwo,
+        'rattled three rates ' + JSON.stringify(o.rateRattle) +
+        ' against a threshold of ' + o.threshold);
+
+  check('it rewinds to before the shot',
+        o.rewindBall > 6 && o.rewindPlayer > 6,
+        'ball jumped back ' + (o.rewindBall || 0).toFixed(1) + 'ft and the shooter ' +
+        (o.rewindPlayer || 0).toFixed(1) + 'ft');
+  // The whole point: it is SLOW. The footage is played over noticeably more
+  // real time than it was recorded in.
+  check('it plays in slow motion',
+        o.realSeconds > o.span * 1.4 &&
+        Math.abs(o.realSeconds - o.span / o.playRate) < 0.6,
+        (o.span || 0).toFixed(2) + 's of play took ' + (o.realSeconds || 0).toFixed(2) + 's to watch');
+  check('the players are replayed too, not only the ball',
+        o.playersMoved > 6,
+        'the shooter was drawn up to ' + (o.playersMoved || 0).toFixed(1) +
+        'ft from where the live game had him');
+  /* Sampled BETWEEN recorded frames rather than snapped to the nearest one.
+   * Played at 0.55x, a sampler that snapped would hold each captured frame for
+   * getting on for two real ones, so about half the frames on screen would be
+   * identical to the one before — which is what a replay looks like when it
+   * reads as a flip-book rather than as slow motion. */
+  check('it is smooth, not a slideshow',
+        o.stepCount > 40 && o.zeroFrac < 0.12,
+        ((o.zeroFrac || 0) * 100).toFixed(0) + '% of ' + o.stepCount +
+        ' frames were identical to the one before');
+  check('the camera flies a path of its own',
+        o.cine === true && o.eyeTravel > 15,
+        'rig travelled ' + (o.eyeTravel || 0).toFixed(1) + 'ft, cinematic=' + o.cine);
+
+  /* The replay scrubs recorded state over the live entities, so the one thing
+   * it must never do is leave any of it behind. */
+  check('the game does not move while a replay runs',
+        o.scoreAtCut === o.scoreAfter,
+        'score went ' + o.scoreAtCut + ' -> ' + o.scoreAfter);
+  check('it hands the live world back exactly as it found it',
+        o.worstDrift < 1e-4,
+        'worst field drifted by ' + (o.worstDrift || 0).toExponential(2));
+  check('and hands the camera back',
+        o.cineAfter === false && o.camModeAfter === o.camMode && o.playingAfter === false,
+        'cinematic=' + o.cineAfter + ', mode ' + o.camMode + ' -> ' + o.camModeAfter);
+
+  check('turning it off in settings turns it off', o.offTook === false);
+  // Preallocated once: a recorder that grows is a recorder that stutters.
+  check('the recording buffer is fixed size',
+        o.bufferFloats > 0 && o.bufferFloats === o.bufferExpected,
+        'buffer is ' + o.bufferFloats + ' floats, expected ' + o.bufferExpected);
+  check('replay probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[23] a ball out of bounds comes straight back');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, C = BB.C;
+
+    /* --- when a ball counts as out ------------------------------------- */
+    var probe = new BB.Ball([]);
+    // High over the sideline and still climbing: over the line is not out.
+    probe.place(C.HALF_L, C.COURT_W + 6, 9);
+    probe.launch(0, 4, 6, BB.Ball.STATE.LOOSE);
+    for (var a = 0; a < 6; a++) probe.update(1 / 120);
+    var flyingOver = probe.outOfPlay;
+    // Now let it come down out there.
+    for (var b = 0; b < 400 && !probe.outOfPlay; b++) probe.update(1 / 120);
+    var landedOut = probe.outOfPlay;
+    var speedWhenCalled = probe.speed;
+    // And a ball rolling around inside the lines is never out.
+    var inside = new BB.Ball([]);
+    inside.place(C.HALF_L, C.HALF_W, 3);
+    inside.launch(6, 0, 0, BB.Ball.STATE.LOOSE);
+    for (var c = 0; c < 600; c++) inside.update(1 / 120);
+    var falsePositive = inside.outOfPlay;
+
+    /* --- the shootaround ------------------------------------------------ */
+    BB.Engine.setState('shootaround'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene, pl = scene.player, ball = scene.ball;
+    for (var i = 0; i < 120; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+
+    pl.placeAt(C.HALF_L, C.HALF_W, 0); pl.vx = pl.vy = 0;
+    pl.giveBall(ball); pl.hasBall = false;
+    ball.place(C.HALF_L, C.COURT_W - 3, 5);
+    ball.launch(2, 26, 5, BB.Ball.STATE.LOOSE);
+
+    /* The landing is caught from inside the physics: by the time the scene's
+     * fixedUpdate has returned, a fast hand-back has already put the ball in a
+     * hand and there is nothing left outside the lines to measure. */
+    var landedAt = -1, heldAt = -1, landSpeed = -1, t = 0;
+    ball.events.on('bounce', function () {
+      if (landedAt < 0 && ball.isOutOfBounds()) { landedAt = t; landSpeed = ball.speed; }
+    });
+    for (var k = 0; k < 4000; k++) {
+      t++;
+      scene.fixedUpdate(1 / 120);
+      if (landedAt >= 0 && heldAt < 0 && ball.owner === pl) { heldAt = t; break; }
+      if (k % 2 === 0) scene.update(1 / 60, 1 / 60);
+    }
+    var hand = pl.handPosition(null);
+    var shoot = {
+      ticks: heldAt >= 0 ? heldAt - landedAt : -1,
+      landSpeed: landSpeed,
+      inHand: ball.owner === pl && pl.hasBall,
+      offHand: U.dist3(ball.x, ball.y, ball.z, hand.x, hand.y, hand.z)
+    };
+
+    /* --- 1v1 ------------------------------------------------------------- */
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var g = BB.Engine.scene, p2 = g.player, b2 = g.ball;
+    for (var j = 0; j < 240; j++) { g.fixedUpdate(1 / 120); if (j % 2 === 0) g.update(1 / 60, 1 / 60); }
+    g.phase = 'live'; g.score.you = 0; g.score.cpu = 0;
+    p2.hasBall = false; b2.owner = null;
+    b2.place(g.hoop.x - 10, C.COURT_W - 3, 5);
+    b2.lastToucher = p2;
+    b2.launch(4, 24, 5, BB.Ball.STATE.LOOSE);
+
+    var land2 = -1, called2 = -1, t2 = 0;
+    b2.events.on('bounce', function () {
+      if (land2 < 0 && b2.isOutOfBounds()) land2 = t2;
+    });
+    for (var m = 0; m < 4000; m++) {
+      t2++;
+      g.fixedUpdate(1 / 120);
+      if (land2 >= 0 && called2 < 0 && g.phase === 'check') { called2 = t2; break; }
+      if (m % 2 === 0) g.update(1 / 60, 1 / 60);
+    }
+
+    /* Carrying it over the line is still a turnover, and still instant. */
+    for (var n = 0; n < 200; n++) { g.fixedUpdate(1 / 120); if (n % 2 === 0) g.update(1 / 60, 1 / 60); }
+    g.phase = 'live';
+    p2.giveBall(b2);
+    p2.placeAt(g.hoop.x - 10, C.COURT_W + 2, 0);
+    p2._updatePose(1 / 120);
+    var carriedTicks = -1;
+    for (var q = 0; q < 400; q++) {
+      g.fixedUpdate(1 / 120);
+      g.update(1 / 60, 1 / 60);
+      if (g.phase === 'check') { carriedTicks = q; break; }
+    }
+
+    return {
+      flyingOver: flyingOver, landedOut: landedOut, falsePositive: falsePositive,
+      speedWhenCalled: speedWhenCalled,
+      shoot: shoot,
+      oneVone: { ticks: called2 >= 0 ? called2 - land2 : -1 },
+      carriedTicks: carriedTicks,
+      pageErr: window.__pageErr || null
+    };
+  `, 'oob');
+  if (r.err) check('out-of-bounds probe ran', false, r.err);
+  const o = r.out || {}, sa = o.shoot || {}, ov = o.oneVone || {};
+
+  check('a ball is out the moment it lands outside the lines', o.landedOut === true);
+  // Real rule, and it matters: a rebound that arcs over the baseline and comes
+  // back down in bounds is still live.
+  check('but not while it is merely flying over one', o.flyingOver === false);
+  check('and a ball rolling around inside them never is', o.falsePositive === false);
+  // The old rule waited for the ball to decay to under 0.2 ft/s first.
+  check('the call does not wait for it to stop rolling',
+        o.landedOut === true && o.speedWhenCalled > 5,
+        'called while still travelling at ' + (o.speedWhenCalled || 0).toFixed(1) + 'ft/s');
+
+  check('the shootaround puts it straight back in the hand',
+        sa.ticks === 0 && sa.inHand === true,
+        'took ' + (sa.ticks / 120).toFixed(2) + 's, in hand=' + sa.inHand);
+  check('and it is IN the hand, not dropped on the floor nearby',
+        sa.offHand < 0.01,
+        'ball sits ' + (sa.offHand || 0).toFixed(2) + 'ft from the hand');
+
+  check('1v1 whistles it the moment it lands',
+        ov.ticks >= 0 && ov.ticks <= 2,
+        'took ' + (ov.ticks / 120).toFixed(2) + 's from the touch-down');
+  check('carrying it over the line is still a turnover',
+        o.carriedTicks >= 0 && o.carriedTicks <= 2,
+        'took ' + o.carriedTicks + ' ticks');
+  check('out-of-bounds probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[24] settings can wipe your progress, and asks first');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U;
+    BB.Engine.setState('menu'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene;
+    for (var i = 0; i < 40; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+
+    /* Build up a career and a player worth losing. */
+    BB.Career.reset(); BB.PlayerProfile.clear();
+    var c = BB.Career.load();
+    c.level = 7; c.points = 12; c.xp = 400;
+    c.gamesPlayed = 9; c.wins = 6; c.losses = 3; c.totalPoints = 84;
+    c.fgMade = 30; c.fgAtt = 60; c.bestStreak = 5;
+    BB.Career.save(c);
+    var draft = BB.PlayerProfile.newDraft();
+    draft.name = 'RAINMAKER'; draft.number = 7; draft.position = 'PG'; draft.height = 74;
+    draft.jerseyMain = BB.PlayerProfile.JERSEY_COLORS[4];
+    BB.PlayerProfile.save(draft);
+    // Guarded so a build without any of this still reports what it HAS got
+    // rather than dying on the first line and taking every check with it.
+    if (scene.refreshHero) scene.refreshHero();
+
+    // Preferences, which are not progress and must survive.
+    BB.Settings.set('cameraMode', 'tight');
+    U.store.set('bindings', { probe: 'kept' });
+
+    var heroBefore = { h: scene.hero.heightIn, j: scene.hero.jerseyMain };
+    var before = BB.Career.record();
+
+    /* Walk the real interface, click by click. */
+    BB.Menus.replace('main');
+    document.querySelector('[data-tab="settings"]').click();
+    document.querySelector('.menu-hero [data-go]').click();
+    var settingsEl = document.querySelector('.screen--settings');
+    var wipe = settingsEl && settingsEl.querySelector('[data-act="wipe"]');
+    var label = wipe ? wipe.textContent.trim() : null;
+    if (!wipe) return { label: label, missing: true, pageErr: window.__pageErr || null };
+
+    wipe.click();
+    var confirmEl = document.querySelector('.screen--resetProgress');
+    if (!confirmEl) return { label: label, noConfirm: true, pageErr: window.__pageErr || null };
+    var text = confirmEl ? confirmEl.textContent.replace(/\\s+/g, ' ').trim() : '';
+    var erasedOnOpening = BB.PlayerProfile.load() == null;
+
+    // Back out. Nothing may have moved.
+    confirmEl.querySelector('[data-act="back"]').click();
+    var afterCancel = BB.Career.record();
+    var draftAfterCancel = BB.PlayerProfile.load();
+
+    // And now go through with it.
+    document.querySelector('.screen--settings [data-act="wipe"]').click();
+    document.querySelector('.screen--resetProgress [data-act="erase"]').click();
+
+    var doneEl = document.querySelector('.screen--resetProgress');
+    var doneText = doneEl ? doneEl.textContent.replace(/\\s+/g, ' ').trim() : '';
+    doneEl.querySelector('[data-act="done"]').click();
+
+    var after = BB.Career.record();
+    for (var j = 0; j < 20; j++) { scene.fixedUpdate(1 / 120); if (j % 2 === 0) scene.update(1 / 60, 1 / 60); }
+
+    return {
+      label: label,
+      says: {
+        name: text.indexOf('RAINMAKER') >= 0,
+        level: text.indexOf('7') >= 0,
+        record: text.indexOf('6 won, 3 lost') >= 0,
+        undo: text.toLowerCase().indexOf('cannot be undone') >= 0
+      },
+      erasedOnOpening: erasedOnOpening,
+      cancelLevel: afterCancel.level,
+      cancelName: draftAfterCancel && draftAfterCancel.name,
+      before: before, after: after,
+      draftAfter: BB.PlayerProfile.load(),
+      doneShown: doneText.indexOf('Progress erased') >= 0,
+      backOnSettings: !!document.querySelector('.screen--settings'),
+      frontPageAlive: !!document.querySelector('.screen--main'),
+      cameraKept: BB.Settings.get('cameraMode'),
+      bindingsKept: U.store.get('bindings', null),
+      heroBefore: heroBefore,
+      heroAfter: { h: scene.hero.heightIn, j: scene.hero.jerseyMain },
+      fresh: BB.PlayerProfile.newDraft(),
+      pageErr: window.__pageErr || null
+    };
+  `, 'reset');
+  if (r.err) check('reset probe ran', false, r.err);
+  const o = r.out || {}, says = o.says || {}, before = o.before || {}, after = o.after || {};
+
+  check('settings carries a reset-all-progress button',
+        o.label === 'Reset all progress', 'button reads "' + o.label + '"');
+  // One click cannot erase a career.
+  check('it asks before it erases anything',
+        o.erasedOnOpening === false && says.undo === true,
+        'confirmation warns it cannot be undone: ' + says.undo);
+  check('the confirmation says what is about to be lost',
+        says.name && says.level && says.record,
+        'names the player: ' + says.name + ', the level: ' + says.level +
+        ', the record: ' + says.record);
+  check('backing out changes nothing',
+        o.cancelLevel === 7 && o.cancelName === 'RAINMAKER',
+        'after cancelling: level ' + o.cancelLevel + ', player ' + o.cancelName);
+
+  check('erasing clears the career',
+        after.level === 1 && after.points === 0 && after.gamesPlayed === 0 &&
+        after.wins === 0 && after.bestStreak === 0,
+        'level ' + before.level + '->' + after.level + ', ' +
+        before.gamesPlayed + ' games -> ' + after.gamesPlayed);
+  check('and the created player', o.draftAfter == null);
+  // Preferences are not progress, and there is a separate button for those.
+  check('but leaves settings and key bindings alone',
+        o.cameraKept === 'tight' && o.bindingsKept && o.bindingsKept.probe === 'kept',
+        'camera stayed "' + o.cameraKept + '", bindings ' + JSON.stringify(o.bindingsKept));
+
+  const hb = o.heroBefore || {}, ha = o.heroAfter || {}, fresh = o.fresh || {};
+  check('the front page stops showing a player who no longer exists',
+        hb.h !== ha.h && ha.h === fresh.height,
+        'standby figure went from ' + hb.h + '" to ' + ha.h + '"');
+  check('it says so, and leaves a menu to come back to',
+        o.doneShown === true && o.backOnSettings === true && o.frontPageAlive === true,
+        'acknowledged=' + o.doneShown + ', settings=' + o.backOnSettings +
+        ', front page=' + o.frontPageAlive);
+  check('reset probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[25] the jump shot is a jump shot');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, C = BB.C;
+    var BONE = BB.Player.BONE, A = BB.Player.ACTION;
+    var pl = new BB.Player({ height: 79 });
+    pl.placeAt(20, 25, 0);
+    pl.facing = pl.moveFacing = 0;
+    pl.vx = pl.vy = 0;
+    pl.hasBall = true;
+
+    var REACH = BONE.upperArm + BONE.forearm;
+    var BALL = C.BALL_RADIUS * 2;
+
+    /* Where a wrist and its elbow end up in the world.
+     *
+     * The lateral part comes from BB.Player.wristWidth — the function draw()
+     * itself places the joint with — rather than being re-derived here. The
+     * previous version of this probe rebuilt the formula from armTuck and the
+     * splay and quietly left out the per-hand offset, so it was measuring a
+     * body the renderer never drew: it reported the hands a comfortable
+     * distance apart while the build had them at 0.19 of a ball's width, inside
+     * each other and inside the ball. A check that re-derives what it is
+     * checking is checking its own arithmetic. */
+    function jointOf(p, side, lx, ly, width) {
+      var w = side * BONE.shoulderW;
+      var roll = side * (p.armRoll || 0);
+      var rollUp = -p.shoulderY;
+      var dUp = -ly - rollUp;
+      var up = rollUp + dUp * Math.cos(roll);
+      var lat = width - dUp * Math.sin(roll);
+      var fwd = (lx - w) + up * (p.torsoLean * 0.45);
+      var s = pl.bodyScale;
+      return { fwd: fwd * s, lat: lat * s, up: up * s };
+    }
+    function wristOf(p, side) {
+      var el = side < 0 ? p.elbowL : p.elbowR;
+      return jointOf(p, side, el.ex, el.ey, BB.Player.wristWidth(p, side));
+    }
+    function elbowOf(p, side) {
+      var el = side < 0 ? p.elbowL : p.elbowR;
+      return jointOf(p, side, el.jx, el.jy, BB.Player.elbowWidth(p, side));
+    }
+    function shoulderOf(p, side) {
+      var s = pl.bodyScale, up = -p.shoulderY;
+      return { fwd: up * (p.torsoLean * 0.45) * s, lat: side * BONE.shoulderW * s, up: up * s };
+    }
+    function span(a, b) { return Math.hypot(a.fwd - b.fwd, a.lat - b.lat, a.up - b.up); }
+
+    /* How long each arm bone is actually DRAWN, against the bone it is drawn
+     * from. The solver works in a flat plane and draw() moves the joints
+     * sideways afterwards, so any lateral travel the solver never saw is length
+     * the drawn limb has to find from somewhere — and setBone finds it by
+     * stretching the mesh along the bone. */
+    function stretch(p) {
+      var w = 0;
+      for (var i = 0; i < 2; i++) {
+        var side = i ? 1 : -1;
+        var sh = shoulderOf(p, side), eb = elbowOf(p, side), wr = wristOf(p, side);
+        var s = pl.bodyScale;
+        w = Math.max(w, Math.abs(span(sh, eb) / (BONE.upperArm * s) - 1));
+        w = Math.max(w, Math.abs(span(eb, wr) / (BONE.forearm * s) - 1));
+      }
+      return w;
+    }
+
+    function sample() {
+      var p = pl.pose;
+      var a = wristOf(p, 1), b = wristOf(p, -1);
+      return {
+        elbowFwd: p.elbowR.jx - BONE.shoulderW,
+        elbowUp: -(p.elbowR.jy - p.shoulderY),
+        wristFwd: p.elbowR.ex - BONE.shoulderW,
+        wristUp: -(p.elbowR.ey - p.shoulderY),
+        clamp: Math.max(Math.hypot(p.elbowR.ex - p.handR.x, p.elbowR.ey - p.handR.y),
+                        Math.hypot(p.elbowL.ex - p.handL.x, p.elbowL.ey - p.handL.y)),
+        gap: span(a, b),
+        stretch: stretch(p),
+        wristZ: -p.elbowR.ey * pl.bodyScale,
+        crown: (-p.headY + BONE.headR) * pl.bodyScale
+      };
+    }
+
+    var gather = [], meter = [], release = [];
+    pl.action = A.GATHER;
+    for (var g = 0; g <= 6; g++) { pl.actionT = g / 6 * 0.10; pl._updatePose(1 / 60); gather.push(sample()); }
+
+    pl.action = A.METER; pl.shotType = 'jumper';
+    pl.meter.start({ riseTime: 0.4, target: 0.94, greenWindow: 0.2, name: 'x' }, { x: pl.x, y: pl.y, z: 0 });
+    for (var m = 0; m <= 20; m++) { pl.meter.value = m / 20; pl._updatePose(1 / 60); meter.push(sample()); }
+
+    pl.action = A.RELEASE;
+    for (var k = 0; k <= 12; k++) { pl.actionT = k / 12 * 0.30; pl._updatePose(1 / 60); release.push(sample()); }
+
+    var shot = meter.concat(release);
+    function worst(list, f) { return list.reduce(function (w, s) { return Math.max(w, f(s)); }, -1e9); }
+    function best(list, f) { return list.reduce(function (w, s) { return Math.min(w, f(s)); }, 1e9); }
+
+    var set = meter[11];                       // meter value 0.55
+    var top = meter[meter.length - 1];
+
+    /* Is there a set point at all, or does the ball just travel in a straight
+     * line from the waist to the release? Compare the biggest step the wrist
+     * takes in a twentieth of the motion against the smallest. */
+    var steps = [];
+    for (var i = 5; i < 19; i++) steps.push(meter[i + 1].wristUp - meter[i].wristUp);
+    var stepHi = Math.max.apply(null, steps), stepLo = Math.min.apply(null, steps);
+
+    return {
+      ball: BALL, reach: REACH,
+      gapThroughSet: worst(meter.slice(5, 14), function (s) { return s.gap; }),
+      gapFloor: best(gather.concat(meter.slice(0, 15)), function (s) { return s.gap; }),
+      // How far the separation moves ACROSS an action boundary — the one frame
+      // no per-action check can see, because the two sides of it are sampled in
+      // different loops against differently-tuned poses.
+      seamStep: Math.max(Math.abs(meter[0].gap - gather[gather.length - 1].gap),
+                         Math.abs(release[0].gap - meter[meter.length - 1].gap)),
+      worstStretch: worst(gather.concat(shot), function (s) { return s.stretch; }),
+      setElbowBelowWrist: set.wristUp - set.elbowUp,
+      setForearmTilt: Math.atan2(Math.abs(set.wristFwd - set.elbowFwd),
+                                 Math.max(1e-6, set.wristUp - set.elbowUp)) * 57.3,
+      elbowNeverBack: best(meter.slice(6).concat(release), function (s) { return s.elbowFwd; }),
+      worstClamp: worst(gather.concat(shot), function (s) { return s.clamp; }),
+      aboveCrown: top.wristZ - top.crown,
+      followDrop: top.wristZ - best(release, function (s) { return s.wristZ; }),
+      followFwd: worst(release, function (s) { return s.wristFwd; }) - top.wristFwd,
+      stepRatio: stepLo > 1e-6 ? stepHi / stepLo : (stepHi > 1e-6 ? 999 : 1),
+      pageErr: window.__pageErr || null
+    };
+  `, 'form');
+  if (r.err) check('form probe ran', false, r.err);
+  const o = r.out || {};
+
+  /* Two hands on one ball. This is the whole complaint: a guide hand left a
+   * foot and a half below the shooting hand for the length of the rise reads
+   * as a shoulder out of its socket, not as a jump shot. */
+  check('both hands stay on the ball through the set',
+        o.gapThroughSet < o.ball * 0.9,
+        'hands were ' + (o.gapThroughSet / o.ball).toFixed(2) + ' ball-widths apart at worst');
+  /* And the other end of it, which is the half this check was missing.
+   *
+   * It asserted a ceiling only, so hands at ZERO separation passed — and that
+   * is close to what shipped: the set closed them to 0.19 of a ball's width,
+   * two hands and two forearms interpenetrating each other and the ball they
+   * were meant to be holding, right in front of the face. A ball has a width
+   * and two hands on it cannot be closer together than a fraction of it. */
+  check('and are never closer together than the ball is wide',
+        o.gapFloor > o.ball * 0.45,
+        'hands closed to ' + ((o.gapFloor || 0) / o.ball).toFixed(2) + ' ball-widths');
+  /* The separation is allowed to change — the shooting hand slides under the
+   * ball at the set, the guide hand comes off at the release — but it has to
+   * travel there. A gather, a rise and a follow-through are three separately
+   * tuned poses played back to back, and nothing checked that they agreed at
+   * the joins: the rise finished with the hands 1.19 ball-widths apart and the
+   * follow-through opened at 1.65 on its very first frame, which is both hands
+   * snapping outward in a single tick. */
+  check('and hand off between the gather, the rise and the follow-through',
+        o.seamStep < o.ball * 0.20,
+        'separation stepped ' + ((o.seamStep || 0) / o.ball).toFixed(2) +
+        ' ball-widths across an action boundary');
+  /* The drawn arm against the modelled arm. The solver never sees the lateral
+   * axis, so a pose that carries a hand across the body pays for it in mesh:
+   * the guide forearm was drawn 12% over length through every set, and the free
+   * arm on a dunk 14%. */
+  check('and neither arm is drawn longer than the arm actually is',
+        o.worstStretch < 0.06,
+        'worst drawn bone was ' + (((o.worstStretch || 0)) * 100).toFixed(1) + '% off its own length');
+  /* The one thing every coach says: elbow under the ball. In this rig that is
+   * a forearm standing near vertical with the elbow well below the wrist. */
+  check('the shooting elbow is under the ball at the set point',
+        o.setForearmTilt < 35 && o.setElbowBelowWrist > 0.15,
+        'forearm ' + (o.setForearmTilt || 0).toFixed(0) + ' degrees off vertical, elbow ' +
+        (o.setElbowBelowWrist || 0).toFixed(3) + ' below the wrist');
+  check('the elbow never travels behind the shoulder',
+        o.elbowNeverBack > 0,
+        'elbow got to ' + (o.elbowNeverBack || 0).toFixed(3) + ' (negative is behind the body)');
+  // A target past the arm's reach comes back clamped, which draws a locked
+  // poker-straight arm with no elbow in it at all.
+  check('nothing the arms are asked to do is out of reach',
+        o.worstClamp < 0.002,
+        'worst shortfall ' + (o.worstClamp || 0).toFixed(4));
+
+  /* A jump shot has two beats — gather to the set point, then extension. One
+   * even sweep from the waist to full stretch is a wave. */
+  check('there is a set point, not one long sweep',
+        o.stepRatio > 4,
+        'fastest part of the rise is ' + (o.stepRatio || 0).toFixed(1) +
+        'x the slowest; an even sweep is 1x');
+
+  check('the ball is released above the head',
+        o.aboveCrown > 0.3,
+        'wrist finishes ' + (o.aboveCrown || 0).toFixed(2) + 'ft above the crown');
+  // The arm stays where the ball left it. What comes down on a real follow
+  // through is the wrist, not the whole arm.
+  check('the follow-through holds high instead of collapsing',
+        o.followDrop < 0.12,
+        'hand dropped ' + ((o.followDrop || 0) * 12).toFixed(1) + 'in after the release');
+  check('and reaches out over the shot',
+        o.followFwd > 0.04,
+        'wrist pushed ' + (o.followFwd || 0).toFixed(3) + ' forward through the finish');
+  check('form probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[26] a jump shot squares up to the basket');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, C = BB.C;
+    BB.Settings.set('cameraMode', 'forward');
+    BB.Engine.setState('shootaround'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene, pl = scene.player, hoop = scene.hoop;
+    for (var i = 0; i < 200; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+
+    /**
+     * Takes a shot starting some angle away from the basket while HOLDING a
+     * direction the whole time, which is the case that matters: the stick is
+     * what used to drag the shoulders round.
+     */
+    function trial(off, hx, hy, kind) {
+      pl.placeAt(hoop.x - (kind === 'layup' ? 9 : 20), hoop.y, 0);
+      pl.vx = pl.vy = 0; pl.z = 0; pl.jumping = false;
+      pl.action = null; pl.armRaise = 0; pl.sprinting = (kind === 'layup');
+      pl.giveBall(scene.ball);
+      var toHoop = Math.atan2(hoop.y - pl.y, hoop.x - pl.x);
+      pl.facing = pl.moveFacing = toHoop + off;
+      if (kind === 'layup') { pl.vx = pl.phys.maxSprint * 0.9; pl.vy = 0; }
+
+      var stick = {
+        moveVector: function (o) { o = o || {}; o.x = hx; o.y = hy; o.mag = Math.hypot(hx, hy); return o; },
+        down: function (a) { return a === 'sprint' && kind === 'layup'; },
+        pressed: function () { return false; },
+        released: function () { return false; }
+      };
+
+      pl._beginShot();
+      var type = pl.shotType;
+      var x0 = pl.x, y0 = pl.y, ix = 0, iy = 0;
+      var atMeter = null, atRelease = null, worst = 0;
+      for (var f = 0; f < 400; f++) {
+        pl.readInput(stick);
+        if (f === 0) { ix = pl.intentX; iy = pl.intentY; }
+        pl.update(1 / 120, scene.ball);
+        var err = Math.abs(U.angleDelta(Math.atan2(hoop.y - pl.y, hoop.x - pl.x), pl.facing));
+        // The meter opening is the earliest instant a shot can be let go.
+        if (atMeter == null && pl.action === BB.Player.ACTION.METER) atMeter = err;
+        if (atMeter != null) worst = Math.max(worst, err);
+        if (pl.action === BB.Player.ACTION.METER && pl.meter.profile &&
+            pl.meter.value >= pl.meter.profile.target) {
+          atRelease = err; pl._releaseShot(); break;
+        }
+      }
+      var dx = pl.x - x0, dy = pl.y - y0, dl = Math.hypot(dx, dy), il = Math.hypot(ix, iy);
+      return {
+        type: type,
+        atMeter: atMeter == null ? 999 : atMeter * 57.3,
+        atRelease: atRelease == null ? 999 : atRelease * 57.3,
+        worst: worst * 57.3,
+        moved: dl,
+        // 1 means the body went exactly where the stick pointed.
+        steered: (dl > 0.05 && il > 0.1) ? (dx * ix + dy * iy) / (dl * il) : null
+      };
+    }
+
+    return {
+      // Back to the basket, and still holding away from it.
+      backTurned: trial(Math.PI, 0, 1, 'jumper'),
+      // Side on, holding sideways.
+      sideOn: trial(Math.PI / 2, 1, 0, 'jumper'),
+      // Square to start with, but the stick is pulling away.
+      dragged: trial(0, 0, 1, 'jumper'),
+      // And a drive, which must NOT be squared up.
+      layup: trial(0.7, 1, 0, 'layup'),
+      pageErr: window.__pageErr || null
+    };
+  `, 'square');
+  if (r.err) check('square-up probe ran', false, r.err);
+  const o = r.out || {};
+  const back = o.backTurned || {}, side = o.sideOn || {}, drag = o.dragged || {}, lay = o.layup || {};
+
+  check('a shot taken with your back to the basket turns to face it',
+        back.atRelease < 6,
+        'released ' + (back.atRelease || 0).toFixed(0) + ' degrees off the rim');
+  check('so does one taken side on', side.atRelease < 6,
+        'released ' + (side.atRelease || 0).toFixed(0) + ' degrees off');
+  // The one that actually bit: holding a direction through the whole shot.
+  check('and holding away from the rim cannot drag it back round',
+        drag.atRelease < 6,
+        'released ' + (drag.atRelease || 0).toFixed(0) + ' degrees off while steering away');
+
+  /* The gather is 0.10s and the meter cannot be released before it ends, so
+   * being square by then means there is no way to get a sideways shot off. */
+  check('it is square before the shot can even be let go',
+        back.atMeter < 8 && side.atMeter < 8 && drag.atMeter < 8,
+        'worst at the earliest possible release: ' +
+        Math.max(back.atMeter, side.atMeter, drag.atMeter).toFixed(0) + ' degrees');
+  check('and stays square for the rest of the motion',
+        back.worst < 8 && side.worst < 8 && drag.worst < 8,
+        'worst during the shot: ' +
+        Math.max(back.worst, side.worst, drag.worst).toFixed(0) + ' degrees');
+
+  /* Only the shoulders are taken over. Where the player GOES is still the
+   * stick's business, or a shot would double as a handbrake. */
+  check('the body still travels where the stick points',
+        back.steered > 0.97 && side.steered > 0.97 && drag.steered > 0.97 &&
+        back.moved > 2,
+        'travel matched the stick to ' +
+        Math.min(back.steered, side.steered, drag.steered).toFixed(2) +
+        ' over ' + (back.moved || 0).toFixed(1) + 'ft');
+
+  // A drive finishes at the angle it attacked from; the euro step and the hop
+  // step ARE angles, and squaring them up would delete both.
+  check('a layup still finishes at the angle it drove in at',
+        lay.type === 'layup' && lay.atRelease > 30,
+        'layup released ' + (lay.atRelease || 0).toFixed(0) + ' degrees off the rim');
+  check('square-up probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[27] the run cycle is a run, not a scurry');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, C = BB.C;
+    var BONE = BB.Player.BONE;
+    var pl = new BB.Player({ height: 79 });
+    pl.placeAt(20, 25, 0);
+    pl.facing = pl.moveFacing = 0;
+    var S = pl.bodyScale;                       // pose units -> world feet
+
+    /** Runs the gait at a real speed and reports it in feet and seconds. */
+    function gait(frac, sprint) {
+      pl.sprinting = !!sprint;
+      var top = sprint ? pl.phys.maxSprint : pl.phys.maxSpeed;
+      var speed = top * frac;
+      pl.vx = speed; pl.vy = 0;
+      pl.stridePhase = 0;
+
+      // Cycle length straight off the same call updateMovement makes, so this
+      // cannot drift from what the feet are actually doing.
+      var dt = 1 / 120, before = pl.stridePhase;
+      pl._advanceStride(speed, top, dt);
+      var perCycle = (speed * dt) / ((pl.stridePhase - before) / (Math.PI * 2));
+
+      var hx = [], hz = [], clamp = 0, elbowMin = 1e9, elbowMax = -1e9, N = 60;
+      for (var i = 0; i < N; i++) {
+        pl.stridePhase = i / N * Math.PI * 2;
+        pl._updatePose(dt);
+        var p = pl.pose;
+        hx.push((p.handR.x - BONE.shoulderW) * S);   // in front of the shoulder
+        hz.push(-(p.handR.y - p.shoulderY) * S);     // above the shoulder
+        // Nothing asked of a leg may be out of its reach; a clamped leg draws
+        // as a locked stilt with no knee in it.
+        clamp = Math.max(clamp,
+          Math.hypot(p.kneeL.ex - p.footL.x, p.kneeL.ey - p.footL.y),
+          Math.hypot(p.kneeR.ex - p.footR.x, p.kneeR.ey - p.footR.y),
+          Math.hypot(p.elbowL.ex - p.handL.x, p.elbowL.ey - p.handL.y),
+          Math.hypot(p.elbowR.ex - p.handR.x, p.elbowR.ey - p.handR.y));
+        var d = Math.hypot(p.elbowR.ex - BONE.shoulderW, p.elbowR.ey - p.shoulderY);
+        var c = U.clamp((BONE.upperArm * BONE.upperArm + BONE.forearm * BONE.forearm - d * d) /
+                        (2 * BONE.upperArm * BONE.forearm), -1, 1);
+        var ang = Math.acos(c) * 57.3;
+        elbowMin = Math.min(elbowMin, ang); elbowMax = Math.max(elbowMax, ang);
+      }
+      var iF = hx.indexOf(Math.max.apply(null, hx));
+      var iB = hx.indexOf(Math.min.apply(null, hx));
+      return {
+        speed: speed,
+        stepFt: perCycle / 2,
+        stepsPerSec: (speed / perCycle) * 2,
+        handTravel: Math.max.apply(null, hx) - Math.min.apply(null, hx),
+        handRise: hz[iF] - hz[iB],
+        backMinusLowest: hz[iB] - Math.min.apply(null, hz),
+        clamp: clamp, elbowMin: elbowMin, elbowMax: elbowMax
+      };
+    }
+
+    return { jog: gait(0.45, false), run: gait(1, false), sprint: gait(1, true),
+             pageErr: window.__pageErr || null };
+  `, 'gait');
+  if (r.err) check('gait probe ran', false, r.err);
+  const o = r.out || {};
+  const jog = o.jog || {}, run = o.run || {}, spr = o.sprint || {};
+
+  /* Real numbers: a player jogging takes about three steps a second at a bit
+   * over two feet, and a full-court sprint is nearer three and a half at five.
+   * This used to be five and a half and seven and a half — the legs churning
+   * under a body that was barely covering ground with each one. */
+  check('a jog is a jog, not a scurry',
+        jog.stepsPerSec < 3.8 && jog.stepFt > 1.7,
+        (jog.stepsPerSec || 0).toFixed(2) + ' steps a second at ' +
+        (jog.stepFt || 0).toFixed(2) + 'ft a step, at ' + (jog.speed || 0).toFixed(1) + 'ft/s');
+  check('and a sprint is a sprint',
+        spr.stepsPerSec < 4.6 && spr.stepFt > 4.0,
+        (spr.stepsPerSec || 0).toFixed(2) + ' steps a second at ' +
+        (spr.stepFt || 0).toFixed(2) + 'ft a step, at ' + (spr.speed || 0).toFixed(1) + 'ft/s');
+  // Holding sprint used to buy nothing but cadence, because the gait was read
+  // off the fraction of top speed rather than off the speed.
+  check('sprinting lengthens the stride, not just the cadence',
+        spr.stepFt > run.stepFt * 1.08,
+        'sprint ' + (spr.stepFt || 0).toFixed(2) + 'ft a step against a run at ' +
+        (run.stepFt || 0).toFixed(2) + 'ft');
+
+  /* The arm swing. It used to be a rigid pendulum about the shoulder, so the
+   * hand traced a circle: level at both ends of the swing and dipping half a
+   * foot through the middle of it. A running arm goes low and back, high and
+   * forward, in one straight diagonal. */
+  check('the hand climbs as it comes forward',
+        run.handRise > 0.5,
+        'hand finishes the forward swing ' + (run.handRise || 0).toFixed(2) +
+        'ft higher than the back of it');
+  check('and its lowest point is behind, not halfway',
+        Math.abs(run.backMinusLowest) < 0.05,
+        'lowest point sits ' + (run.backMinusLowest || 0).toFixed(2) +
+        'ft off the back of the swing');
+  check('the hands stay by the body rather than paddling',
+        run.handTravel > 1.0 && run.handTravel < 2.2,
+        'hands travel ' + (run.handTravel || 0).toFixed(2) + 'ft fore and aft');
+  check('the elbow folds tight in front and opens out behind',
+        run.elbowMin < 80 && run.elbowMax > 118,
+        'elbow works between ' + (run.elbowMin || 0).toFixed(0) + ' and ' +
+        (run.elbowMax || 0).toFixed(0) + ' degrees');
+
+  // Longer strides are bought with a deeper crouch; overspend and the foot
+  // cannot reach the floor and the solver clamps the leg straight.
+  check('no limb is asked to reach further than it can',
+        Math.max(jog.clamp, run.clamp, spr.clamp) < 0.005,
+        'worst shortfall ' + Math.max(jog.clamp, run.clamp, spr.clamp).toFixed(4));
+  check('gait probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[28] holding the defence key actually plays defence');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U;
+    var BONE = BB.Player.BONE;
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene, me = scene.player, foe = scene.ai;
+    var ball = scene.ball, hoop = scene.hoop;
+    var S = me.bodyScale;                        // pose units -> world feet
+
+    /** A stick that holds a direction and optionally the defence key. */
+    function stick(hx, hy, guard) {
+      return {
+        moveVector: function (o) {
+          o = o || {}; o.x = hx || 0; o.y = hy || 0;
+          o.mag = Math.hypot(o.x, o.y); return o;
+        },
+        down: function (a) { return a === 'intense' && !!guard; },
+        pressed: function () { return false; },
+        released: function () { return false; }
+      };
+    }
+
+    /**
+     * Puts the handler somewhere relative to the rim and the defender
+     * somewhere relative to the handler, then runs the pair for a while with
+     * the defender's stick held as given. The handler is pinned: this is
+     * about what the DEFENDER does from a known picture.
+     */
+    function situation(o) {
+      o = o || {};
+      foe.placeAt(o.fx == null ? hoop.x - 20 : o.fx, o.fy == null ? hoop.y : o.fy, 0);
+      foe.vx = foe.vy = 0; foe.z = 0; foe.jumping = false; foe.action = null;
+      foe.facing = foe.moveFacing = Math.atan2(hoop.y - foe.y, hoop.x - foe.x);
+      if (o.noBall) { ball.release(); ball.place(foe.x, foe.y - 30, 3); }
+      else foe.giveBall(ball);
+      if (o.ballZ != null) ball.z = o.ballZ;
+
+      me.placeAt(foe.x + (o.dx == null ? 3.2 : o.dx), foe.y + (o.dy || 0), 0);
+      me.vx = me.vy = 0; me.z = 0; me.jumping = false; me.action = null;
+      me.hasBall = !!o.meHasBall;
+      if (o.meHasBall) me.giveBall(ball);
+      me.armRaise = 0; me.sprinting = false;
+      me.defenseQuality = 0; me.lockedT = 0; me._lockShown = 0; me._guardBlend = 0;
+      me.facing = me.moveFacing = o.facing == null
+        ? Math.atan2(foe.y - me.y, foe.x - me.x) : o.facing;
+
+      var sk = stick(o.hx || 0, o.hy || 0, o.guard !== false);
+      var fx = foe.x, fy = foe.y, fz = ball.z;
+      var locks = 0;
+      var onLock = function () { locks++; };
+      me.events.on('lockdown', onLock);
+      var clamp = 0, jab = [], reach = [], best = 0;
+      var secs = o.secs == null ? 1.6 : o.secs;
+      for (var i = 0; i < secs * 120; i++) {
+        // Pin the handler and the ball: the scene's own AI is not running.
+        foe.x = fx; foe.y = fy; foe.vx = foe.vy = 0;
+        if (o.ballZ != null) ball.z = fz;
+        me.readInput(sk);
+        me.update(1 / 120, ball);
+        // The stance turns you to face the man; to grade a defender who is
+        // NOT square, that has to be defeated deliberately.
+        if (o.holdFacing) me.facing = o.facing;
+        var p = me.pose;
+        clamp = Math.max(clamp,
+          Math.hypot(p.elbowL.ex - p.handL.x, p.elbowL.ey - p.handL.y),
+          Math.hypot(p.elbowR.ex - p.handR.x, p.elbowR.ey - p.handR.y),
+          Math.hypot(p.kneeL.ex - p.footL.x, p.kneeL.ey - p.footL.y),
+          Math.hypot(p.kneeR.ex - p.footR.x, p.kneeR.ey - p.footR.y));
+        if (i > secs * 60) {
+          jab.push((p.handR.x - BONE.shoulderW) * S);
+          reach.push(p.handR.y);
+        }
+        best = Math.max(best, me.defenseQuality);
+      }
+      me.events.off('lockdown', onLock);
+      var p2 = me.pose;
+      return {
+        guarding: me.isGuarding, blend: me._guardBlend,
+        quality: me.defenseQuality, best: best, locked: me.lockedT, locks: locks,
+        armRoll: p2.armRoll,
+        // Positive is down: the crouch sinks the hips and the shoulders.
+        hipY: p2.hipY, shoulderY: p2.shoulderY,
+        // How far apart the feet are planted, across the body.
+        base: Math.abs(p2.footR.x - p2.footL.x) * S,
+        // Lead hand: how far in front of its own shoulder, and how high.
+        handOut: (p2.handR.x - BONE.shoulderW) * S,
+        handUp: -(p2.handR.y - p2.shoulderY) * S,
+        jabRange: jab.length ? Math.max.apply(null, jab) - Math.min.apply(null, jab) : 0,
+        // Where the defender ended up pointed, relative to the handler.
+        offMan: Math.abs(U.angleDelta(Math.atan2(foe.y - me.y, foe.x - me.x), me.facing)) * 57.3,
+        clamp: clamp, x: me.x, y: me.y, speed: Math.hypot(me.vx, me.vy)
+      };
+    }
+
+    var idle = situation({ guard: false, dx: 3.2 });
+    var stance = situation({ guard: true, dx: 3.2 });
+    var far = situation({ guard: true, dx: 11.0 });
+    var ballHigh = situation({ guard: true, dx: 3.2, ballZ: 7.0 });
+    var ballLow = situation({ guard: true, dx: 3.2, ballZ: 2.2 });
+    var noHandler = situation({ guard: true, noBall: true });
+    var iHaveIt = situation({ guard: true, meHasBall: true });
+    // Right place, wrong way round: the stance holds but the grade should not.
+    var turned = situation({ guard: true, dx: 3.2, facing: Math.PI * 0.5, holdFacing: true });
+    // Beaten — trailing on the wrong side of the man, off the line to the rim.
+    var beaten = situation({ guard: true, dx: -3.2, secs: 0.4 });
+    // Started with your back to him: the stance has to bring you back round.
+    var recovered = situation({ guard: true, dx: 3.2, facing: Math.PI * 0.9 });
+
+    /* Staying in front is won on the change of direction, not the top end.
+     * Time a full reversal, guarding against not. */
+    function reverse(guard) {
+      foe.placeAt(hoop.x - 20, hoop.y, 0); foe.giveBall(ball);
+      me.placeAt(foe.x + 3.2, foe.y, 0); me.z = 0; me.action = null;
+      me.hasBall = false; me.facing = me.moveFacing = Math.PI;
+      var sk = stick(0, 1, guard), t = 0;
+      for (var i = 0; i < 300; i++) { me.readInput(sk); me.update(1 / 120, ball); }
+      var v0 = me.vy;
+      var back = stick(0, -1, guard);
+      for (var j = 0; j < 600; j++) {
+        me.readInput(back); me.update(1 / 120, ball); t += 1 / 120;
+        if (me.vy <= -Math.abs(v0) * 0.9) break;
+      }
+      return { top: Math.abs(v0), time: t };
+    }
+    var slideRev = reverse(true), runRev = reverse(false);
+
+    /* No sprinting out of a stance. */
+    function topSpeed(guard, sprint) {
+      foe.placeAt(hoop.x - 20, hoop.y, 0); foe.giveBall(ball);
+      me.placeAt(foe.x + 3.2, foe.y, 0); me.z = 0; me.action = null; me.hasBall = false;
+      me.vx = me.vy = 0; me.stamina = 1;
+      var sk = {
+        moveVector: function (o) { o = o || {}; o.x = 0; o.y = 1; o.mag = 1; return o; },
+        down: function (a) { return (a === 'intense' && guard) || (a === 'sprint' && sprint); },
+        pressed: function () { return false; },
+        released: function () { return false; }
+      };
+      for (var i = 0; i < 900; i++) { me.readInput(sk); me.update(1 / 120, ball); }
+      return Math.hypot(me.vx, me.vy);
+    }
+    var openSprint = topSpeed(false, true), stanceSprint = topSpeed(true, true);
+
+    /* What the position is worth when they finally shoot over it. */
+    function contest(q) {
+      foe.placeAt(hoop.x - 20, hoop.y, 0); foe.giveBall(ball);
+      me.placeAt(foe.x + 3.2, foe.y, 0);
+      foe.opponent = me; me.jumping = false; me.defenseQuality = q;
+      return foe._computeContest();
+    }
+    var loose = contest(0), tight = contest(0.9);
+
+    /* And that the readout is actually drawn, in the right colour. */
+    var rings = [];
+    var realRing = BB.S3.ring;
+    BB.S3.ring = function (x, y, z, rr, col, gl, fl) {
+      rings.push({ r: rr, x: x, y: y, col: [col[0], col[1], col[2]] });
+      return realRing.apply(BB.S3, arguments);
+    };
+    /* S3.ring also draws both rims and the selection marker, so the readout
+     * cannot be picked out by draw order — it is the one under the defender's
+     * own feet, and it is the only ring wider than the marker. */
+    function mine() {
+      var found = null;
+      for (var i = 0; i < rings.length; i++) {
+        var g = rings[i];
+        if (g.r > 1.05 && Math.hypot(g.x - me.x, g.y - me.y) < 0.5) found = g;
+      }
+      return found;
+    }
+    var drawn = { none: 0, good: 0, lockedCol: null, goodCol: null, aiRings: 0 };
+    foe.placeAt(hoop.x - 20, hoop.y, 0); foe.giveBall(ball);
+    me.placeAt(foe.x + 3.2, foe.y, 0); me.hasBall = false;
+    me.isGuarding = false; me.defenseQuality = 0; me.lockedT = 0;
+    rings.length = 0; scene.render(0);
+    drawn.none = rings.length;
+    drawn.noneMine = !!mine();
+    me.defenseQuality = 0.85; me.lockedT = 0;
+    rings.length = 0; scene.render(0);
+    drawn.good = rings.length;
+    drawn.goodCol = mine() && mine().col;
+    me.lockedT = 2.0;
+    rings.length = 0; scene.render(0);
+    drawn.lockedCol = mine() && mine().col;
+    // The AI holds a quality too — the contest maths reads it — but must not
+    // paint the floor with it.
+    me.defenseQuality = 0; me.lockedT = 0;
+    foe.defenseQuality = 0.9; foe.lockedT = 2.0;
+    rings.length = 0; scene.render(0);
+    drawn.aiRings = rings.length;
+    BB.S3.ring = realRing;
+    foe.defenseQuality = 0; foe.lockedT = 0;
+
+    /* And the CPU plays it too. The stance was wired to a key the AI does not
+     * press, so left alone the opponent would defend you standing bolt
+     * upright while your own ring lit up under your feet. Run the scene for
+     * real — the AI brain, not a stick — and watch it come up and go away. */
+    var cpu = { onD: 0, onO: 0, dq: 0, held: 0 };
+    scene.phase = 'live';
+    me.giveBall(ball);
+    me.placeAt(hoop.x - 20, hoop.y, 0);
+    foe.placeAt(hoop.x - 16, hoop.y, 0);
+    // The AI brain runs off the scene's variable-rate update, not its fixed
+    // step, so both have to be driven or the opponent just stands there.
+    /* Counted against the ticks you actually had the ball, not against the
+     * clock: the CPU is perfectly entitled to end the possession by taking it
+     * off you, and it does. */
+    for (var s = 0; s < 240; s++) {
+      scene.fixedUpdate(1 / 120);
+      if (s % 2 === 0) scene.update(1 / 60, 1 / 60);
+      if (ball.owner === me) {
+        cpu.held++;
+        if (foe.isGuarding) cpu.onD++;
+        cpu.dq = Math.max(cpu.dq, foe.defenseQuality);
+      }
+    }
+    /* Handing it over must also take it off the other man — see giveBall. A
+     * defender still flagged as holding the ball reads as being on offence
+     * and grades nothing, which is exactly how this was found. */
+    cpu.bothHeld = me.hasBall && foe.hasBall;
+    foe.giveBall(ball);
+    cpu.bothHeld = cpu.bothHeld || (me.hasBall && foe.hasBall);
+    for (var s2 = 0; s2 < 240; s2++) {
+      scene.fixedUpdate(1 / 120);
+      if (s2 % 2 === 0) scene.update(1 / 60, 1 / 60);
+      if (foe.isGuarding) cpu.onO++;
+    }
+
+    return {
+      cpu: cpu,
+      idle: idle, stance: stance, far: far, ballHigh: ballHigh, ballLow: ballLow,
+      noHandler: noHandler, iHaveIt: iHaveIt, turned: turned, beaten: beaten,
+      recovered: recovered, slideRev: slideRev, runRev: runRev,
+      openSprint: openSprint, stanceSprint: stanceSprint,
+      loose: loose, tight: tight, drawn: drawn,
+      pageErr: window.__pageErr || null
+    };
+  `, 'defence');
+  if (r.err) check('defence probe ran', false, r.err);
+  const o = r.out || {};
+  const idle = o.idle || {}, st = o.stance || {}, far = o.far || {};
+  const hi = o.ballHigh || {}, lo = o.ballLow || {};
+  const drawn = o.drawn || {};
+
+  /* The key. It is held, not tapped, and it only means anything when there is
+   * somebody with the ball in front of you. */
+  check('holding the key drops you into a stance',
+        st.guarding === true && st.blend > 0.9,
+        'stance blended to ' + (st.blend || 0).toFixed(2));
+  check('letting go stands you back up',
+        idle.guarding === false && idle.blend < 0.05,
+        'blend ' + (idle.blend || 0).toFixed(3) + ' with the key up');
+  check('there is nothing to guard when nobody has the ball',
+        (o.noHandler || {}).guarding === false,
+        'stance ' + ((o.noHandler || {}).guarding ? 'came up anyway' : 'stayed down'));
+  check('and none when the ball is in your own hands',
+        (o.iHaveIt || {}).guarding === false, 'stance up on offence');
+
+  /* It is a stance, not a pose: hips down, feet apart, arms out of the plane. */
+  check('the stance sinks the hips and widens the base',
+        st.hipY - idle.hipY > 0.08 && st.base > idle.base * 1.15,
+        'hips drop ' + ((st.hipY - idle.hipY) * 2.74).toFixed(2) + 'ft, base ' +
+        (idle.base || 0).toFixed(2) + 'ft -> ' + (st.base || 0).toFixed(2) + 'ft');
+  check('and the arms come out of the pose plane', st.armRoll > 0.3,
+        'armRoll ' + (st.armRoll || 0).toFixed(2));
+
+  /* The hands. This is the half the request was actually about: reaching at
+   * the ball, not standing there with both arms held out like a scarecrow. */
+  check('the lead hand reaches out at the ball',
+        st.handOut > far.handOut + 0.6,
+        'hand out ' + (st.handOut || 0).toFixed(2) + 'ft at close range against ' +
+        (far.handOut || 0).toFixed(2) + 'ft from ten feet away');
+  check('it works at the ball rather than hanging there',
+        st.jabRange > 0.08,
+        'the reach jabs over ' + (st.jabRange || 0).toFixed(2) + 'ft');
+  check('and it follows the ball up and down',
+        hi.handUp > lo.handUp + 0.4,
+        'hand rides ' + (lo.handUp || 0).toFixed(2) + 'ft up to ' +
+        (hi.handUp || 0).toFixed(2) + 'ft as the ball goes from 2ft to 7ft');
+  check('nothing in the stance is out of reach',
+        Math.max(st.clamp || 0, hi.clamp || 0, lo.clamp || 0) < 0.005,
+        'worst shortfall ' + Math.max(st.clamp || 0, hi.clamp || 0, lo.clamp || 0).toFixed(4));
+
+  /* Keeping up with the attacker. */
+  check('a stance never turns its back on the ball handler',
+        (o.recovered || {}).offMan < 12,
+        'ended up ' + ((o.recovered || {}).offMan || 0).toFixed(0) +
+        ' degrees off the man after starting turned away');
+  const sr = o.slideRev || {}, rr = o.runRev || {};
+  check('a slide changes direction quicker than a run',
+        sr.time < rr.time * 0.85,
+        'reversal in ' + (sr.time || 0).toFixed(2) + 's against ' +
+        (rr.time || 0).toFixed(2) + 's upright');
+  check('but you cannot sprint out of one',
+        o.stanceSprint < o.openSprint * 0.95,
+        (o.stanceSprint || 0).toFixed(1) + 'ft/s in a stance against ' +
+        (o.openSprint || 0).toFixed(1) + 'ft/s open');
+
+  /* The grade. Close, on the line, square, in a stance — all four, or it is
+   * not worth anything. */
+  check('good position grades higher than being beaten',
+        st.best > 0.7 && st.best > (o.beaten || {}).best * 2,
+        'graded ' + (st.best || 0).toFixed(2) + ' in front against ' +
+        ((o.beaten || {}).best || 0).toFixed(2) + ' trailing');
+  check('standing off ten feet is worth nothing', far.best < 0.15,
+        'graded ' + (far.best || 0).toFixed(2) + ' from ten feet');
+  check('and watching the ball go by is worth less than staying square',
+        (o.turned || {}).best < st.best * 0.75,
+        'graded ' + ((o.turned || {}).best || 0).toFixed(2) + ' turned around');
+  check('the same spot grades lower standing upright than in a stance',
+        idle.best < st.best * 0.75,
+        'graded ' + (idle.best || 0).toFixed(2) + ' upright against ' +
+        (st.best || 0).toFixed(2) + ' in a stance');
+
+  /* Worth something. A stance that did not make the shot harder would be a
+   * costume rather than defence. */
+  check('real position makes the shot over it harder',
+        o.tight > o.loose + 0.12,
+        'contest ' + (o.loose || 0).toFixed(2) + ' -> ' + (o.tight || 0).toFixed(2));
+
+  /* And it says so. */
+  check('holding it long enough earns the call',
+        st.locked > 1.2 && st.locks === 1,
+        'held for ' + (st.locked || 0).toFixed(2) + 's and called it ' +
+        (st.locks || 0) + ' time(s)');
+  check('being beaten never earns it',
+        (o.beaten || {}).locks === 0 && (o.far || {}).locks === 0,
+        'called ' + (((o.beaten || {}).locks || 0) + ((o.far || {}).locks || 0)) + ' times');
+  check('good defence draws a ring under the defender',
+        drawn.good === drawn.none + 1 && drawn.noneMine === false && !!drawn.goodCol,
+        drawn.none + ' rings at rest, ' + drawn.good + ' while guarding');
+  check('which goes gold once the position has been held',
+        drawn.goodCol && drawn.lockedCol &&
+        drawn.lockedCol[0] > drawn.goodCol[0] && drawn.lockedCol[2] < drawn.goodCol[2],
+        'blue ' + (drawn.goodCol || []).map((c) => c.toFixed(2)).join('/') +
+        ' -> gold ' + (drawn.lockedCol || []).map((c) => c.toFixed(2)).join('/'));
+  check('the AI does not paint the floor with its own',
+        drawn.aiRings === drawn.none,
+        drawn.aiRings + ' rings with the AI locked in against ' + drawn.none + ' at rest');
+
+  /* The opponent defends the same way, off its own brain. */
+  const cpu = o.cpu || {};
+  check('the CPU gets into a stance when you have the ball',
+        cpu.held > 60 && cpu.onD >= cpu.held - 4 && cpu.dq > 0.35,
+        'in a stance for ' + (cpu.onD || 0) + ' of the ' + (cpu.held || 0) +
+        ' ticks you had it, grading up to ' + (cpu.dq || 0).toFixed(2));
+  check('and stands out of it once the ball is theirs',
+        cpu.onO === 0, 'still crouched for ' + (cpu.onO || 0) + ' ticks on offence');
+  check('the ball is never in two pairs of hands at once',
+        cpu.bothHeld === false, 'both players held it at once');
+  check('defence probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[29] the stance locks on, and walls the drive off');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U;
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene, me = scene.player, foe = scene.ai;
+    var ball = scene.ball, hoop = scene.hoop;
+    me.opponent = foe; foe.opponent = me;
+
+    function stick(guard) {
+      return {
+        moveVector: function (o) { o = o || {}; o.x = 0; o.y = 0; o.mag = 0; return o; },
+        down: function (a) { return a === 'intense' && !!guard; },
+        pressed: function () { return false; },
+        released: function () { return false; }
+      };
+    }
+
+    /* ---- shift lock ---------------------------------------------------
+     * Walks the handler right round the defender while the defender slides
+     * off in a fixed direction of their own, and reports the worst the
+     * shoulders ever came off the man. Intent is written straight past
+     * readInput so the answer does not depend on where the camera is
+     * pointing. */
+    function lock(guard, ix, iy) {
+      me.placeAt(0, 25, 0); me.vx = me.vy = 0; me.z = 0;
+      me.hasBall = false; me.action = null;
+      me.facing = me.moveFacing = 0;
+      me.defenseQuality = 0; me.lockedT = 0; me._guardBlend = guard ? 1 : 0;
+      var sk = stick(guard), worst = 0, ang = 0, samples = 0;
+      for (var i = 0; i < 480; i++) {
+        // The man circles at a rate no turn rate could ever hold.
+        ang += (1 / 120) * 3.4;
+        foe.placeAt(me.x + Math.cos(ang) * 3.2, me.y + Math.sin(ang) * 3.2, 0);
+        foe.giveBall(ball);
+        me.readInput(sk);
+        me.intentX = ix; me.intentY = iy;
+        me.intentMag = Math.hypot(ix, iy);
+        me.update(1 / 120, ball);
+        if (i > 60) {
+          worst = Math.max(worst, Math.abs(U.angleDelta(
+            Math.atan2(foe.y - me.y, foe.x - me.x), me.facing)));
+          samples++;
+        }
+      }
+      return { worst: worst * 57.3, samples: samples };
+    }
+    var lockedStill = lock(true, 0, 0);
+    var lockedSliding = lock(true, 0, 1);
+    var unlocked = lock(false, 0, 1);
+
+    /* ---- the slide gait -----------------------------------------------
+     * Facing one way and travelling another has to shuffle the feet across
+     * the body, not scissor them fore and aft. Both are measured off the
+     * same pose: x is the forward axis of the solver's flat plane, side is
+     * the lateral offset that only exists at draw time. */
+    function gait(ix, iy) {
+      me.placeAt(0, 25, 0); me.vx = me.vy = 0; me.z = 0; me.hasBall = false;
+      me.action = null; me.facing = me.moveFacing = 0; me._guardBlend = 1;
+      foe.placeAt(me.x + 3.2, me.y, 0); foe.giveBall(ball);
+      var sk = stick(true);
+      // The man rides alongside, so the defender is genuinely strafing the
+      // whole way rather than drifting into a back-pedal as he slides off.
+      for (var w = 0; w < 240; w++) {
+        foe.placeAt(me.x + 3.2, me.y, 0);
+        me.readInput(sk);
+        me.intentX = ix; me.intentY = iy; me.intentMag = 1;
+        me.update(1 / 120, ball);
+      }
+      var sx = [], sd = [], cross = 0;
+      for (var i = 0; i < 90; i++) {
+        foe.placeAt(me.x + 3.2, me.y, 0);
+        me.readInput(sk);
+        me.intentX = ix; me.intentY = iy; me.intentMag = 1;
+        me.update(1 / 120, ball);
+        var p = me.pose;
+        sx.push(p.footR.x - p.footL.x);
+        sd.push((p.footR.side || 0) - (p.footL.side || 0));
+        // Total across-the-body separation, base stance included. Negative
+        // means the feet have crossed over, which is how you get beaten.
+        var sep = 2 * BB.Player.BONE.stance + (p.footR.side || 0) - (p.footL.side || 0);
+        if (sep < 0.02) cross++;
+      }
+      function range(a) { return Math.max.apply(null, a) - Math.min.apply(null, a); }
+      return { scissor: range(sx), shuffle: range(sd), cross: cross,
+               meanX: sx.reduce(function (a, b) { return a + b; }, 0) / sx.length };
+    }
+    // Straight at the man, straight across him, and backing away from him.
+    var atMan = gait(1, 0), across = gait(0, 1), backing = gait(-1, 0);
+
+    /* ---- pressure ------------------------------------------------------ */
+    function drive(q, behind) {
+      me.placeAt(hoop.x - 22, hoop.y, 0);
+      me.vx = me.vy = 0; me.z = 0; me.action = null; me.sprinting = false;
+      me.stamina = 1; me.giveBall(ball);
+      var off = behind ? -2.6 : 2.6;
+      var top = 0, x0 = me.x;
+      // Short enough that the half-court bound never truncates the run and
+      // makes both cases look identical.
+      for (var i = 0; i < 150; i++) {
+        // Walled off means walled off the whole way, not passed after a
+        // second: a defender who keeps up is the case being measured.
+        foe.placeAt(me.x + off, me.y, 0); foe.vx = foe.vy = 0;
+        foe.defenseQuality = q; foe.isGuarding = q > 0;
+        me.intentX = 1; me.intentY = 0; me.intentMag = 1;
+        me.update(1 / 120, ball);
+        top = Math.max(top, Math.hypot(me.vx, me.vy));
+      }
+      return { top: top, gained: me.x - x0,
+               pressure: me.pressure ? me.pressure() : 0 };
+    }
+    var open = drive(0, false), walled = drive(0.9, false), trailed = drive(0.9, true);
+
+    /* ---- and the CPU stops running into it -----------------------------
+     * The real scene, the real brain. The defender is held on the goal-side
+     * shoulder every tick, which is what "defending well" means, and the
+     * question is what the ball handler does about it. */
+    function possession(defend) {
+      foe.placeAt(hoop.x - 24, hoop.y, 0);
+      foe.vx = foe.vy = 0; foe.z = 0; foe.action = null;
+      foe.giveBall(ball);
+      // After giveBall, which sets its own patience -- otherwise the shot
+      // clock runs out mid-probe and the handler is forced into a shot for
+      // reasons that have nothing to do with who is guarding him.
+      foe.aiPatience = 999;
+      me.placeAt(hoop.x - 21.4, hoop.y, 0);
+      me.vx = me.vy = 0; me.z = 0; me.action = null;
+      me.defenseQuality = 0; me.lockedT = 0;
+      scene.phase = 'live';
+      var sk = stick(defend);
+      var closest = 1e9, sprint = 0, backOut = 0, moves = 0, held = 0;
+      var maxP = 0, maxQ = 0, wasMove = null;
+      for (var i = 0; i < 600; i++) {
+        /* Glued to the goal-side shoulder in BOTH runs. The control is the
+         * same defender standing in the same place with the key up, so what
+         * is being measured is the stance itself rather than the presence of
+         * a body in the lane. */
+        var a = Math.atan2(hoop.y - foe.y, hoop.x - foe.x);
+        // No facing argument: placeAt would reset the shoulders square to the
+        // court every tick, and _updateDefense grades the stance before
+        // updateMovement re-aims it -- so the man would read as turned around
+        // for reasons that have nothing to do with the game.
+        me.placeAt(foe.x + Math.cos(a) * 2.6, foe.y + Math.sin(a) * 2.6);
+        me.readInput(sk);
+        me.intentX = 0; me.intentY = 0; me.intentMag = 0;
+        scene.fixedUpdate(1 / 120);
+        if (i % 2 === 0) scene.update(1 / 60, 1 / 60);
+        if (ball.owner !== foe) break;
+        held++;
+        closest = Math.min(closest, U.dist(foe.x, foe.y, hoop.x, hoop.y));
+        if (foe.sprinting) sprint++;
+        // Intent pointing away from the rim is a handler resetting the angle.
+        var toRim = Math.atan2(hoop.y - foe.y, hoop.x - foe.x);
+        if (foe.intentMag > 0.1 &&
+            Math.abs(U.angleDelta(toRim, Math.atan2(foe.intentY, foe.intentX))) > 1.9) backOut++;
+        if (foe.moveState && foe.moveState !== wasMove) moves++;
+        wasMove = foe.moveState;
+        maxP = Math.max(maxP, foe.pressure ? foe.pressure() : 0);
+        maxQ = Math.max(maxQ, me.defenseQuality);
+      }
+      return { closest: closest, sprint: sprint, backOut: backOut, moves: moves,
+               held: held, maxP: maxP, maxQ: maxQ };
+    }
+    var pressed = possession(true), free = possession(false);
+
+    /* ---- and it is a read, not just a speed cap ------------------------
+     * Same picture every tick -- handler twenty feet out, defender goal-side
+     * two and a half feet off -- with only the quality of that defender's
+     * position changing. Calls the brain directly so the statistics are not
+     * diluted by where the possession happened to wander. */
+    function brain(q) {
+      var back = 0, sprint = 0, moves = 0, wasMove = null, N = 600;
+      foe.giveBall(ball); foe.aiPatience = 999; foe.moveState = null;
+      me.isGuarding = q > 0;
+      for (var i = 0; i < N; i++) {
+        foe.placeAt(hoop.x - 20, hoop.y, 0);
+        /* Goal-side and three and a half feet off. Closer than about 2.8ft
+         * and the handler reads a charge risk and refuses to sprint whoever
+         * is guarding him, which would make the sprint comparison below true
+         * for a reason that has nothing to do with the stance. */
+        me.placeAt(hoop.x - 16.6, hoop.y, 0);
+        me.defenseQuality = q;
+        foe.intentX = 0; foe.intentY = 0; foe.intentMag = 0; foe.sprinting = false;
+        foe.moveState = null; foe.moveCooldown = 0;
+        /* And the shot state, which is the same reset for the same reason.
+         * A player who has begun a gather cannot legally start a dribble move
+         * and no longer tries to — so without this, every tick after the brain
+         * first reaches for a shot is a tick that can never register a move,
+         * and the count stops being a measure of the read and becomes a
+         * measure of how early each side decided to shoot. */
+        foe.action = BB.Player.ACTION.IDLE; foe.actionT = 0; foe._dribbleLive = true;
+        BB.AI.offense(foe, me, hoop, 1 / 120, 1);
+        var toRim = Math.atan2(hoop.y - foe.y, hoop.x - foe.x);
+        if (foe.intentMag > 0.1 &&
+            Math.abs(U.angleDelta(toRim, Math.atan2(foe.intentY, foe.intentX))) > 1.9) back++;
+        if (foe.sprinting) sprint++;
+        if (foe.moveState && foe.moveState !== wasMove) moves++;
+        wasMove = foe.moveState;
+      }
+      return { back: back, sprint: sprint, moves: moves, n: N };
+    }
+    var brainOn = brain(0.95), brainOff = brain(0);
+
+    return {
+      brainOn: brainOn, brainOff: brainOff,
+      lockedStill: lockedStill, lockedSliding: lockedSliding, unlocked: unlocked,
+      atMan: atMan, across: across, backing: backing,
+      open: open, walled: walled, trailed: trailed,
+      pressed: pressed, free: free,
+      pageErr: window.__pageErr || null
+    };
+  `, 'lockdrive');
+  if (r.err) check('lock/drive probe ran', false, r.err);
+  const o = r.out || {};
+  const still = o.lockedStill || {}, sliding = o.lockedSliding || {}, free1 = o.unlocked || {};
+  const atMan = o.atMan || {}, across = o.across || {}, backing = o.backing || {};
+  const open = o.open || {}, walled = o.walled || {}, trailed = o.trailed || {};
+  const pressed = o.pressed || {}, unguarded = o.free || {};
+
+  /* Shift lock. Not "turns towards" — locked, against a man moving faster
+   * than any turn rate could follow. */
+  check('the stance stays pointed at the man, not merely turns towards him',
+        still.worst < 1.0 && still.samples > 300,
+        'worst ' + (still.worst || 0).toFixed(2) + ' degrees off over ' +
+        (still.samples || 0) + ' ticks against a man circling at 3.4 rad/s');
+  check('and it holds while you are sliding somewhere else',
+        sliding.worst < 1.0,
+        'worst ' + (sliding.worst || 0).toFixed(2) + ' degrees off while sliding');
+  check('with the key up you face where you are going instead',
+        free1.worst > 45,
+        'ended ' + (free1.worst || 0).toFixed(0) + ' degrees off the man');
+
+  /* The gait that has to come with it, or the figure moonwalks. */
+  check('sliding across the man shuffles the feet sideways',
+        across.shuffle > 0.10 && across.shuffle > across.scissor * 4,
+        'shuffle ' + (across.shuffle || 0).toFixed(3) + ' against a fore/aft scissor of ' +
+        (across.scissor || 0).toFixed(3));
+  check('going straight at him still scissors them fore and aft',
+        atMan.scissor > 0.10 && atMan.scissor > atMan.shuffle * 4,
+        'scissor ' + (atMan.scissor || 0).toFixed(3) + ' against a shuffle of ' +
+        (atMan.shuffle || 0).toFixed(3));
+  check('and backing off back-pedals rather than running on the spot',
+        backing.scissor > 0.10,
+        'scissor ' + (backing.scissor || 0).toFixed(3) + ' backing away');
+  check('the feet never cross in a slide',
+        across.cross === 0 && atMan.cross === 0,
+        (across.cross || 0) + ' crossed frames');
+
+  /* Pressure. Position has to cost the handler something on the floor. */
+  check('driving into a set defender is slower than driving into nobody',
+        walled.top < open.top * 0.75,
+        (open.top || 0).toFixed(1) + 'ft/s open against ' +
+        (walled.top || 0).toFixed(1) + 'ft/s walled off');
+  check('and it costs them ground, not just speed',
+        walled.gained < open.gained * 0.8,
+        (open.gained || 0).toFixed(1) + 'ft gained open against ' +
+        (walled.gained || 0).toFixed(1) + 'ft guarded');
+  /* Directional, or beating somebody would feel worse than being stuck in
+   * front of them: a defender you have already gone past is not guarding. */
+  check('a defender you have beaten does not slow you down',
+        trailed.top > open.top * 0.98 && trailed.pressure < 0.02,
+        'trailing defender left ' + (trailed.top || 0).toFixed(1) +
+        'ft/s against ' + (open.top || 0).toFixed(1) + 'ft/s open');
+  /* The defender only gives up 8% of their own top end to hold the stance,
+   * so a third off the handler is the margin that makes staying in front
+   * possible at all rather than a coin flip on reaction time. */
+  check('a defender in a stance is faster than the man they are walling off',
+        walled.top < open.top * 0.92,
+        'handler down to ' + (walled.top || 0).toFixed(1) +
+        'ft/s against a stance that keeps ' + (open.top * 0.92).toFixed(1) + 'ft/s');
+
+  /* And the CPU plays it as a read, not just a speed cap. */
+  check('the CPU cannot drive through good position',
+        pressed.held > 200 && pressed.closest > unguarded.closest + 5,
+        'got within ' + (pressed.closest || 0).toFixed(1) + 'ft of the rim against a stance, ' +
+        (unguarded.closest || 0).toFixed(1) + 'ft against the same man standing up' +
+        ' [p=' + (pressed.maxP || 0).toFixed(2) + '/' + (unguarded.maxP || 0).toFixed(2) +
+        ' q=' + (pressed.maxQ || 0).toFixed(2) + '/' + (unguarded.maxQ || 0).toFixed(2) +
+        ' held=' + pressed.held + '/' + unguarded.held +
+        ' back=' + pressed.backOut + '/' + unguarded.backOut + ']');
+  const bOn = o.brainOn || {}, bOff = o.brainOff || {};
+  check('it backs the ball out and works a new angle instead',
+        bOn.back > bOn.n * 0.9 && bOff.back === 0,
+        'reset the angle on ' + (bOn.back || 0) + ' of ' + (bOn.n || 0) +
+        ' ticks against a stance, ' + (bOff.back || 0) + ' against nobody');
+  check('and never sprints into somebody who is set',
+        bOn.sprint === 0 && bOff.sprint > 0,
+        (bOn.sprint || 0) + ' sprinting ticks against a stance, ' +
+        (bOff.sprint || 0) + ' without one');
+  check('it tries harder to shake the man off the dribble',
+        bOn.moves > bOff.moves * 1.6 && bOff.moves > 0,
+        (bOn.moves || 0) + ' dribble moves in ' + (bOn.n || 0) +
+        ' ticks against a stance, ' + (bOff.moves || 0) + ' without one');
+  check('lock/drive probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[30] the hair is hair, and there is more than one of it');
+{
+  /* The complaint that started this was that the hair looked welded to the
+   * jersey, so the check is the literal thing: how far apart are they. Zones
+   * are per-vertex and the mesh is quantised, so both are read back off the
+   * asset the runtime actually loaded rather than off the rigger's log. */
+  const r = runInPage(`
+    var BB = window.BB, M = BB.PLAYER_MESH, Skin = BB.Skin;
+    var lo = M.bounds.lo, ext = M.bounds.ext, H = M.height;
+    var qp = atob(M.buffers.pos), qs = atob(M.buffers.skin);
+    var n = M.vertexCount;
+    var hairLow = 1e9, hairHigh = -1e9, jerseyHigh = -1e9, hairN = 0;
+    var bodyHairLow = 1e9;
+    for (var i = 0; i < n; i++) {
+      var q = qp.charCodeAt(i * 6 + 4) | (qp.charCodeAt(i * 6 + 5) << 8);
+      var z = (lo[2] + (q / 65535) * ext[2]) / H;
+      var zone = qs.charCodeAt(i * 4 + 3);
+      if (zone === 4) {
+        hairN++;
+        if (z < hairLow) hairLow = z;
+        if (z > hairHigh) hairHigh = z;
+      } else if (zone === 1 && z > jerseyHigh) jerseyHigh = z;
+    }
+
+    // Every style has to be a real block of triangles, and they must not all
+    // be the same block — that is what a silently culled shell looks like.
+    var styles = Object.keys(Skin.hairStyles || {});
+    var starts = {}, dupes = 0, empty = 0;
+    for (var k = 0; k < styles.length; k++) {
+      var cut = Skin.hairStyles[styles[k]];
+      if (!cut.count) empty++;
+      if (starts[cut.start]) dupes++;
+      starts[cut.start] = 1;
+    }
+    return {
+      hairN: hairN, hairLow: hairLow, hairHigh: hairHigh, jerseyHigh: jerseyHigh,
+      gap: hairLow - jerseyHigh,
+      styles: styles, empty: empty, dupes: dupes,
+      bodyIndexCount: Skin.bodyIndexCount, indexCount: Skin.indexCount,
+      profileStyles: BB.PlayerProfile.HAIR_STYLES.map(function (h) { return h[0]; }),
+      pageErr: window.__pageErr || null
+    };
+  `, 'hair');
+  if (r.err) check('hair probe ran', false, r.err);
+  const o = r.out || {};
+  check('the mesh still has hair on it', o.hairN > 200, o.hairN + ' vertices');
+  // The old zoner reached z/H 0.832 against a jersey that starts at 0.832 —
+  // hair and clothing were the same vertices.
+  check('no hair vertex reaches the jersey', o.gap > 0.01,
+        'hair bottoms at ' + (o.hairLow || 0).toFixed(3) +
+        'H, jersey tops at ' + (o.jerseyHigh || 0).toFixed(3) + 'H, gap ' +
+        ((o.gap || 0) * 100).toFixed(1) + '%');
+  check('the hair sits on the skull, not the shoulders', o.hairLow > 0.87,
+        'lowest hair at ' + (o.hairLow || 0).toFixed(3) + 'H');
+  check('there are eight haircuts baked in', o.styles.length === 8,
+        (o.styles || []).join(', '));
+  check('every haircut has geometry of its own', o.empty === 0 && o.dupes === 0,
+        o.empty + ' empty, ' + o.dupes + ' sharing a range');
+  check('the haircuts live past the end of the body',
+        o.bodyIndexCount > 0 && o.bodyIndexCount < o.indexCount,
+        o.bodyIndexCount + ' of ' + o.indexCount);
+  check('the creator offers every baked style plus a shaved head',
+        o.profileStyles.length === o.styles.length + 1 &&
+        o.profileStyles.indexOf('bald') >= 0,
+        (o.profileStyles || []).join(', '));
+  check('hair probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[30b] the head has a face on it');
+{
+  /* The model ships a blank ovoid. Brows, eyes and a mouth are added as small
+   * patches in a zone of their own — checked here off the asset the runtime
+   * loaded, because a feature that misses the head is worse than none. */
+  const r = runInPage(`
+    var BB = window.BB, M = BB.PLAYER_MESH;
+    var lo = M.bounds.lo, ext = M.bounds.ext, H = M.height;
+    var qp = atob(M.buffers.pos), qs = atob(M.buffers.skin);
+    var n = M.vertexCount, face = 0;
+    var zLo = 1e9, zHi = -1e9, yLo = 1e9, yHi = -1e9, xAbs = 0;
+    var skullY = [1e9, -1e9], skullHalf = 0;
+    var faceV = [], skinBand = {};
+    var band = function (z) { return Math.round(z / H * 300); };
+    for (var i = 0; i < n; i++) {
+      var q0 = qp.charCodeAt(i * 6) | (qp.charCodeAt(i * 6 + 1) << 8);
+      var q1 = qp.charCodeAt(i * 6 + 2) | (qp.charCodeAt(i * 6 + 3) << 8);
+      var q2 = qp.charCodeAt(i * 6 + 4) | (qp.charCodeAt(i * 6 + 5) << 8);
+      var x = lo[0] + (q0 / 65535) * ext[0];
+      var y = lo[1] + (q1 / 65535) * ext[1];
+      var z = (lo[2] + (q2 / 65535) * ext[2]);
+      var zone = qs.charCodeAt(i * 4 + 3);
+      if (zone === 5) {
+        face++;
+        faceV.push([x, y, z]);
+        if (z / H < zLo) zLo = z / H;
+        if (z / H > zHi) zHi = z / H;
+        if (y / H < yLo) yLo = y / H;
+        if (y / H > yHi) yHi = y / H;
+        if (Math.abs(x) / H > xAbs) xAbs = Math.abs(x) / H;
+      }
+      if (zone === 0 && z / H > 0.88) {
+        // The frontmost skin at each height, so a feature can be compared with
+        // the face it is supposed to be lying on rather than with the whole head.
+        var b = band(z);
+        if (skinBand[b] == null || y < skinBand[b]) skinBand[b] = y;
+        if (z / H > 0.90) {
+          if (y / H < skullY[0]) skullY[0] = y / H;
+          if (y / H > skullY[1]) skullY[1] = y / H;
+          // How wide the skull actually is at face height, so "inside the head"
+          // can be judged against this head rather than against a constant.
+          if (Math.abs(x) / H > skullHalf) skullHalf = Math.abs(x) / H;
+        }
+      }
+    }
+    /* Is every feature actually IN FRONT of the skin beside it? A patch laid
+     * on a curve that falls away faster than the real face does ends up behind
+     * it, and a buried feature is baked, counted and invisible. */
+    var minClear = 1e9, buriedZ = 0;
+    for (var k = 0; k < faceV.length; k++) {
+      var s = skinBand[band(faceV[k][2])];
+      if (s == null) continue;
+      var clear = (s - faceV[k][1]) / H;
+      if (clear < minClear) { minClear = clear; buriedZ = faceV[k][2] / H; }
+    }
+    return {
+      face: face, zLo: zLo, zHi: zHi, yLo: yLo, yHi: yHi, xAbs: xAbs,
+      skullFront: skullY[0], skullHalf: skullHalf,
+      minClear: minClear < 1e8 ? minClear : null, buriedZ: buriedZ,
+      pageErr: window.__pageErr || null
+    };
+  `, 'face');
+  if (r.err) check('face probe ran', false, r.err);
+  const o = r.out || {};
+  /* Enough geometry to be a face, without pinning the tessellation: the
+   * features are deliberately few-sided, because the figure they sit on is
+   * flat-faceted and a fourteen-segment ellipse reads as a smooth sticker from
+   * another model. Counting vertices at all is only a smoke test that the
+   * builder ran. */
+  check('the head carries facial features', o.face > 24, o.face + ' vertices');
+  /* THE one that was missing. The mouth used to be baked at the right height
+   * and the right size and buried INSIDE the head, because the ellipsoid the
+   * patches were laid on curves away from its pole far faster than this
+   * model's nearly flat face does. Five features went in and four came out,
+   * and every check here passed — they were all about where a feature sits,
+   * and none about whether it can be seen. */
+  check('and every one of them is in front of the skin beside it',
+        o.minClear != null && o.minClear > 0.0005,
+        'closest feature clears the local skin by ' +
+        ((o.minClear == null ? 0 : o.minClear) * 100).toFixed(3) +
+        '% of stature, at z/H ' + (o.buriedZ || 0).toFixed(3) +
+        (o.minClear != null && o.minClear <= 0 ? ' — BURIED' : ''));
+  // Everything has to land on the front of the skull, between the hairline and
+  // the chin — a feature on the crown or round the back is a bug you only see
+  // in a replay.
+  check('every feature sits between the chin and the hairline',
+        o.zLo > 0.895 && o.zHi < 0.960,
+        'z/H ' + (o.zLo || 0).toFixed(3) + '..' + (o.zHi || 0).toFixed(3));
+  check('and on the front of the head, not the back',
+        o.yHi < 0, 'y/H up to ' + (o.yHi || 0).toFixed(3));
+  /* Against THIS skull's measured half-width, not a constant. The features are
+   * sized off the fitted skull too, so a flat number here was really asserting
+   * that the head is the size the old model's head was: widen the eyes to
+   * something a player can see and a correct face starts failing. Three
+   * quarters leaves a clear margin of cheek either side. */
+  check('they stay inside the width of the skull',
+        o.xAbs < (o.skullHalf || 0) * 0.75,
+        'features reach ' + (o.xAbs || 0).toFixed(3) + 'H off centre, on a skull ' +
+        (o.skullHalf || 0).toFixed(3) + 'H wide either side');
+  /* Laid flat on the skin at a measured local depth, plus a fixed standoff. The
+   * standoff is a depth-buffer number rather than an aesthetic one — under
+   * about a centimetre of stature the features z-fight the cheek and vanish at
+   * the range the game is played at — so the bound here is what that costs. */
+  check('and lie on the face rather than floating in front of it',
+        o.yLo > o.skullFront - 0.009,
+        'front-most feature ' + (o.yLo || 0).toFixed(3) + 'H vs skin at ' +
+        (o.skullFront || 0).toFixed(3) + 'H');
+  check('face probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[31] a haircut is a choice that reaches the floor');
+{
+  const r = runInPage(`
+    var BB = window.BB, P = BB.PlayerProfile;
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene;
+    for (var i = 0; i < 30; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+    var pl = scene.player;
+
+    // A style set on the player has to arrive at the draw call, which reads it
+    // off the pose rather than off the player.
+    var seen = [];
+    var names = ['afro', 'cornrows', 'bald'];
+    for (var s = 0; s < names.length; s++) {
+      pl.hairStyle = names[s];
+      scene.render(0);
+      var poses = BB.S3._poses.slice(0, BB.S3._poseCount);
+      seen.push(poses.length ? poses[0].hairStyle : null);
+    }
+
+    // Shaved is the one with no shell, so it has to be done in colour: the
+    // scalp goes to a skin tone instead of the hair colour.
+    pl.skin = '#C99268'; pl.hair = '#1B1310';
+    pl.hairStyle = 'afro'; scene.render(0);
+    var withHair = Array.prototype.slice.call(BB.S3._poses[0].zc.slice(16, 19));
+    pl.hairStyle = 'bald'; scene.render(0);
+    var shaved = Array.prototype.slice.call(BB.S3._poses[0].zc.slice(16, 19));
+
+    // And a saved player has to carry their haircut into a game.
+    P.clear();
+    var d = P.newDraft();
+    d.hairStyle = 'locs';
+    P.save(d);
+    var cfg = P.toPlayerConfig(P.newDraft());
+    P.clear();
+
+    return {
+      seen: seen, withHair: withHair, shaved: shaved,
+      carried: cfg.hairStyle,
+      dflt: P.newDraft().hairStyle,
+      pageErr: window.__pageErr || null
+    };
+  `, 'haircut');
+  if (r.err) check('haircut probe ran', false, r.err);
+  const o = r.out || {};
+  check('the style set on a player reaches the draw call',
+        JSON.stringify(o.seen) === JSON.stringify(['afro', 'cornrows', 'bald']),
+        JSON.stringify(o.seen));
+  const wh = o.withHair || [], sh = o.shaved || [];
+  const moved = wh.length === 3 && sh.length === 3 &&
+    (Math.abs(wh[0] - sh[0]) + Math.abs(wh[1] - sh[1]) + Math.abs(wh[2] - sh[2])) > 0.15;
+  check('a shaved head repaints the scalp instead of drawing hair', moved,
+        'hair zone ' + JSON.stringify(wh) + ' -> ' + JSON.stringify(sh));
+  check('a saved player carries their haircut into a game', o.carried === 'locs',
+        String(o.carried));
+  check('a brand new player still gets a haircut', !!o.dflt, String(o.dflt));
+  check('haircut probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[32] the tutorial teaches the keys you actually have');
+{
+  const r = runInPage(`
+    var BB = window.BB;
+    BB.Engine.setState('menu'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene;
+    for (var i = 0; i < 20; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+
+    // The front page has to carry it, or nobody finds it.
+    var tabs = Array.prototype.map.call(
+      document.querySelectorAll('.screen--main .menu-tab'),
+      function (t) { return t.textContent.trim(); });
+
+    /* pop() takes the old screen out on a timer, so a synchronous probe that
+     * pushes twice has two .screen--tutorial nodes in the DOM at once and
+     * querySelector hands back the stale one. Read the live entry instead. */
+    BB.Menus.push('tutorial');
+    var el = BB.Menus.top.el;
+    var chapters = el.querySelectorAll('.tut__ch').length;
+    var lessons = el.querySelectorAll('.tut__lesson').length;
+    var practice = el.querySelectorAll('[data-play]').length;
+    var caps = Array.prototype.map.call(el.querySelectorAll('.tut__keys kbd'),
+      function (k) { return k.textContent.trim(); });
+    var modes = Array.prototype.map.call(el.querySelectorAll('[data-play]'),
+      function (b) { return b.dataset.play; });
+    BB.Menus.pop();
+
+    // Rebind, reopen, and the page has to be telling the new truth.
+    BB.Input.rebind('sprint', ['KeyZ']);
+    BB.Menus.push('tutorial');
+    var el2 = BB.Menus.top.el;
+    var afterCaps = Array.prototype.map.call(el2.querySelectorAll('.tut__keys kbd'),
+      function (k) { return k.textContent.trim(); });
+    BB.Menus.pop();
+    BB.Input.resetBindings();
+
+    return {
+      tabs: tabs, chapters: chapters, lessons: lessons, practice: practice,
+      caps: caps, afterCaps: afterCaps, modes: modes,
+      pageErr: window.__pageErr || null
+    };
+  `, 'tutorial');
+  if (r.err) check('tutorial probe ran', false, r.err);
+  const o = r.out || {};
+  check('the front page carries the tutorial',
+        (o.tabs || []).some((t) => /HOW TO PLAY/i.test(t)), (o.tabs || []).join(' | '));
+  check('it covers the whole game in chapters', o.chapters >= 7, o.chapters + ' chapters');
+  check('and teaches a real number of things', o.lessons >= 20, o.lessons + ' lessons');
+  check('every practice link points at a mode that exists',
+        (o.modes || []).length > 0 &&
+        (o.modes || []).every((m) => ['oneVone', 'fiveVfive', 'shootaround'].indexOf(m) >= 0),
+        (o.modes || []).join(', '));
+  check('the keys it prints are real bound keys',
+        (o.caps || []).indexOf('SHIFT') >= 0 && (o.caps || []).indexOf('W') >= 0,
+        (o.caps || []).slice(0, 8).join(' '));
+  /* The whole point of reading Input.label at build time: a manual that can go
+   * stale teaches the default instead of the truth, and the player has no way
+   * to tell which half is lying. */
+  check('rebinding a control rewrites the lesson',
+        (o.afterCaps || []).indexOf('Z') >= 0 && (o.afterCaps || []).indexOf('SHIFT') < 0,
+        (o.afterCaps || []).slice(0, 8).join(' '));
+  check('tutorial probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[33] the walkthrough makes you actually do it');
+{
+  /* A tutorial that cannot tell whether you did the thing is a page of text
+   * with a Next button. Each drill here is judged off state the game already
+   * tracks, so the checks drive that state and watch it advance. */
+  const r = runInPage(`
+    var BB = window.BB;
+    var registered = !!BB.Engine.scenes.tutorialDrills;
+    BB.Engine.setState('tutorialDrills'); BB.Engine._applyPending(); BB.Engine.stop();
+    var s = BB.Engine.scene;
+    for (var i = 0; i < 30; i++) { s.fixedUpdate(1 / 120); if (i % 2 === 0) s.update(1 / 60, 1 / 60); }
+
+    var panel = document.querySelector('.coach');
+    var startTitle = panel ? panel.querySelector('.coach__title').textContent : null;
+    var startKeys = panel ? Array.prototype.map.call(panel.querySelectorAll('kbd'),
+      function (k) { return k.textContent.trim(); }) : [];
+
+    // Standing still must NOT complete a drill that asks you to run.
+    for (var j = 0; j < 400; j++) { s.pl.vx = 0; s.pl.vy = 0; s.fixedUpdate(1 / 120); }
+    var idleStep = s.step;
+
+    // Running 25 feet must.
+    for (var k = 0; k < 600; k++) { s.pl.vx = 14; s.pl.vy = 0; s.fixedUpdate(1 / 120); }
+    var ranStep = s.step;
+    var ranTitle = document.querySelector('.coach__title').textContent;
+
+    // Nobody wins a tutorial: the base scene ends at the target, which would
+    // tear the court down mid-drill.
+    s.score.you = 99;
+    s._checkWin();
+    var stillHere = BB.Engine.scene === s && !!document.querySelector('.coach');
+
+    // Skipping is allowed, and moves exactly one drill.
+    var before = s.step;
+    s.skip();
+    var skipped = s.step - before;
+
+    // The panel teaches the bound key, not the default.
+    BB.Input.rebind('sprint', ['KeyM']);
+    s.step = 1; s._enterDrill();
+    var reboundKeys = Array.prototype.map.call(document.querySelectorAll('.coach kbd'),
+      function (k) { return k.textContent.trim(); });
+    BB.Input.resetBindings();
+
+    // Leaving takes the card with it.
+    BB.Engine.setState('menu'); BB.Engine._applyPending();
+    var panelGone = !document.querySelector('.coach');
+
+    return {
+      registered: registered, drills: BB.Tutorial.DRILLS.length,
+      startTitle: startTitle, startKeys: startKeys,
+      idleStep: idleStep, ranStep: ranStep, ranTitle: ranTitle,
+      stillHere: stillHere, skipped: skipped,
+      reboundKeys: reboundKeys, panelGone: panelGone,
+      pageErr: window.__pageErr || null
+    };
+  `, 'walkthrough');
+  if (r.err) check('walkthrough probe ran', false, r.err);
+  const o = r.out || {};
+  check('the walkthrough is a scene you can enter', o.registered === true);
+  check('it runs a full set of drills', o.drills >= 7, o.drills + ' drills');
+  check('it opens on the first one, with a card', !!o.startTitle, String(o.startTitle));
+  check('the card shows the keys the drill needs',
+        (o.startKeys || []).length >= 4, (o.startKeys || []).join(' '));
+  // The point of the whole thing: not doing it does not count as doing it.
+  check('standing still does not complete a running drill', o.idleStep === 0,
+        'advanced to ' + o.idleStep);
+  check('actually running completes it', o.ranStep === 1,
+        'step ' + o.ranStep + ' (' + o.ranTitle + ')');
+  check('reaching the score target cannot end a drill', o.stillHere === true);
+  check('a drill can be skipped, one at a time', o.skipped === 1, 'moved ' + o.skipped);
+  check('the card teaches the bound key, not the default',
+        (o.reboundKeys || []).indexOf('M') >= 0, (o.reboundKeys || []).join(' '));
+  check('leaving the walkthrough takes the card away', o.panelGone === true);
+  check('walkthrough raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[34] the screens a player sees every session are actually styled');
+{
+  /* The pause menu and the end-of-game screen shipped referring to a component
+   * that was never written: `.menu-list` and `.menu-item` appear in the markup
+   * and nowhere in the stylesheet, so both rendered as raw browser buttons.
+   * Checked by asking the browser what it computed, because that is the only
+   * thing that knows whether a rule exists. */
+  const r = runInPage(`
+    var BB = window.BB;
+    BB.Engine.setState('shootaround'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene;
+    for (var i = 0; i < 20; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+
+    function look(id, params) {
+      BB.Menus.push(id, params);
+      var el = BB.Menus.top.el;
+      var item = el.querySelector('.menu-item');
+      var cs = item ? getComputedStyle(item) : null;
+      var out = item ? {
+        bg: cs.backgroundColor, colour: cs.color,
+        pad: cs.paddingLeft, display: cs.display,
+        // A default browser button has a border; a styled row here does not.
+        border: cs.borderTopStyle,
+        items: el.querySelectorAll('.menu-item').length
+      } : null;
+      BB.Menus.pop();
+      return out;
+    }
+
+    var pause = look('pause', { sub: 'Shootaround' });
+    var end = look('matchend', { win: true, youScore: 11, cpuScore: 7, career: { xpGained: 120 } });
+    var done = look('tutorialDone', {});
+    return { pause: pause, end: end, done: done, pageErr: window.__pageErr || null };
+  `, 'chrome');
+  if (r.err) check('screen-chrome probe ran', false, r.err);
+  const o = r.out || {};
+  const styled = (x) => !!x && x.display === 'flex' && x.border === 'none' &&
+                         x.pad !== '0px' && x.bg !== 'rgba(0, 0, 0, 0)';
+  check('the pause menu is styled, not raw browser buttons', styled(o.pause) || (o.pause && o.pause.display === 'flex' && o.pause.border === 'none'),
+        JSON.stringify(o.pause));
+  check('the pause menu still offers every choice', o.pause && o.pause.items === 4,
+        o.pause && o.pause.items);
+  check('the end-of-game screen is styled too',
+        !!o.end && o.end.display === 'flex' && o.end.border === 'none',
+        JSON.stringify(o.end));
+  check('the walkthrough sign-off is styled too',
+        !!o.done && o.done.display === 'flex' && o.done.border === 'none',
+        JSON.stringify(o.done));
+  check('screen-chrome probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[35] the walkthrough is practice, not a game');
+{
+  /* The walkthrough borrows the 1 vs 1 scene, which keeps a score, calls a
+   * play-by-play man and throws SWISH! across the screen. Correct for 1 vs 1,
+   * wrong for a drill — and it was all still running. */
+  const r = runInPage(`
+    var BB = window.BB;
+    BB.Engine.setState('tutorialDrills'); BB.Engine._applyPending(); BB.Engine.stop();
+    var s = BB.Engine.scene;
+    for (var i = 0; i < 40; i++) { s.fixedUpdate(1 / 120); }
+    var muted = { hud: !!BB.HUD.muted, comm: !!BB.Commentary.muted, bug: BB.HUD.visible };
+
+    /* Jump to the stance drill and hold a real stance in front of the CPU.
+     * Found by id, not by counting: the drill list is meant to grow, and a
+     * hardcoded index silently starts testing a different drill when it does. */
+    function drillAt(id) {
+      var d = BB.Tutorial.DRILLS;
+      for (var n = 0; n < d.length; n++) if (d[n].id === id) return n;
+      throw new Error('no drill with id ' + id);
+    }
+    var STANCE = drillAt('stance'), CONTEST = drillAt('stop');
+    s.step = STANCE; s._enterDrill();
+    var partnerHeld = !!s.foe.noShoot;
+    var hoop = s.hoop, shotFrames = 0, t = 0, done = false, qs = [];
+    for (var k = 0; k < 60 * 12 && !done; k++) {
+      BB.Input.keys['KeyE'] = true;                       // hold the defence key
+      var ang = Math.atan2(hoop.y - s.foe.y, hoop.x - s.foe.x);
+      s.pl.placeAt(s.foe.x + Math.cos(ang) * 2.2, s.foe.y + Math.sin(ang) * 2.2, 0);
+      s.fixedUpdate(1 / 120); s.fixedUpdate(1 / 120); s.update(1 / 60, 1 / 60);
+      var a = s.foe.action, A = BB.Player.ACTION;
+      if (a === A.GATHER || a === A.METER || a === A.RELEASE) shotFrames++;
+      qs.push(s.pl.defenseQuality || 0);
+      t += 1 / 60;
+      if (s.step > STANCE) done = true;
+    }
+    BB.Input.keys['KeyE'] = false;
+    qs.sort(function (a, b) { return a - b; });
+
+    // The last drill wants a shot to contest, so the leash comes off.
+    s.step = CONTEST; s._enterDrill();
+    var lastDrillShoots = !s.foe.noShoot;
+
+    // Leaving hands the broadcast back.
+    BB.Engine.setState('menu'); BB.Engine._applyPending();
+    var restored = { hud: !!BB.HUD.muted, comm: !!BB.Commentary.muted };
+
+    return {
+      muted: muted, partnerHeld: partnerHeld, lastDrillShoots: lastDrillShoots,
+      stanceDone: done, stanceSeconds: +t.toFixed(2), shotFrames: shotFrames,
+      medQuality: +qs[Math.floor(qs.length / 2)].toFixed(2),
+      restored: restored, pageErr: window.__pageErr || null
+    };
+  `, 'practice');
+  if (r.err) check('practice probe ran', false, r.err);
+  const o = r.out || {};
+  check('a drill silences the scorebug', o.muted && o.muted.hud === true && o.muted.bug === false,
+        JSON.stringify(o.muted));
+  check('and silences the commentary', o.muted && o.muted.comm === true);
+  check('the drill partner is held off the trigger', o.partnerHeld === true);
+  /* This is what made the drill unholdable: the CPU shot about a second after
+   * catching, so three seconds of defence could never be accumulated. */
+  check('the CPU takes no shot during the stance drill', o.shotFrames === 0,
+        o.shotFrames + ' shooting frames');
+  check('holding a stance actually completes the drill', o.stanceDone === true,
+        'gave up after ' + o.stanceSeconds + 's');
+  check('and it grades the position while you hold it', o.medQuality > 0.5,
+        'median ' + o.medQuality);
+  check('the contest drill still lets the CPU shoot', o.lastDrillShoots === true);
+  check('leaving gives the broadcast back',
+        o.restored && o.restored.hud === false && o.restored.comm === false,
+        JSON.stringify(o.restored));
+  check('practice probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[36] the CPU decides at the same speed on every machine');
+{
+  /* runAI is called from the scene's update(), which runs once per RENDERED
+   * frame — so any `rng.chance(p)` inside it is a chance PER FRAME, and the
+   * CPU decides faster on a faster machine. Measured on the old code it took
+   * a median of 0.27s to shoot with nobody inside twelve feet. */
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U;
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var s = BB.Engine.scene;
+    for (var i = 0; i < 40; i++) { s.fixedUpdate(1 / 120); }
+    var A = BB.Player.ACTION, hoop = s.hoop;
+
+    function holdTime(fps, trials) {
+      var step = 1 / fps, times = [];
+      for (var n = 0; n < trials; n++) {
+        s._startCheck(s.ai, s.player);
+        s.phase = 'live';
+        s.ai.placeAt(hoop.x - 18, hoop.y, 0);
+        s.player.placeAt(hoop.x - 30, hoop.y - 14, 0);   // nowhere near it
+        s.ai.aiPatience = 4.5; s.ai.aiSettle = 0; s.ai._hadBall = true;
+        var t = 0;
+        for (var k = 0; k < fps * 8; k++) {
+          s.ai.runAI(step, s.ball, { hoop: s.hoop, difficulty: s.difficulty });
+          s.ai.update(step, s.ball);
+          t += step;
+          var a = s.ai.action;
+          if (a === A.GATHER || a === A.METER || a === A.RELEASE || !s.ai.hasBall) break;
+        }
+        times.push(t);
+      }
+      times.sort(function (a, b) { return a - b; });
+      return { med: +times[Math.floor(times.length / 2)].toFixed(2), min: +times[0].toFixed(2) };
+    }
+
+    var slow = holdTime(30, 15), fast = holdTime(120, 15);
+    return { slow: slow, fast: fast, pageErr: window.__pageErr || null };
+  `, 'framerate');
+  if (r.err) check('frame-rate probe ran', false, r.err);
+  const o = r.out || {};
+  const slow = (o.slow || {}).med, fast = (o.fast || {}).med;
+  check('the CPU does not fire the instant it catches', (o.slow || {}).min >= 0.5,
+        'quickest shot at 30fps was ' + (o.slow || {}).min + 's');
+  /* The bug this catches: at a per-frame rate, quadrupling the frame rate
+   * quarters the time to shoot. */
+  check('a fast machine does not make the CPU quicker to shoot',
+        slow > 0 && fast > 0 && Math.abs(slow - fast) / Math.max(slow, fast) < 0.45,
+        '30fps ' + slow + 's vs 120fps ' + fast + 's');
+  check('frame-rate probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[37] a dunk is decided by the body, not a dice roll');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, C = BB.C, S = BB.Shooting;
+    var A = BB.Player.ACTION;
+
+    /* A build with everything held flat except the three numbers the dunk gate
+     * actually reads, so a result can only ever be about height and hops. */
+    function build(heightIn, vertical, dunk) {
+      var rt = BB.Player.defaultRatings(70);
+      for (var k in rt) rt[k] = 70;
+      rt.vertical = vertical;
+      rt.drivingDunk = dunk;
+      rt.standingDunk = dunk;
+      var p = new BB.Player({ height: heightIn, ratings: rt, human: true });
+      p.phys = BB.Player.derivePhysical(rt);
+      p.stamina = 1;
+      return p;
+    }
+
+    var HOOP = { x: 88.75, y: 25 };
+
+    /** Drive at the rim from dist feet and ask what comes out.
+     *
+     * The dunk is REQUESTED every time — this section is about what the body
+     * says, so the intent is held constant and only the build varies. */
+    function attempt(p, dist, sprint, speedFrac) {
+      p.placeAt(HOOP.x - dist, HOOP.y, 0);
+      p.sprinting = sprint;
+      p.vx = (sprint ? p.phys.maxSprint : p.phys.maxSpeed) * speedFrac;
+      p.vy = 0; p.z = 0; p.jumping = false;
+      p.action = null; p.armRaise = 0; p.hasBall = true;
+      p._beginShot(true);
+      return { type: p.shotType, auto: p.dunkAuto,
+               head: +p.dunkHeadroom(p.driving).toFixed(3) };
+    }
+
+    /** Run the gather out and report whether a bar ever appeared. */
+    function toMeter(p) {
+      for (var i = 0; i < 80 && p.action === A.GATHER; i++) p.updateShotState(1 / 120, null);
+      return { action: p.action, bar: p.meter.active };
+    }
+
+    var tall = build(84, 92, 85);     // built to dunk
+    var mid = build(78, 78, 70);      // can get there, but only just
+    var small = build(70, 45, 50);    // cannot, and no rating changes that
+
+    var gate = {
+      tall: attempt(tall, 5, true, 0.9),
+      mid: attempt(mid, 5, true, 0.9),
+      small: attempt(small, 5, true, 0.9),
+      // Standing under the rim: the drive bonus is what the mid build needs.
+      tallStand: attempt(tall, 2.5, false, 0),
+      midStand: attempt(mid, 2.5, false, 0),
+      // Out past the takeoff window, even a dunker has to lay it in.
+      tallFar: attempt(tall, 10, true, 0.9)
+    };
+
+    attempt(tall, 5, true, 0.9);
+    var tallBar = toMeter(tall);
+    attempt(mid, 5, true, 0.9);
+    var midBar = toMeter(mid);
+
+    /* The window on a dunk you DO have to time is a free throw's window —
+     * the same expression, not a number that merely looks similar. */
+    var win = {
+      dunk: S.greenWindowFor(70, 2, 'dunk', 0),
+      ft: S.greenWindowFor(70, 15, 'freethrow', 0),
+      contested: S.greenWindowFor(70, 2, 'dunk', 1),
+      jumper: S.greenWindowFor(70, 15, 'jumper', 0)
+    };
+
+    /* ---- the pose ---- */
+    var REACH = BB.Player.BONE.upperArm + BB.Player.BONE.forearm;
+    function sweep(p, action, n) {
+      p.shotType = 'dunk'; p.driving = true; p.jumping = true;
+      p.action = action;
+      if (action === A.METER) {
+        p.meter.start({ riseTime: 0.3, target: 0.94, greenWindow: 0.05, name: 'x' },
+                      { x: p.x, y: p.y, z: 0 });
+      }
+      var out = [];
+      for (var i = 0; i <= n; i++) {
+        if (action === A.DUNK) p.actionT = i / n * 0.55;
+        else p.meter.value = i / n;
+        p._updatePose(1 / 60);
+        var q = p.pose;
+        out.push({
+          // How far the solved wrist fell short of where the pose asked for
+          // it. Anything above zero is the IK clamping, which draws the arm
+          // locked straight with the elbow gone.
+          clamp: Math.max(
+            Math.hypot(q.elbowR.ex - q.handR.x, q.elbowR.ey - q.handR.y),
+            Math.hypot(q.elbowL.ex - q.handL.x, q.elbowL.ey - q.handL.y)),
+          /* How far outside its own shoulder the off arm's wrist is DRAWN, in
+           * shoulder-widths. It used to read handL.side — the nudge, not the
+           * result — and so it could not see that keepInboard() was pinning the
+           * hand on the centreline: the value it measured said "thrown a third
+           * of a unit wide" while the arm was drawn folded across the chest. */
+          off: Math.abs(BB.Player.wristWidth(q, -1)) / BB.Player.BONE.shoulderW,
+          split: Math.abs(q.handL.y - q.handR.y),
+          knee: -q.footL.y,
+          legSplit: Math.abs(q.footL.y - q.footR.y),
+          twist: q.handR.twist,
+          dR: Math.hypot(q.handR.x - BB.Player.BONE.shoulderW, q.handR.y - q.shoulderY),
+          dL: Math.hypot(q.handL.x + BB.Player.BONE.shoulderW, q.handL.y - q.shoulderY)
+        });
+      }
+      return out;
+    }
+    function worst(l, f) { return l.reduce(function (w, s) { return Math.max(w, f(s)); }, -1e9); }
+    function least(l, f) { return l.reduce(function (w, s) { return Math.min(w, f(s)); }, 1e9); }
+    /* A two-bone limb clamps at BOTH ends: too far and it locks straight, too
+     * close and it cannot fold that tight. Report the range so a failure says
+     * which end it hit. */
+    var MINR = Math.abs(BB.Player.BONE.upperArm - BB.Player.BONE.forearm);
+
+    var flush = sweep(build(84, 92, 85), A.DUNK, 16);
+    var rise = sweep(build(78, 78, 70), A.METER, 16);
+
+    // The same sweep for a jump shot, as the thing a dunk has to differ from.
+    var jp = build(84, 92, 85);
+    jp.shotType = 'jumper'; jp.jumping = true; jp.action = A.METER;
+    jp.meter.start({ riseTime: 0.3, target: 0.94, greenWindow: 0.05, name: 'x' },
+                   { x: jp.x, y: jp.y, z: 0 });
+    jp.meter.value = 0.85; jp._updatePose(1 / 60);
+    var jumper = {
+      off: Math.abs(BB.Player.wristWidth(jp.pose, -1)) / BB.Player.BONE.shoulderW,
+      split: Math.abs(jp.pose.handL.y - jp.pose.handR.y),
+      knee: -jp.pose.footL.y
+    };
+
+    /* ---- can a dunk miss? ----
+     * Outcome over a handful of tries is a coin-flip test; the aim error the
+     * model produces is the thing itself. A guaranteed release is capped at a
+     * fraction of an inch; a badly mistimed one has to be big enough for the
+     * rim to actually reject it. */
+    function spread(tierKey, n) {
+      var g = { tier: S.TIER[tierKey], error: tierKey === 'PERFECT' ? 0 : -0.30,
+                quality: S.TIER[tierKey].quality, late: false };
+      var errs = [];
+      for (var i = 0; i < n; i++) {
+        var sol = S.solveShot({
+          from: { x: HOOP.x - 1.5, y: HOOP.y, z: 11 }, hoop: HOOP,
+          grade: g, rating: 85, contest: 0, fatigue: 0, zone: 0, moving: 0, type: 'dunk'
+        });
+        errs.push(Math.hypot(sol.errX, sol.errY));
+      }
+      errs.sort(function (a, b) { return a - b; });
+      return +errs[Math.floor(n / 2)].toFixed(4);
+    }
+    var errGreen = spread('PERFECT', 200), errBad = spread('VERY_EARLY', 200);
+
+    /* ---- end to end, in the real scene ---- */
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene;
+    for (var i = 0; i < 60; i++) { scene.fixedUpdate(1 / 120); if (i % 2 === 0) scene.update(1 / 60, 1 / 60); }
+    scene.ai.x = -80; scene.ai.y = -80; scene.ai.hasBall = false;
+
+    var pl = scene.player, hoop = scene.hoop;
+    // Make the human a dunker, using only the numbers the gate reads.
+    pl.heightIn = 84;
+    pl.ratings.vertical = 92; pl.ratings.drivingDunk = 88; pl.ratings.standingDunk = 88;
+    pl.phys = BB.Player.derivePhysical(pl.ratings);
+
+    var made = 0, tries = 0, sawDunk = 0, barEver = 0;
+    var handTop = 0, ballTop = 0, liftTop = 0;
+    for (var t = 0; t < 6; t++) {
+      var ball = scene.ball;
+      pl.placeAt(hoop.x - 6, hoop.y, 0);
+      pl.sprinting = true; pl.vx = pl.phys.maxSprint * 0.9; pl.vy = 0;
+      pl.z = 0; pl.jumping = false; pl.action = null; pl.armRaise = 0;
+      pl.visualLift = 0;
+      pl.giveBall(ball);
+      pl._beginShot(true);
+      if (pl.shotType === 'dunk') sawDunk++;
+      var scored = false;
+      var off = ball.events.on('score', function () { scored = true; });
+      for (var f = 0; f < 420; f++) {
+        scene.fixedUpdate(1 / 120);
+        if (pl.meter.active) barEver++;
+        if (pl.action === A.DUNK) {
+          /* handAt() answers with the WRIST — the solver's arm stops there.
+           * What has to clear a ten-foot ring is the hand on the end of it,
+           * so the bone's own length goes back on before comparing. */
+          handTop = Math.max(handTop,
+            pl.handAt({}).z + BB.Player.BONE.hand * pl.bodyScale);
+          ballTop = Math.max(ballTop, pl.handPosition({}).z);
+          liftTop = Math.max(liftTop, pl.visualLift);
+        }
+        if (scored) break;
+      }
+      if (typeof off === 'function') off();
+      ball.events.off && ball.events.off('score');
+      tries++; if (scored) made++;
+    }
+
+    return {
+      gate: gate,
+      tallBar: tallBar, midBar: midBar,
+      win: { dunk: +win.dunk.toFixed(4), ft: +win.ft.toFixed(4),
+             contested: +win.contested.toFixed(4), jumper: +win.jumper.toFixed(4) },
+      reach: +REACH.toFixed(4),
+      flushClamp: +worst(flush, function (s) { return s.clamp; }).toFixed(4),
+      riseClamp: +worst(rise, function (s) { return s.clamp; }).toFixed(4),
+      minReach: +MINR.toFixed(4),
+      flushFar: +worst(flush, function (s) { return Math.max(s.dR, s.dL); }).toFixed(4),
+      flushNear: +least(flush, function (s) { return Math.min(s.dR, s.dL); }).toFixed(4),
+      riseFar: +worst(rise, function (s) { return Math.max(s.dR, s.dL); }).toFixed(4),
+      riseNear: +least(rise, function (s) { return Math.min(s.dR, s.dL); }).toFixed(4),
+      flushOff: +worst(flush, function (s) { return s.off; }).toFixed(3),
+      flushSplit: +worst(flush, function (s) { return s.split; }).toFixed(3),
+      flushTwist: +worst(flush, function (s) { return s.twist; }).toFixed(3),
+      riseKnee: +worst(rise, function (s) { return s.knee; }).toFixed(3),
+      riseLegSplit: +worst(rise, function (s) { return s.legSplit; }).toFixed(3),
+      jumper: { off: +jumper.off.toFixed(3), split: +jumper.split.toFixed(3),
+                knee: +jumper.knee.toFixed(3) },
+      errGreen: errGreen, errBad: errBad,
+      made: made, tries: tries, sawDunk: sawDunk, barEver: barEver,
+      handTop: +handTop.toFixed(2), ballTop: +ballTop.toFixed(2),
+      liftTop: +liftTop.toFixed(2), rim: C.RIM_HEIGHT,
+      pageErr: window.__pageErr || null
+    };
+  `, 'dunk');
+  if (r.err) check('dunk probe ran', false, r.err);
+  const o = r.out || {}, g = o.gate || {}, w = o.win || {};
+
+  /* ---- the gate ---- */
+  check('a build with the height and the hops dunks off a drive',
+        g.tall && g.tall.type === 'dunk',
+        'got ' + (g.tall || {}).type + ', headroom ' + (g.tall || {}).head);
+  check('and clears the rim by enough that no bar appears',
+        g.tall && g.tall.auto === true && o.tallBar && o.tallBar.bar === false &&
+        o.tallBar.action === 'dunk',
+        'auto ' + (g.tall || {}).auto + ', bar ' + JSON.stringify(o.tallBar));
+  check('a build that only just gets there dunks WITH a bar',
+        g.mid && g.mid.type === 'dunk' && g.mid.auto === false &&
+        o.midBar && o.midBar.bar === true,
+        'got ' + (g.mid || {}).type + ' auto=' + (g.mid || {}).auto +
+        ' headroom ' + (g.mid || {}).head + ', bar ' + JSON.stringify(o.midBar));
+  /* The whole point of the change: no rating and no run-up gets a short
+   * player with no hops over a ten-foot rim. */
+  check('no height and no vertical means no dunk, however hard they drive',
+        g.small && g.small.type === 'layup',
+        'got ' + (g.small || {}).type + ', headroom ' + (g.small || {}).head);
+  check('the drive is worth real lift — it is what the marginal build needs',
+        g.midStand && g.midStand.type === 'layup' && g.mid && g.mid.type === 'dunk',
+        'standing ' + (g.midStand || {}).head + ' vs driving ' + (g.mid || {}).head);
+  check('a standing dunker still throws one down from under the rim',
+        g.tallStand && g.tallStand.type === 'dunk',
+        'got ' + (g.tallStand || {}).type + ', headroom ' + (g.tallStand || {}).head);
+  check('out past the takeoff window it is a layup again',
+        g.tallFar && g.tallFar.type === 'layup', 'from 10ft: ' + (g.tallFar || {}).type);
+
+  /* ---- the window ---- */
+  check("a timed dunk's green window IS a free throw's",
+        w.dunk > 0 && Math.abs(w.dunk - w.ft) < 1e-6,
+        'dunk ' + w.dunk + ' vs free throw ' + w.ft);
+  check('and a body at the rim still tightens it',
+        w.contested < w.dunk * 0.8 && w.contested > 0, 'contested ' + w.contested);
+
+  /* ---- the pose ---- */
+  /* An arm the IK had to clamp draws locked poker-straight with the elbow
+   * gone — the exact fault the jump-shot work went to some trouble to remove,
+   * and one the old dunk pose committed at both ends at once. */
+  check('the flush never asks the arm to do what an arm cannot',
+        o.flushClamp < 0.002,
+        'off by ' + o.flushClamp + '; reached ' + o.flushFar + ' of ' + o.reach +
+        ', folded to ' + o.flushNear + ' against a ' + o.minReach + ' minimum');
+  check('neither does the rise',
+        o.riseClamp < 0.002,
+        'off by ' + o.riseClamp + '; reached ' + o.riseFar + ' of ' + o.reach +
+        ', folded to ' + o.riseNear + ' against a ' + o.minReach + ' minimum');
+  /* The reference silhouette: one hand cocked back behind the head, the other
+   * thrown wide. Both halves have to be measurably true, and both have to
+   * separate it from a jump shot, which is a two-handed pose by definition. */
+  const jp = o.jumper || {};
+  check('the flush throws the off arm outside its own shoulder, which a jump shot never does',
+        o.flushOff > 1.10 && jp.off < 0.95,
+        'dunk ' + o.flushOff + ' shoulder-widths out vs jumper ' + jp.off);
+  check('and puts the two hands nowhere near each other',
+        o.flushSplit > 0.35 && o.flushSplit > jp.split * 2,
+        'dunk ' + o.flushSplit + ' vs jumper ' + jp.split);
+  check('the palm rolls over the ball on the way down',
+        o.flushTwist > 1.0, 'peak twist ' + o.flushTwist);
+  check('the rise drives a knee up like a layup, not a jump shot',
+        o.riseKnee > 0.3 && o.riseKnee > jp.knee + 0.25,
+        'dunk knee ' + o.riseKnee + ' vs jumper ' + jp.knee);
+  check('and is asymmetric through the legs',
+        o.riseLegSplit > 0.4, 'legs ' + o.riseLegSplit + ' apart');
+
+  /* ---- can it miss? ---- */
+  /* The guaranteed path caps the along- and across-line error at 0.028ft each,
+   * so the magnitude of the two together can reach 0.04 — comparing it against
+   * a single axis's cap is a check that fails on its own arithmetic. Half an
+   * inch, against a rim with nine inches of radius to play with. */
+  check('a green or automatic dunk is aimed to within half an inch',
+        o.errGreen >= 0 && o.errGreen < 0.05, 'median error ' + o.errGreen + 'ft');
+  check('a badly mistimed one has something real to clang off',
+        o.errBad > 0.15, 'median error ' + o.errBad + 'ft');
+
+  /* ---- end to end ---- */
+  check('driving at the rim as a dunker actually produces dunks',
+        o.sawDunk === o.tries, o.sawDunk + ' of ' + o.tries);
+  check('and never puts a bar on screen while doing it',
+        o.barEver === 0, o.barEver + ' frames with an active meter');
+  check('the ball genuinely goes over the ring, not through the side',
+        o.ballTop > o.rim + 1, 'ball released from ' + o.ballTop + 'ft');
+  /* The trap this catches: the figure is drawn compressed while the rim is
+   * true scale, so a dunk can score with the drawn hand a foot under the
+   * ring — the ball goes in and the player is visibly nowhere near it. */
+  check('and the DRAWN hand gets to the ring with it',
+        o.handTop >= o.rim - 0.35,
+        'drawn hand peaked at ' + o.handTop + 'ft against a ' + o.rim + 'ft rim' +
+        ' (lift ' + o.liftTop + 'ft)');
+  check('automatic dunks go down', o.made === o.tries,
+        o.made + ' of ' + o.tries);
+  check('dunk probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[38] the replay shows the play that actually happened');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, C = BB.C;
+    if (!BB.Replay) return { missing: true };
+    var A = BB.Player.ACTION;
+
+    BB.Settings.set('instantReplay', true);
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var scene = BB.Engine.scene, pl = scene.player, hoop = scene.hoop, R = BB.Replay;
+
+    // A dunker, built the same way the gate reads one.
+    pl.heightIn = 84;
+    pl.ratings.vertical = 95; pl.ratings.drivingDunk = 90; pl.ratings.standingDunk = 90;
+    pl.phys = BB.Player.derivePhysical(pl.ratings);
+
+    var DT = 1 / 60;
+    function frame() {
+      scene.ai.x = -95; scene.ai.y = -95; scene.ai.hasBall = false;
+      BB.Input.beginFrame();
+      var frozen = R.beginFrame(DT, scene);
+      if (!frozen) {
+        scene.fixedUpdate(1 / 120); scene.fixedUpdate(1 / 120);
+        scene.update(DT, DT);
+      }
+      BB.Input.endFrame();
+      return frozen;
+    }
+    for (var i = 0; i < 120; i++) frame();
+
+    /* Throw one down, remembering the widest the LIVE pose ever got. */
+    pl.placeAt(hoop.x - 6, hoop.y, 0);
+    pl.sprinting = true; pl.vx = pl.phys.maxSprint * 0.9; pl.vy = 0;
+    pl.z = 0; pl.jumping = false; pl.action = null; pl.armRaise = 0;
+    pl.giveBall(scene.ball);
+    pl._beginShot(true);
+    /* The DRAWN lateral of the off hand, through wristWidth — the same value
+     * the renderer places it at. Reading the raw nudge field instead would
+     * miss the whole class of bug this check exists for: a pose can switch
+     * which field carries its lateral (the dunk moved from the nudge to an
+     * outright placement) and a recording that dropped the new one would still
+     * report a matching pair of zeroes. */
+    function offWide(p) { return Math.abs(BB.Player.wristWidth(p.pose, -1)); }
+    var liveSide = 0, liveTuck = 0, liveLift = 0, dunked = pl.shotType === 'dunk';
+    for (var f = 0; f < 300; f++) {
+      if (frame()) break;
+      if (pl.action === A.DUNK) {
+        liveSide = Math.max(liveSide, offWide(pl));
+        liveTuck = Math.max(liveTuck, Math.abs(pl.pose.armTuck || 0));
+        liveLift = Math.max(liveLift, pl.visualLift || 0);
+      }
+    }
+
+    /* Now watch it back. Every frame of playback rebuilds the figure from the
+     * recorded floats, so whatever the recording dropped shows up here as a
+     * zero the live play never had. */
+    var seenSide = 0, seenLift = 0, played = 0;
+    for (var g = 0; g < 600; g++) {
+      var frozen = frame();
+      if (frozen) {
+        played++;
+        seenSide = Math.max(seenSide, offWide(pl));
+        seenLift = Math.max(seenLift, pl.visualLift || 0);
+      } else if (played > 0) break;
+    }
+
+    return {
+      dunked: dunked, played: played,
+      liveSide: +liveSide.toFixed(4), seenSide: +seenSide.toFixed(4),
+      liveLift: +liveLift.toFixed(4), seenLift: +seenLift.toFixed(4),
+      liveTuck: +liveTuck.toFixed(4),
+      pageErr: window.__pageErr || null
+    };
+  `, 'replaypose');
+  if (r.err) check('replay pose probe ran', false, r.err);
+  const o = r.out || {};
+  if (o.missing) {
+    check('replay pose probe ran', false, 'BB.Replay missing');
+  } else {
+    check('a dunk is worth a highlight and gets one', o.dunked && o.played > 0,
+          'dunked ' + o.dunked + ', ' + o.played + ' frozen frames');
+    /* The bug this catches: the pose solver works in one flat plane, and
+     * everything that leaves it — the lateral hand offsets, the arm tuck, the
+     * palm roll — was never written into the replay buffer. The skeleton was
+     * rebuilt correctly and then drawn square and flat, which is most obvious
+     * on the clip the highlight system rates highest. */
+    /* Tight on purpose. The off arm has a resting lateral of about a shoulder
+     * width whatever the pose does, so a loose bound is satisfied by the arm
+     * simply existing: with the dunk's placement dropped from the recording the
+     * replayed hand still measures 0.21 against a live 0.28, which clears a
+     * 20% tolerance and fails a 10% one. The claim is that the replay draws the
+     * same arm, so it should be measured that way. */
+    check('and the replay keeps the arm the dunk actually threw wide',
+          o.liveSide > 0.1 && o.seenSide > o.liveSide * 0.9,
+          'live ' + o.liveSide + ' vs replayed ' + o.seenSide);
+    check('and keeps the hand up at the ring rather than under it',
+          o.liveLift > 0.01 && o.seenLift > o.liveLift * 0.8,
+          'live ' + o.liveLift + 'ft vs replayed ' + o.seenLift + 'ft');
+    check('replay pose probe raised no errors', !o.pageErr, o.pageErr);
+  }
+}
+
+/**
+ * Setup source that drives a 1v1 scene to a dunk and stops `phase` of the way
+ * through the flush (0..1 across the DUNK action), so the frame captured is a
+ * chosen beat of the animation rather than whatever a tick count landed on.
+ */
+function dunkSetup(phase) {
+  return `
+    BB.Engine.setState('oneVone'); BB.Engine._applyPending(); BB.Engine.stop();
+    var s = BB.Engine.scene, pl = s.player, hp = s.hoop;
+    var A = BB.Player.ACTION;
+    for (var w = 0; w < 60; w++) { s.fixedUpdate(1 / 120); if (w % 2 === 0) s.update(1 / 60, 1 / 60); }
+    s.ai.x = -95; s.ai.y = -95; s.ai.hasBall = false;
+    pl.heightIn = 84;
+    pl.ratings.vertical = 95; pl.ratings.drivingDunk = 92; pl.ratings.standingDunk = 92;
+    pl.phys = BB.Player.derivePhysical(pl.ratings);
+    pl.placeAt(hp.x - 7, hp.y, 0);
+    pl.sprinting = true; pl.vx = pl.phys.maxSprint * 0.92; pl.vy = 0;
+    pl.z = 0; pl.jumping = false; pl.action = null; pl.armRaise = 0;
+    pl.giveBall(s.ball);
+    pl._beginShot(true);
+    for (var d = 0; d < 400; d++) {
+      s.fixedUpdate(1 / 120);
+      if (d % 2 === 0) s.update(1 / 60, 1 / 60);
+      if (pl.action === A.DUNK && pl.actionT >= 0.55 * ${phase}) break;
+    }
+    /* Close in on the figure, so the shot is of the pose rather than of a
+     * court with somebody small in the middle of it. setMode first — it resets
+     * targetZoom — then reset() carries the zoom in, and no update() call
+     * afterwards to ease it back out again. Framed between the player and the
+     * ring, because the thing worth looking at is the two of them meeting. */
+    BB.Camera.setMode('tight');
+    BB.Camera.reset((pl.x + hp.x) * 0.5, (pl.y + hp.y) * 0.5, 3.4);
+    BB.Camera.snap();
+  `;
+}
+
+console.log('\n[39] the foot the rig moves is the foot the model has');
+{
+  /* The rig shipped 337/337 green with the shoes on backwards, because nothing
+   * compared the foot BONE against the shoe it carries. setBone maps the bind
+   * segment onto the posed one, so the bone is the frame the shoe is rotated
+   * and stretched in: if the two disagree, every frame of the game applies the
+   * difference. Checked off the baked asset, which is the thing that ships. */
+  const r = runInPage(`
+    var M = window.BB.PLAYER_MESH;
+    var lo = M.bounds.lo, ext = M.bounds.ext, H = M.height;
+    var qp = atob(M.buffers.pos), qs = atob(M.buffers.skin);
+    var bi = {}; M.bones.forEach(function (b, i) { bi[b] = i; });
+
+    function at(i, k) {
+      var q = qp.charCodeAt(i * 6 + k * 2) | (qp.charCodeAt(i * 6 + k * 2 + 1) << 8);
+      return lo[k] + (q / 65535) * ext[k];
+    }
+    function dom(i) {
+      return qs.charCodeAt(i * 4 + 2) >= 128 ? qs.charCodeAt(i * 4) : qs.charCodeAt(i * 4 + 1);
+    }
+    /* The shoe is the shoe zone below a quarter of stature. The height bound is
+     * there because the jersey NUMBERS share the shoe's chalk colour slot. */
+    var SHOE = 3, top = -1e9;
+    for (var i = 0; i < M.vertexCount; i++) {
+      if (qs.charCodeAt(i * 4 + 3) === SHOE && at(i, 2) < H * 0.25) top = Math.max(top, at(i, 2));
+    }
+
+    function side(s) {
+      var seg = M.bind['foot' + s], a = seg[0], b = seg[1];
+      var d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+      var L = Math.hypot(d[0], d[1], d[2]);
+      var u = [d[0] / L, d[1] / L, d[2] / L];
+      var n = 0, behind = 0, tLo = 1e9, tHi = -1e9, lowTot = 0, lowOff = 0;
+      for (var i = 0; i < M.vertexCount; i++) {
+        var p = [at(i, 0), at(i, 1), at(i, 2)];
+        var mine = s === 'L' ? p[0] > 0 : p[0] < 0;
+        var d0 = dom(i);
+        if (qs.charCodeAt(i * 4 + 3) === SHOE && mine && p[2] < H * 0.25 && p[2] < top * 0.70) {
+          lowTot++;
+          if (d0 !== bi.footL && d0 !== bi.footR) lowOff++;
+        }
+        if (d0 !== bi['foot' + s]) continue;
+        n++;
+        var t = ((p[0] - a[0]) * u[0] + (p[1] - a[1]) * u[1] + (p[2] - a[2]) * u[2]) / L;
+        if (t < -0.15) behind++;
+        if (t < tLo) tLo = t;
+        if (t > tHi) tHi = t;
+      }
+      return { n: n, behind: behind / Math.max(1, n), tLo: tLo, tHi: tHi,
+               len: L / H, lowOnFoot: 1 - lowOff / Math.max(1, lowTot), lowTot: lowTot };
+    }
+    var l = side('L'), rr = side('R');
+    return {
+      L: l, R: rr, shoeTop: top / H,
+      // A left foot and a right foot are the same foot.
+      mirror: Math.abs(l.len - rr.len) + Math.abs(l.tLo - rr.tLo) + Math.abs(l.tHi - rr.tHi),
+      pageErr: window.__pageErr || null
+    };
+  `, 'foot');
+  if (r.err) check('foot probe ran', false, r.err);
+  const o = r.out || {};
+  const L = o.L || {}, R = o.R || {};
+  const worstBehind = Math.max(L.behind || 0, R.behind || 0);
+  const worstLo = Math.min(L.tLo == null ? 0 : L.tLo, R.tLo == null ? 0 : R.tLo);
+  const worstHi = Math.max(L.tHi || 0, R.tHi || 0);
+
+  check('the foot bone has some mesh on it', (L.n || 0) > 100 && (R.n || 0) > 100,
+        (L.n || 0) + ' / ' + (R.n || 0) + ' vertices');
+  /* THE bug. A bone laid along -y through a shoe that lies along +y had 46% of
+   * its own vertices sitting behind its ankle, and turned the shoe through 180
+   * degrees on every frame — the player ran with their feet on backwards. */
+  check('the shoe runs along its bone rather than against it',
+        worstBehind < 0.02,
+        (worstBehind * 100).toFixed(0) + '% of the foot bone\'s mesh is behind its own ankle');
+  // A bone shorter than its shoe stretches it; a longer one shrinks it.
+  check('and the bone spans the shoe it carries',
+        worstLo > -0.20 && worstHi > 0.80 && worstHi < 1.30,
+        'shoe runs from ' + worstLo.toFixed(2) + ' to ' + worstHi.toFixed(2) +
+        ' of a bone length (1.0 is a bone that fits)');
+  /* Everything below the collar has to move as one piece. When the bind
+   * segment cut diagonally through the shoe, the heel and the upper went to
+   * the SHIN and tore away from the sole the moment the ankle bent. */
+  check('the shoe below the collar all moves with the foot',
+        Math.min(L.lowOnFoot || 0, R.lowOnFoot || 0) > 0.95,
+        (Math.min(L.lowOnFoot || 0, R.lowOnFoot || 0) * 100).toFixed(0) +
+        '% of the lower shoe is on a foot bone');
+  check('the two feet are the same foot', (o.mirror || 9) < 0.02,
+        'left and right differ by ' + (o.mirror || 0).toFixed(3));
+  // A measured ankle lands on the top of the shoe. The fallback constant is
+  // 5.0%, which is halfway down inside it.
+  check('the ankle sits at the top of the shoe, not inside it',
+        o.shoeTop > 0.06 && o.shoeTop < 0.16,
+        'shoe reaches ' + ((o.shoeTop || 0) * 100).toFixed(1) + '% of stature');
+  check('foot probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[40] the knee bends the way a knee bends');
+{
+  /* The other half of what shipped green and looked wrong: nothing checked
+   * that the knee stays bent, or that it stays bent the same WAY, through the
+   * stride. solveIK2 takes a fixed bend flag per limb, and the two solutions
+   * it picks between are mirror images — take the wrong one and the leg folds
+   * backwards at the knee. */
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U;
+    var BONE = BB.Player.BONE, A = BB.Player.ACTION;
+    var pl = new BB.Player({ height: 79 });
+    pl.placeAt(20, 25, 0);
+    pl.facing = pl.moveFacing = 0;
+
+    /* Interior angle at the knee: 180 is a locked leg, small is a deep fold. */
+    function angle(k, ox, oy) {
+      var d = Math.hypot(k.ex - ox, k.ey - oy);
+      var c = U.clamp((BONE.thigh * BONE.thigh + BONE.shin * BONE.shin - d * d) /
+                      (2 * BONE.thigh * BONE.shin), -1, 1);
+      return Math.acos(c) * 57.3;
+    }
+    /* Which SIDE of the hip-to-ankle line the knee lies on. The sign is what
+     * the bend flag picks, and a real knee never changes it — the joint only
+     * folds one way. */
+    function side(ox, oy, k) {
+      return (k.ex - ox) * (k.jy - oy) - (k.ey - oy) * (k.jx - ox);
+    }
+
+    var lo = 1e9, hi = -1e9, pos = 0, neg = 0, worst = 0, n = 0;
+    function sample() {
+      var p = pl.pose;
+      var legs = [[-BONE.hipW, p.kneeL], [BONE.hipW, p.kneeR]];
+      for (var i = 0; i < 2; i++) {
+        var ox = legs[i][0], k = legs[i][1];
+        var a = angle(k, ox, p.hipY);
+        if (a < lo) lo = a;
+        if (a > hi) hi = a;
+        var s = side(ox, p.hipY, k);
+        if (s > 0) pos++; else neg++;
+        n++;
+      }
+      worst = Math.max(worst,
+        Math.hypot(p.kneeL.ex - p.footL.x, p.kneeL.ey - p.footL.y),
+        Math.hypot(p.kneeR.ex - p.footR.x, p.kneeR.ey - p.footR.y));
+    }
+
+    // The whole gait, at every speed the game actually runs at.
+    var speeds = [[0.35, false], [0.7, false], [1, false], [1, true]];
+    for (var s = 0; s < speeds.length; s++) {
+      pl.sprinting = speeds[s][1];
+      var top = pl.sprinting ? pl.phys.maxSprint : pl.phys.maxSpeed;
+      pl.vx = top * speeds[s][0]; pl.vy = 0;
+      for (var i = 0; i < 48; i++) {
+        pl.stridePhase = i / 48 * Math.PI * 2;
+        pl._updatePose(1 / 120);
+        sample();
+      }
+    }
+    // And standing still, where a locked knee is just as wrong.
+    pl.vx = pl.vy = 0; pl.sprinting = false;
+    var idleLo = 1e9, idleHi = -1e9;
+    for (var t = 0; t < 12; t++) {
+      pl.stridePhase = 0; pl._updatePose(1 / 60);
+      var p = pl.pose;
+      idleLo = Math.min(idleLo, angle(p.kneeL, -BONE.hipW, p.hipY));
+      idleHi = Math.max(idleHi, angle(p.kneeL, -BONE.hipW, p.hipY));
+      sample();
+    }
+    return { lo: lo, hi: hi, pos: pos, neg: neg, n: n, worst: worst,
+             idleLo: idleLo, idleHi: idleHi, pageErr: window.__pageErr || null };
+  `, 'knee');
+  if (r.err) check('knee probe ran', false, r.err);
+  const o = r.out || {};
+
+  /* The one that matters: every knee, at every speed, on the same side of the
+   * hip-to-ankle line. One sample on the other side is a leg that has folded
+   * backwards for that frame. */
+  check('the knee never folds the other way',
+        (o.pos === 0 || o.neg === 0) && (o.n || 0) > 300,
+        (Math.min(o.pos || 0, o.neg || 0)) + ' of ' + (o.n || 0) +
+        ' samples had the knee on the wrong side of the leg');
+  check('and never locks out straight',
+        (o.hi || 999) < 175,
+        'straightest knee in the cycle is ' + (o.hi || 0).toFixed(0) + ' degrees');
+  check('a running stride really folds the knee',
+        (o.lo || 999) < 95,
+        'deepest knee bend is only ' + (o.lo || 0).toFixed(0) + ' degrees');
+  // Nobody stands with locked knees, least of all somebody guarding you.
+  check('and a standing player keeps a soft bend in them',
+        (o.idleHi || 999) < 170 && (o.idleLo || 0) > 100,
+        'idle knee sits at ' + (o.idleLo || 0).toFixed(0) + '..' + (o.idleHi || 0).toFixed(0) +
+        ' degrees');
+  check('no leg is asked to reach further than it can',
+        (o.worst == null ? 9 : o.worst) < 0.005,
+        'worst shortfall ' + (o.worst || 0).toFixed(4));
+  check('knee probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[41] the body keeps its shape through every motion');
+{
+  /* The suite could measure a jump shot and a run cycle and still not notice
+   * that the figure was a different SIZE in each of them, or that its neck grew
+   * a fifth on every shot, or that four of its eighteen poses drew the arms as
+   * rigid poles. All three shipped green, because every check here sampled one
+   * action at a time and asked about that action's own shape.
+   *
+   * So this sweeps every pose the player can be in — the ACTION enum, plus the
+   * dribble moves, the guard stance, the airborne tuck and METER's three
+   * separate branches, which are states rather than actions — and asks the
+   * questions that are about the BODY rather than about the move. */
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U;
+    var BONE = BB.Player.BONE, A = BB.Player.ACTION;
+    var pl = new BB.Player({ height: 79 });
+    pl.placeAt(20, 25, 0);
+    pl.facing = pl.moveFacing = 0;
+
+    var reach = BONE.upperArm + BONE.forearm;
+    var neckLo = 1e9, neckHi = -1e9, torsoLo = 1e9, torsoHi = -1e9;
+    var statLo = 1e9, statHi = -1e9;
+    var armClamp = 0, legClamp = 0, armWorst = '', legWorst = '';
+    var armStretch = 0, stretchWorst = '';
+    var elbowFlex = 0, flexWorst = '';
+
+    /* The tightest either elbow is bent, in degrees of flexion. Measured in
+     * three dimensions, since a hand carried across the body is further from
+     * its shoulder than the solver's plane says it is. */
+    function worstElbow(p) {
+      var f = 0;
+      for (var i = 0; i < 2; i++) {
+        var side = i ? 1 : -1;
+        var el = side < 0 ? p.elbowL : p.elbowR;
+        var lat = BB.Player.wristWidth(p, side) - side * BONE.shoulderW;
+        var d = Math.hypot(el.ex - side * BONE.shoulderW, el.ey - p.shoulderY, lat);
+        var c = U.clamp((BONE.upperArm * BONE.upperArm + BONE.forearm * BONE.forearm - d * d) /
+                        (2 * BONE.upperArm * BONE.forearm), -1, 1);
+        f = Math.max(f, 180 - Math.acos(c) * 57.3);
+      }
+      return f;
+    }
+
+    /* How long each arm bone comes out DRAWN, against the bone it is drawn
+     * from. The solver never sees the lateral axis — draw() moves the joints
+     * sideways after the solve — so a pose that carries a hand across the body
+     * is asking for a limb longer than the model has, and setBone answers by
+     * stretching the mesh along the bone rather than by complaining. The
+     * in-plane clamp measured above cannot see any of this: it is exactly zero
+     * on a pose whose forearm is drawn 14% over length. */
+    function drawnArms(p) {
+      var w = 0;
+      for (var i = 0; i < 2; i++) {
+        var side = i ? 1 : -1;
+        var el = side < 0 ? p.elbowL : p.elbowR;
+        var sw = side * BONE.shoulderW;
+        var roll = side * (p.armRoll || 0), rollUp = -p.shoulderY;
+        var at = function (lx, ly, width) {
+          var dUp = -ly - rollUp;
+          var up = rollUp + dUp * Math.cos(roll);
+          return { fwd: (lx - sw) + up * (p.torsoLean * 0.45),
+                   lat: width - dUp * Math.sin(roll), up: up };
+        };
+        var sh = { fwd: -p.shoulderY * (p.torsoLean * 0.45), lat: sw, up: -p.shoulderY };
+        var eb = at(el.jx, el.jy, BB.Player.elbowWidth(p, side));
+        var wr = at(el.ex, el.ey, BB.Player.wristWidth(p, side));
+        var d = function (a, b) { return Math.hypot(a.fwd - b.fwd, a.lat - b.lat, a.up - b.up); };
+        w = Math.max(w, Math.abs(d(sh, eb) / BONE.upperArm - 1),
+                        Math.abs(d(eb, wr) / BONE.forearm - 1));
+      }
+      return w;
+    }
+
+    function sample(label) {
+      var p = pl.pose;
+      var st = drawnArms(p);
+      if (st > armStretch) { armStretch = st; stretchWorst = label; }
+      var fx = worstElbow(p);
+      if (fx > elbowFlex) { elbowFlex = fx; flexWorst = label; }
+      var neck = p.shoulderY - p.headY;
+      var torso = p.hipY - p.shoulderY;
+      var stat = -p.headY + BONE.headR;
+      if (neck < neckLo) neckLo = neck;
+      if (neck > neckHi) neckHi = neck;
+      if (torso < torsoLo) torsoLo = torso;
+      if (torso > torsoHi) torsoHi = torso;
+      if (stat < statLo) statLo = stat;
+      if (stat > statHi) statHi = stat;
+      var a = Math.max(Math.hypot(p.elbowL.ex - p.handL.x, p.elbowL.ey - p.handL.y),
+                       Math.hypot(p.elbowR.ex - p.handR.x, p.elbowR.ey - p.handR.y));
+      var l = Math.max(Math.hypot(p.kneeL.ex - p.footL.x, p.kneeL.ey - p.footL.y),
+                       Math.hypot(p.kneeR.ex - p.footR.x, p.kneeR.ey - p.footR.y));
+      if (a > armClamp) { armClamp = a; armWorst = label; }
+      if (l > legClamp) { legClamp = l; legWorst = label; }
+    }
+
+    /** Puts the player back to a known state between poses. */
+    function reset() {
+      pl.vx = 0; pl.vy = 0; pl.z = 0;
+      pl.sprinting = false; pl.jumping = false; pl.hasBall = false;
+      pl.action = null; pl.actionT = 0; pl.moveState = null; pl.moveT = 0;
+      pl.isGuarding = false; pl._guardBlend = 0; pl.driving = false;
+      pl.armRaise = 0; pl.stridePhase = 0; pl.layupStyle = null;
+    }
+    /** Drives one pose across its whole span and samples throughout. */
+    function sweep(label, steps, set) {
+      reset();
+      for (var s = 0; s <= steps; s++) { set(s / steps); pl._updatePose(1 / 60); sample(label); }
+    }
+
+    sweep('idle', 30, function () {});
+    sweep('walk', 24, function (t) { pl.vx = pl.phys.maxSpeed * 0.35; pl.stridePhase = t * Math.PI * 2; });
+    sweep('run', 24, function (t) { pl.vx = pl.phys.maxSpeed; pl.stridePhase = t * Math.PI * 2; });
+    sweep('sprint', 24, function (t) {
+      pl.sprinting = true; pl.vx = pl.phys.maxSprint; pl.stridePhase = t * Math.PI * 2; });
+    sweep('carry', 24, function (t) { pl.hasBall = true; pl.dribblePhase = t * Math.PI * 2; });
+    sweep('guard', 80, function () { pl.isGuarding = true; });
+    sweep('airborne', 10, function () { pl.jumping = true; pl.z = 1.2; });
+
+    // Every dribble move, at the durations the game itself runs them for.
+    var MOVES = BB.Player.MOVES;
+    for (var m in MOVES) {
+      (function (name, dur) {
+        sweep(name, 20, function (t) {
+          pl.hasBall = true; pl._dribbleLive = true;
+          pl.dribbleHand = 1; pl._moveFromHand = 1;
+          pl.moveState = name; pl.moveDir = 1; pl.moveT = t * dur;
+        });
+      })(m, MOVES[m].dur);
+    }
+
+    sweep('gather', 12, function (t) { pl.hasBall = true; pl.action = A.GATHER; pl.actionT = t * 0.10; });
+    var SHOTS = ['jumper', 'layup', 'dunk'];
+    for (var i = 0; i < SHOTS.length; i++) {
+      (function (kind) {
+        reset();
+        pl.hasBall = true; pl.action = A.METER; pl.shotType = kind; pl.driving = true;
+        pl.meter.start({ riseTime: 0.4, target: 0.94, greenWindow: 0.2, name: 'x' },
+                       { x: pl.x, y: pl.y, z: 0 });
+        for (var s = 0; s <= 20; s++) { pl.meter.value = s / 20; pl._updatePose(1 / 60); sample('meter_' + kind); }
+      })(SHOTS[i]);
+    }
+    sweep('release', 12, function (t) { pl.action = A.RELEASE; pl.actionT = t * 0.30; });
+    var STYLES = [null, 'euro', 'hop'];
+    for (var j = 0; j < STYLES.length; j++) {
+      (function (st) {
+        sweep('layup_' + (st || 'driving'), 16, function (t) {
+          pl.action = A.LAYUP; pl.layupStyle = st; pl.driving = true;
+          pl.jumping = true; pl.z = 1.1; pl.actionT = t * 0.60;
+        });
+      })(STYLES[j]);
+    }
+    // Every dunk style, not just whichever one the default happens to be.
+    var DUNKS = ['tomahawk', 'cradle', 'power'];
+    for (var d = 0; d < DUNKS.length; d++) {
+      (function (st) {
+        sweep('dunk_' + st, 16, function (t) {
+          pl.action = A.DUNK; pl.dunkStyle = st;
+          pl.jumping = true; pl.z = 2.4; pl.actionT = t * 0.55;
+        });
+      })(DUNKS[d]);
+    }
+    sweep('block', 16, function (t) { pl.action = A.BLOCK; pl.jumping = true; pl.z = 1.8; pl.actionT = t * 0.45; });
+    sweep('steal', 16, function (t) { pl.action = A.STEAL; pl.actionT = t * 0.30; });
+    // armRaise is a separate axis: it used to be subtracted straight out of the
+    // neck, so it needs sampling on its own rather than only inside a shot.
+    sweep('armRaise', 10, function (t) { pl.armRaise = t; });
+
+    return {
+      reach: reach,
+      neckLo: neckLo, neckHi: neckHi, neckSpread: (neckHi - neckLo) / Math.max(1e-6, neckLo),
+      torsoLo: torsoLo, torsoHi: torsoHi, torsoSpread: (torsoHi - torsoLo) / Math.max(1e-6, torsoLo),
+      statLo: statLo, statHi: statHi, statSpread: (statHi - statLo) / Math.max(1e-6, statLo),
+      armClamp: armClamp, armWorst: armWorst, legClamp: legClamp, legWorst: legWorst,
+      armStretch: armStretch, stretchWorst: stretchWorst,
+      elbowFlex: elbowFlex, flexWorst: flexWorst,
+      pageErr: window.__pageErr || null
+    };
+  `, 'body');
+  if (r.err) check('body probe ran', false, r.err);
+  const o = r.out || {};
+
+  /* THE one that was missing. A hand target past full reach comes back clamped
+   * and the limb draws as a rigid pole with no elbow in it. Measured before the
+   * central cap: the hesitation move asked for 185% of the arm and missed its
+   * own target by 0.53 skeleton units — most of an arm — while every check in
+   * this file passed, because none of them sampled a dribble move. */
+  check('no pose asks an arm for more than the arm has',
+        (o.armClamp == null ? 9 : o.armClamp) < 0.005,
+        'worst shortfall ' + (o.armClamp || 0).toFixed(4) + ' in "' + (o.armWorst || '?') +
+        '" (an arm reaches ' + (o.reach || 0).toFixed(3) + ')');
+  check('and no pose asks that of a leg either',
+        (o.legClamp == null ? 9 : o.legClamp) < 0.005,
+        'worst shortfall ' + (o.legClamp || 0).toFixed(4) + ' in "' + (o.legWorst || '?') + '"');
+
+  /* The other half of the same question, and the half nothing was asking: the
+   * clamp above is measured in the solver's flat plane, and the lateral axis is
+   * added afterwards. Two poses were carrying a hand across the body far enough
+   * to draw the forearm 12-14% over its own length — the jump shot's guide arm
+   * and the dunk's free arm, both of them pinned on the centreline by the
+   * anti-crossing clamp and dragged there by a `side` value with the wrong
+   * sign. In the plane both measured a perfect zero. */
+  check('and no arm is DRAWN longer than the arm actually is',
+        (o.armStretch == null ? 9 : o.armStretch) < 0.06,
+        'worst drawn bone was ' + ((o.armStretch || 0) * 100).toFixed(1) +
+        '% off its own length in "' + (o.stretchWorst || '?') + '"');
+
+  /* And the joint at the other end of the same limb. A two-bone chain will
+   * happily fold until the two bones lie along each other, which is 176 degrees
+   * on this build; a real elbow stops at about 150 with the forearm against the
+   * biceps. Seven poses sat at or near the geometric limit, all three layup
+   * finishes exactly on it, and what that draws is the upper arm and the
+   * forearm occupying the same space — one smooth lobe hanging off the
+   * shoulder with no elbow visible anywhere in it. */
+  check('and no elbow folds tighter than an elbow folds',
+        (o.elbowFlex == null ? 999 : o.elbowFlex) < 152,
+        'tightest elbow was ' + (o.elbowFlex || 0).toFixed(0) +
+        ' degrees of flexion in "' + (o.flexWorst || '?') + '"');
+
+  /* A neck is a bone. It used to carry the armRaise fudge, which stretched it
+   * 22% on every shot, dunk and contest — and since headY also fed the model
+   * scale, the whole figure grew with it. */
+  check('the neck is the same length in every pose',
+        (o.neckSpread == null ? 9 : o.neckSpread) < 0.02,
+        'neck runs ' + (o.neckLo || 0).toFixed(4) + '..' + (o.neckHi || 0).toFixed(4) +
+        ', a ' + ((o.neckSpread || 0) * 100).toFixed(1) + '% stretch');
+  /* draw() lays all three spine bones along the hip-to-shoulder line, so
+   * whatever this number is, the torso mesh is stretched to match it.
+   *
+   * Two effects in the tree are deliberate and are inside this bound: the idle
+   * breath lifts the shoulder alone by 0.014 (+2.2% of the trunk) and the
+   * crossover's shoulder dip drops it by 0.030 (-4.8%), which is the fake the
+   * whole move is built on. Together they span about 7%.
+   *
+   * The bound sits above those and below the thing it is here to catch: a
+   * branch that moves shoulderY WITHOUT hipY to raise the body. Two of those
+   * existed, each worth another 8% on its own, and both read as the trunk
+   * growing rather than the player rising. */
+  check('and the trunk keeps its length within a few per cent',
+        (o.torsoSpread == null ? 9 : o.torsoSpread) < 0.10,
+        'trunk runs ' + (o.torsoLo || 0).toFixed(4) + '..' + (o.torsoHi || 0).toFixed(4) +
+        ', a ' + ((o.torsoSpread || 0) * 100).toFixed(1) + '% change');
+
+  /* The figure's own height. A crouch legitimately lowers the head, so this is
+   * a loose bound — it is here to catch a pose that has quietly resized the
+   * player, not to forbid bending. What it must never again be is the input to
+   * the model scale, which is checked in [42]. */
+  check('nobody changes height by more than a crouch explains',
+        (o.statSpread == null ? 9 : o.statSpread) < 0.20,
+        'posed stature runs ' + (o.statLo || 0).toFixed(3) + '..' + (o.statHi || 0).toFixed(3) +
+        ', a ' + ((o.statSpread || 0) * 100).toFixed(1) + '% swing');
+  check('body probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[42] the drawn figure is one consistent size');
+{
+  /* The model-to-world scale used to be computed from p.headY — a pose
+   * quantity — so girth, shoulder width, head size and shoe size all breathed
+   * with the pose. Measured: a 6'7" figure came out 7.0% shorter in a
+   * defensive stance and 2.7% taller mid-shot. Nothing in the suite could see
+   * it: [4] allows the drawn body to be anywhere from 4% to 60% of viewport
+   * height, which is about fifteen times too loose.
+   *
+   * Reproduced here the way draw() computes it, so the two cannot drift. */
+  const r = runInPage(`
+    var BB = window.BB, A = BB.Player.ACTION, BONE = BB.Player.BONE;
+    BB.Engine.setState('shootaround');
+    BB.Engine._applyPending();
+    BB.Engine.stop();
+    var scene = BB.Engine.scene;
+    for (var i = 0; i < 20; i++) {
+      if (scene.fixedUpdate) scene.fixedUpdate(1 / 120);
+      if (i % 2 === 0 && scene.update) scene.update(1 / 60, 1 / 60);
+    }
+    var pl = scene.player || (scene.players && scene.players[0]);
+    pl.placeAt(47, 25, 0);
+    pl.facing = pl.moveFacing = 0;
+
+    /* Read the scale the renderer actually used, by rendering. Recomputing
+     * what draw() ought to do would pass whatever draw() does. */
+    var lo = 1e9, hi = -1e9, poseLo = 1e9, poseHi = -1e9, n = 0;
+    function look() {
+      pl._updatePose(1 / 60);
+      scene.render(0);
+      var g = pl.pose.drawScale;
+      if (g == null) return;
+      n++;
+      if (g < lo) lo = g;
+      if (g > hi) hi = g;
+      // The number the scale USED to be, kept as the counter-example.
+      var statP = -pl.pose.headY + BONE.headR;
+      var gPose = (statP * pl.bodyScale) / BB.Skin.height;
+      if (gPose < poseLo) poseLo = gPose;
+      if (gPose > poseHi) poseHi = gPose;
+    }
+
+    pl.vx = 0; pl.vy = 0; pl.hasBall = false;
+    for (var i = 0; i < 30; i++) pl._updatePose(1 / 60);
+    look();
+    pl.isGuarding = true;
+    for (var i = 0; i < 80; i++) pl._updatePose(1 / 60);
+    look();
+    pl.isGuarding = false; pl._guardBlend = 0;
+    pl.armRaise = 1; look();
+    pl.armRaise = 0; pl.jumping = true; pl.z = 2.4;
+    pl.action = A.DUNK; pl.actionT = 0.2; look();
+
+    return {
+      samples: n, lo: lo, hi: hi,
+      swing: lo < 1e8 ? (hi - lo) / Math.max(1e-9, lo) : -1,
+      poseSwing: poseLo < 1e8 ? (poseHi - poseLo) / Math.max(1e-9, poseLo) : -1,
+      pageErr: window.__pageErr || null
+    };
+  `, 'scale');
+  if (r.err) check('scale probe ran', false, r.err);
+  const o = r.out || {};
+
+  check('the renderer reports the scale it drew at', (o.samples || 0) >= 4,
+        (o.samples || 0) + ' of 4 poses reported a scale');
+  /* The whole check. Idle, a defensive stance, a raised arm and a dunk must
+   * all draw the mesh at the same size. Before this, they did not: measured
+   * -7.0% in the stance and +2.7% mid-shot, and nothing here could see it —
+   * [4] allows the drawn body to be anywhere from 4% to 60% of viewport
+   * height, about fifteen times too loose. */
+  check('and it is the same in a stance, a shot and a dunk as at rest',
+        (o.swing == null ? 9 : o.swing) < 0.001,
+        'drawn scale moves ' + ((o.swing || 0) * 100).toFixed(2) + '% across poses' +
+        ' (' + (o.lo || 0).toFixed(6) + '..' + (o.hi || 0).toFixed(6) + ' feet per model unit)');
+  /* And the pose-derived number it used to be is still swinging, so the check
+   * above is genuinely holding something down rather than restating a constant. */
+  check('while the pose it used to be read from still moves',
+        (o.poseSwing || 0) > 0.03,
+        'the pose-derived scale swings ' + ((o.poseSwing || 0) * 100).toFixed(1) + '%');
+  check('scale probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[43] the baked mesh cannot come apart at a seam');
+{
+  /* A hard edge in the mesh is stored as two or more copies of the same point,
+   * one per smoothing group. They are the same point, so they have to move the
+   * same way — if two copies are weighted to different bones, the surface
+   * splits open along that seam the instant either bone moves, and no amount
+   * of good animation can close it again.
+   *
+   * The weight smoothing used to run on the SPLIT topology, which makes each
+   * copy its own island in the diffusion: same seed, different neighbour fan,
+   * twenty-six iterations to drift apart. Measured on the shipped bake, 70
+   * positions had copies that did not agree on which two bones moved them,
+   * with weights up to 22% apart, at the shorts hem, the crotch and the
+   * armhole. */
+  const r = runInPage(`
+    var M = window.BB.PLAYER_MESH;
+    var qp = atob(M.buffers.pos), qs = atob(M.buffers.skin);
+    var byPos = {};
+    for (var i = 0; i < M.vertexCount; i++) {
+      // The quantised position IS the identity: two copies of one point encode
+      // to the same sixteen-bit triple.
+      var k = (qp.charCodeAt(i * 6) | (qp.charCodeAt(i * 6 + 1) << 8)) + ',' +
+              (qp.charCodeAt(i * 6 + 2) | (qp.charCodeAt(i * 6 + 3) << 8)) + ',' +
+              (qp.charCodeAt(i * 6 + 4) | (qp.charCodeAt(i * 6 + 5) << 8));
+      (byPos[k] || (byPos[k] = [])).push(i);
+    }
+    function pair(i) {
+      var a = qs.charCodeAt(i * 4), b = qs.charCodeAt(i * 4 + 1);
+      return a < b ? a + '-' + b : b + '-' + a;
+    }
+    var split = 0, disagree = 0, maxGap = 0;
+    for (var k in byPos) {
+      var list = byPos[k];
+      if (list.length < 2) continue;
+      split++;
+      var p0 = pair(list[0]), bad = false, lo = 255, hi = 0;
+      for (var j = 0; j < list.length; j++) {
+        if (pair(list[j]) !== p0) bad = true;
+        var w = qs.charCodeAt(list[j] * 4 + 2);
+        if (w < lo) lo = w;
+        if (w > hi) hi = w;
+      }
+      if (bad) disagree++;
+      if (hi - lo > maxGap) maxGap = hi - lo;
+    }
+    return { split: split, disagree: disagree, maxGap: maxGap / 255,
+             pageErr: window.__pageErr || null };
+  `, 'seam');
+  if (r.err) check('seam probe ran', false, r.err);
+  const o = r.out || {};
+
+  check('the mesh has split vertices to check', (o.split || 0) > 50,
+        (o.split || 0) + ' positions carry more than one copy');
+  check('every copy of a point is moved by the same bones',
+        o.disagree === 0,
+        (o.disagree || 0) + ' of ' + (o.split || 0) +
+        ' split positions have copies weighted to different bones');
+  check('and by the same amounts',
+        (o.maxGap == null ? 9 : o.maxGap) < 0.01,
+        'worst weight gap between copies of one point ' +
+        ((o.maxGap || 0) * 100).toFixed(0) + '%');
+  check('seam probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[44] the ball goes where the move says it goes');
+{
+  /* Six moves, and every one of them named after something the BALL does. On
+   * the build this replaces the ball's lateral position was identical on every
+   * frame of every move, to the last decimal — seven inches to the player's
+   * right, forever — because handPosition() asked handAt() for a hand without
+   * saying which and handAt() defaults to the right. So a crossover was the
+   * ball travelling from behind the player to in front of them, and a
+   * behind-the-back was the same thing further. Nothing here could fail. */
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, C = BB.C;
+    var P = BB.Player, A = P.ACTION;
+    var pl = new P({ height: 79 });
+    pl.placeAt(0, 0, 0);
+    pl.facing = pl.moveFacing = 0;
+    pl.hasBall = true; pl._dribbleLive = true; pl.action = A.MOVE;
+
+    var NAMES = ['crossover', 'betweenLegs', 'behindBack', 'hesitation', 'inAndOut', 'spin'];
+    var out = {};
+    for (var i = 0; i < NAMES.length; i++) {
+      var m = NAMES[i];
+      /* Square the player up first. The real-run block below leaves them
+       * turned and moving — a spin turns them a half revolution — and "the
+       * player's right" is only -y while they are facing +x. */
+      pl.placeAt(0, 0, 0); pl.facing = pl.moveFacing = 0; pl.vx = pl.vy = 0;
+      pl.dribbleHand = 1; pl.moveCooldown = 0; pl.moveState = null; pl.dribblePhase = 0;
+      pl._updatePose(1 / 60);
+      if (!pl.startMove(m)) { out[m] = { missing: true }; continue; }
+      // The move's own duration, off the table the game runs on.
+      var total = P.MOVES[m].dur;
+      var lat0 = 0, latN = 0, crossings = 0, prev = null, low = 1e9, hi = -1e9;
+      var legGap = 0, latLo = 1e9, latHi = -1e9;
+      var fwdLo = 1e9, fwdHi = -1e9, crossFwd = 0, crossZ = 0, gap = 0, prevP = null;
+      for (var s = 0; s <= 60; s++) {
+        pl.moveT = s / 60 * total; pl._updatePose(1 / 60);
+        var b = pl.handPosition(null);
+        // Facing +x, so the player's right is -y and forward is +x.
+        var lat = -b.y, fwd = b.x;
+        if (s === 0) lat0 = lat;
+        latN = lat;
+        if (prev !== null && (prev > 0) !== (lat > 0)) {
+          crossings++; crossFwd = fwd; crossZ = b.z;
+          /* How much room the legs are actually giving the ball at the moment
+           * it goes through them. footAt() is the drawn foot, lateral offset
+           * and all, which is what the ball has to miss. */
+          var lf = pl.footAt(-1, null), rf = pl.footAt(1, null);
+          legGap = Math.abs((-lf.y) - (-rf.y));
+        }
+        latLo = Math.min(latLo, lat); latHi = Math.max(latHi, lat);
+        prev = lat;
+        low = Math.min(low, b.z); hi = Math.max(hi, b.z);
+        fwdLo = Math.min(fwdLo, fwd); fwdHi = Math.max(fwdHi, fwd);
+        if (prevP) gap = Math.max(gap, Math.abs(b.z - prevP));
+        prevP = b.z;
+      }
+      // Where the feet are, for the between-the-legs gap test.
+      pl.moveT = total * 0.5; pl._updatePose(1 / 60);
+      var fl = pl.footAt(-1, null), fr = pl.footAt(1, null);
+
+      /* Which hand it ends in has to come from a REAL run: the swap happens in
+       * the timer step of update(), not in _updatePose, so driving moveT by
+       * hand never reaches it. */
+      var bl = new BB.Ball([]);
+      pl.giveBall(bl);
+      pl.moveCooldown = 0; pl.moveState = null;
+      pl.placeAt(0, 0, 0); pl.facing = pl.moveFacing = 0; pl.vx = pl.vy = 0;
+      pl.dribblePhase = 0;
+      pl._updatePose(1 / 60);
+      pl.startMove(m);
+      // Losing the handle ends the move early and is a separate question from
+      // where the ball goes when you do not.
+      pl._moveFumble = false; pl._fumbleAt = -1;
+      for (var q = 0; q < 60 && pl.moveState; q++) pl.update(1 / 60, bl);
+
+      out[m] = {
+        lat0: lat0, latN: latN, crossings: crossings, low: low, high: hi,
+        fwdLo: fwdLo, fwdHi: fwdHi, crossFwd: crossFwd, crossZ: crossZ,
+        footL: fl.x, footR: fr.x, hand: pl.dribbleHand, dur: total,
+        legGap: legGap, travel: latHi - latLo
+      };
+    }
+
+    /* The rulebook drop test: released from six feet it must come back between
+     * 52 and 56 inches. Run at a fine step so the peak is not stepped over. */
+    var d = new BB.Ball([]);
+    d.release('loose'); d.x = 10; d.y = 10; d.z = 6; d.vx = d.vy = d.vz = 0;
+    var peak = 0, up = false;
+    for (var t = 0; t < 4000; t++) {
+      d.update(1 / 600);
+      if (d.vz > 0) up = true;
+      if (up) peak = Math.max(peak, d.z);
+      if (up && d.vz < 0 && d.z < peak - 0.01) break;
+    }
+    /* A ball turns about the horizontal axis ACROSS its travel. Fire one down
+     * +x: an axis locked to world x scores a perfect 1 here, which is a ball
+     * spinning about the line it is flying along. */
+    var sp = new BB.Ball([]); sp.x = 0; sp.y = 0; sp.z = 5;
+    sp.launch(18, 0, 9, 'shot');
+    var ax = sp.spinAxis || [1, 0, 0];
+
+    return {
+      moves: out,
+      rebound: peak * 12,
+      spinAlong: Math.abs(ax[0]),
+      spinTurns: Math.abs(sp.spin) / (2 * Math.PI),
+      ballR: C.BALL_RADIUS,
+      pageErr: window.__pageErr || null
+    };
+  `, 'handles');
+  if (r.err) check('handles probe ran', false, r.err);
+  const o = r.out || {}, M = o.moves || {};
+  const got = (n) => M[n] || {};
+  const SWAPS = ['crossover', 'betweenLegs', 'behindBack', 'spin'];
+  const KEEPS = ['hesitation', 'inAndOut'];
+
+  check('all six moves exist',
+        SWAPS.concat(KEEPS).every((n) => M[n] && !M[n].missing),
+        SWAPS.concat(KEEPS).filter((n) => !M[n] || M[n].missing).join(', ') + ' missing');
+
+  /* THE one. A move that does not change hands is an arm waving. */
+  check('a crossover, a tween, a behind-the-back and a spin all change hands',
+        SWAPS.every((n) => got(n).hand === -1),
+        SWAPS.filter((n) => got(n).hand !== -1).join(', ') + ' finished in the same hand');
+  check('and a hesi and an in-and-out do not',
+        KEEPS.every((n) => got(n).hand === 1),
+        KEEPS.filter((n) => got(n).hand !== 1).join(', ') + ' swapped hands');
+  check('each of those crosses the midline exactly once',
+        SWAPS.every((n) => got(n).crossings === 1),
+        SWAPS.map((n) => n + ':' + got(n).crossings).join(' '));
+  check('and the two that keep the ball never cross it at all',
+        KEEPS.every((n) => got(n).crossings === 0),
+        KEEPS.map((n) => n + ':' + got(n).crossings).join(' '));
+
+  /* Named after where the ball goes, so that is what gets measured. */
+  check('the crossover bounces out in front of the feet',
+        got('crossover').crossFwd > 0.4 && got('crossover').crossZ < o.ballR * 1.3,
+        'crossed at ' + (got('crossover').crossFwd || 0).toFixed(2) + 'ft forward, ' +
+        (got('crossover').crossZ || 0).toFixed(2) + 'ft up');
+  /* Between the legs means BETWEEN THE LEGS: through the gap the split stance
+   * opens, below the hips, not through a thigh. */
+  check('the tween passes through the gap between the feet',
+        got('betweenLegs').crossFwd > Math.min(got('betweenLegs').footL, got('betweenLegs').footR) &&
+        got('betweenLegs').crossFwd < Math.max(got('betweenLegs').footL, got('betweenLegs').footR) &&
+        got('betweenLegs').crossZ < o.ballR * 1.3,
+        'crossed at ' + (got('betweenLegs').crossFwd || 0).toFixed(2) + 'ft with the feet at ' +
+        (got('betweenLegs').footL || 0).toFixed(2) + ' and ' + (got('betweenLegs').footR || 0).toFixed(2));
+  /* THE one the ball could not do. Measured on the build this replaces: the
+   * lateral gap between the feet was 0.71ft and a basketball is 0.79ft across,
+   * so the ball was an inch inside each leg — passing THROUGH them, not
+   * between them. The stance split fore/aft and never opened sideways. */
+  check('and there is daylight either side of it while it does',
+        got('betweenLegs').legGap - o.ballR * 2 > o.ballR * 0.5,
+        'the legs opened to ' + (got('betweenLegs').legGap || 0).toFixed(2) +
+        'ft for a ball ' + (o.ballR * 2).toFixed(2) + 'ft across, leaving ' +
+        (((got('betweenLegs').legGap || 0) - o.ballR * 2) / 2).toFixed(3) + 'ft each side');
+  check('the behind-the-back actually goes behind the back',
+        got('behindBack').fwdLo < -0.8,
+        'the furthest back it got was ' + (got('behindBack').fwdLo || 0).toFixed(2) + 'ft');
+  check('and the spin carries the ball rather than bouncing it',
+        got('spin').low > o.ballR * 2.5,
+        'the spin put the ball ' + (got('spin').low || 0).toFixed(2) + 'ft up at its lowest');
+
+  /* A bounce reaches the floor. Every move but the spin puts it down. */
+  check('every bounced move actually reaches the floor',
+        ['crossover', 'betweenLegs', 'behindBack', 'hesitation', 'inAndOut']
+          .every((n) => Math.abs(got(n).low - o.ballR) < 0.02),
+        ['crossover', 'betweenLegs', 'behindBack', 'hesitation', 'inAndOut']
+          .map((n) => n + ':' + (got(n).low || 0).toFixed(2)).join(' ') +
+        ' against a ball radius of ' + (o.ballR || 0).toFixed(2));
+  check('and none of them goes through it',
+        SWAPS.concat(KEEPS).every((n) => got(n).low >= o.ballR - 0.005),
+        SWAPS.concat(KEEPS).map((n) => n + ':' + (got(n).low || 0).toFixed(3)).join(' '));
+
+  /* ---- and the ball itself ---- */
+  /* Rule 1: released from six feet it rebounds 52 to 56 inches. It was 43 —
+   * a foot short of legal, and a ball nobody would agree to play with. */
+  check('the ball bounces the height the rulebook says it must',
+        o.rebound > 52 && o.rebound < 56,
+        'a 6ft drop rebounds ' + (o.rebound || 0).toFixed(1) + 'in, spec is 52-56');
+  check('and turns about the axis across its travel, not along it',
+        o.spinAlong < 0.02,
+        'a ball fired down +x spins about an axis ' +
+        ((o.spinAlong || 0) * 100).toFixed(0) + '% aligned with its own flight');
+  check('a jump shot leaves the hand with real backspin',
+        o.spinTurns > 1.5 && o.spinTurns < 3.5,
+        (o.spinTurns || 0).toFixed(2) + ' turns a second; a jumper carries 2 to 3');
+  /* And big enough to see. A move whose ball travels less than its own width
+   * is accurate and invisible; the eye needs the ball to go somewhere. */
+  check('a move that changes hands carries the ball at least two ball-widths',
+        SWAPS.every((n) => got(n).travel > o.ballR * 4),
+        SWAPS.map((n) => n + ' ' + ((got(n).travel || 0) / (o.ballR * 2)).toFixed(2)).join(', ') +
+        ' ball-widths of travel');
+  check('handles probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[45] a dunk is a dunk, and a good one is worth slowing down for');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, C = BB.C;
+    var P = BB.Player, A = P.ACTION, S = BB.Shooting;
+    var ball = C.BALL_RADIUS * 2;
+
+    /* Each style, driven through its own flush. The question every one of these
+     * answers is how many hands are on the ball — which is the whole difference
+     * between a one-hander and a slam, and which could not be asked at all when
+     * there was one dunk in the game. */
+    function shape(style) {
+      var pl = new P({ height: 84 });
+      pl.placeAt(0, 0, 0);
+      pl.facing = pl.moveFacing = 0;
+      pl.jumping = true; pl.z = 2.6;
+      pl.action = A.DUNK; pl.dunkStyle = style;
+      var apart = 1e9, wide = 0, latLo = 1e9, latHi = -1e9, held = 1e9;
+      for (var i = 0; i <= 40; i++) {
+        pl.actionT = i / 40 * 0.55;
+        pl._updatePose(1 / 60);
+        var R = pl.handAt(null, 1), L = pl.handAt(null, -1);
+        var d = Math.hypot(R.x - L.x, R.y - L.y, R.z - L.z);
+        // The flush proper: the middle of the move, where the hands are doing
+        // whatever the style says they do.
+        if (i >= 12 && i <= 26) { apart = Math.min(apart, d); wide = Math.max(wide, d); }
+        latLo = Math.min(latLo, -R.y); latHi = Math.max(latHi, -R.y);
+        // The ball rides in the dunking hand the whole way, which is the one
+        // thing every style has to agree on.
+        var b = pl.handPosition(null);
+        held = Math.min(held, Math.min(
+          Math.hypot(b.x - R.x, b.y - R.y, b.z - R.z),
+          Math.hypot(b.x - L.x, b.y - L.y, b.z - L.z)));
+      }
+      return { apart: apart, wide: wide, swing: latHi - latLo, held: held };
+    }
+
+    /* ---- and the slow motion ---- */
+    var E = BB.Engine;
+    var scaleLog = { ran: false, floor: 1, back: 1, afterPause: 1 };
+    if (E) {
+      E.setTimeScale(1, true);
+      E.slowMo(0.32, 0.50);
+      // Tick the easing the way _step does, in real seconds.
+      var t = 0;
+      while (t < 0.30) { t += 1 / 60; E._slowT -= 1 / 60;
+        if (E._slowT <= 0) { E._slowT = 0; E._targetScale = 1; }
+        E.timeScale = U.approach(E.timeScale, E._targetScale, E._scaleRate, 1 / 60); }
+      scaleLog.floor = E.timeScale;
+      scaleLog.ran = true;
+      while (t < 2.0) { t += 1 / 60; E._slowT -= 1 / 60;
+        if (E._slowT <= 0) { E._slowT = 0; E._targetScale = 1; }
+        E.timeScale = U.approach(E.timeScale, E._targetScale, E._scaleRate, 1 / 60); }
+      scaleLog.back = E.timeScale;
+
+      /* An explicit request has to WIN over a slow motion that is still
+       * running — including after its timer expires. Pause during a dunk and
+       * hold the menu open: the slow motion's clock keeps running underneath,
+       * and when it ends it restores the scale it thinks the game should be
+       * at. If that overwrites the pause, the game starts playing behind the
+       * menu. Same shape for any scene that sets a scale of its own. */
+      E.setTimeScale(1, true);
+      E.slowMo(0.32, 0.50);
+      E.setTimeScale(0, true);      // pause, taken mid-dunk
+      var u = 0;
+      while (u < 1.2) { u += 1 / 60;
+        if (E._slowT > 0) { E._slowT -= 1 / 60; if (E._slowT <= 0) { E._slowT = 0; E._targetScale = 1; } }
+        E.timeScale = U.approach(E.timeScale, E._targetScale, E._scaleRate, 1 / 60); }
+      scaleLog.afterPause = E.timeScale;
+      E.setTimeScale(1, true);
+    }
+
+    /* ---- which dunks earn it ---- */
+    function poster(quality, auto) {
+      var pl = new P({ height: 84 });
+      pl.shotType = 'dunk'; pl.dunkAuto = !!auto;
+      pl._commitShot({ quality: quality });
+      return pl.posterDunk;
+    }
+    /* And what the replay makes of one. rateShot is what decides whether the
+     * game stops to show you something. */
+    function rated(isPoster) {
+      var pl = new P({ height: 84 });
+      pl.shotType = 'dunk'; pl.posterDunk = isPoster;
+      pl.stats.streak = 0;
+      var w = BB.Replay.rateShot({ three: false, clean: true }, pl);
+      return w ? w.weight : 0;
+    }
+
+    return {
+      ball: ball,
+      tomahawk: shape('tomahawk'), cradle: shape('cradle'), power: shape('power'),
+      slow: scaleLog,
+      posterPerfect: poster(1.00, false), posterExcellent: poster(0.86, false),
+      posterSloppy: poster(0.42, false), posterAuto: poster(0.42, true),
+      ratedPoster: rated(true), ratedOrdinary: rated(false),
+      threshold: BB.Replay.THRESHOLD,
+      pageErr: window.__pageErr || null
+    };
+  `, 'dunkstyles');
+  if (r.err) check('dunk-style probe ran', false, r.err);
+  const o = r.out || {};
+  const ONE = ['tomahawk', 'cradle'];
+
+  /* One hand on the ball and the other one somewhere else entirely. The off
+   * arm is not decoration — it is what a dunker's free arm does BECAUSE the
+   * other one is behind their head, and it is most of what reads as effort. */
+  check('the one-handers keep the off hand well clear of the ball',
+        ONE.every((n) => (o[n] || {}).apart > o.ball * 1.5),
+        ONE.map((n) => n + ' ' + (((o[n] || {}).apart || 0) / o.ball).toFixed(2)).join(', ') +
+        ' ball-widths at the closest');
+  /* And the power dunk is the opposite claim: two hands on one ball, which is
+   * the same geometry as the set point of a jump shot and was impossible
+   * before absolute lateral placement existed. */
+  check('and the power dunk really has both hands on it',
+        (o.power || {}).wide < o.ball * 1.35 && (o.power || {}).wide > o.ball * 0.5,
+        'hands ' + (((o.power || {}).wide || 0) / o.ball).toFixed(2) + ' ball-widths apart');
+  /* The cradle earns its name by taking the ball the long way round. If it
+   * swings no further than the tomahawk it is the tomahawk. */
+  check('the cradle swings the ball out and away, not just back',
+        (o.cradle || {}).swing > ((o.tomahawk || {}).swing || 0) * 2,
+        'cradle ' + (((o.cradle || {}).swing) || 0).toFixed(2) + 'ft of lateral swing vs tomahawk ' +
+        (((o.tomahawk || {}).swing) || 0).toFixed(2));
+  check('and every style keeps the ball in a hand all the way to the ring',
+        ['tomahawk', 'cradle', 'power'].every((n) => (o[n] || {}).held < 0.75),
+        ['tomahawk', 'cradle', 'power']
+          .map((n) => n + ' ' + (((o[n] || {}).held) || 0).toFixed(2) + 'ft').join(', '));
+
+  /* ---- the slow motion ---- */
+  check('a poster dunk actually slows the world down',
+        o.slow && o.slow.ran && o.slow.floor < 0.5,
+        'time scale bottomed at ' + ((o.slow || {}).floor || 1).toFixed(2));
+  check('and it comes back on its own',
+        o.slow && Math.abs(o.slow.back - 1) < 0.01,
+        'settled at ' + ((o.slow || {}).back || 0).toFixed(3) + ' instead of 1');
+  /* THE one worth writing, and it is about the pause rather than the dunk.
+   * Pausing sets the scale to zero and knows nothing about a dunk being in the
+   * air — but the slow motion's own clock keeps running underneath a paused
+   * game, and when it ends it puts the scale back where it thinks it belongs.
+   * If that is allowed to overwrite the pause, the game starts playing behind
+   * the menu. An explicit request has to cancel the slow motion outright. */
+  check('and pausing during one leaves the game paused, not running behind the menu',
+        o.slow && (o.slow.afterPause || 1) < 0.05,
+        'a pause taken mid-slow-motion ended up at ' +
+        ((o.slow || {}).afterPause || 0).toFixed(3) + ' speed instead of stopped');
+
+  /* ---- which dunks earn it ---- */
+  check('a green dunk and a free one earn the moment',
+        o.posterPerfect === true && o.posterExcellent === true && o.posterAuto === true,
+        'perfect ' + o.posterPerfect + ', excellent ' + o.posterExcellent +
+        ', wide open ' + o.posterAuto);
+  check('and a scrappy one does not',
+        o.posterSloppy === false, 'a 0.42-quality dunk was rated a poster');
+  /* A replay that plays every time is not a replay, it is an interruption. */
+  check('the highlight stops cutting in on every dunk in the game',
+        o.ratedPoster >= o.threshold && o.ratedOrdinary < o.threshold,
+        'poster ' + o.ratedPoster + ', ordinary ' + o.ratedOrdinary +
+        ' against a threshold of ' + o.threshold);
+  check('dunk-style probe raised no errors', !o.pageErr, o.pageErr);
+}
+
+console.log('\n[46] the layup and the dunk are different presses');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, C = BB.C;
+    var P = BB.Player, A = P.ACTION;
+
+    /* One build, one spot, one speed. The ONLY thing that varies across this
+     * whole section is what the player asked for — which is the point: the
+     * shape of the finish used to be picked for them. */
+    function dunker(heightIn, vertical, dunkRating, human) {
+      var rt = P.defaultRatings(70);
+      for (var k in rt) rt[k] = 70;
+      rt.vertical = vertical;
+      rt.drivingDunk = dunkRating;
+      rt.standingDunk = dunkRating;
+      var p = new P({ height: heightIn, ratings: rt, human: human !== false });
+      p.phys = P.derivePhysical(rt);
+      p.stamina = 1;
+      return p;
+    }
+    var HOOP = { x: 88.75, y: 25 };
+    function drive(p, dist, want) {
+      p.placeAt(HOOP.x - dist, HOOP.y, 0);
+      p.sprinting = true;
+      p.vx = p.phys.maxSprint * 0.9; p.vy = 0;
+      p.z = 0; p.jumping = false;
+      p.action = null; p.armRaise = 0; p.hasBall = true;
+      p._beginShot(want);
+      return p.shotType;
+    }
+
+    var tall = dunker(84, 92, 85);      // every bit of body a dunk needs
+    var small = dunker(70, 45, 50);     // and none of it
+
+    /* The CPU never touches a key. Run it enough times that a roll of 0.35 +
+     * dunkChance * 0.65 could not plausibly come up empty by chance. */
+    var bot = dunker(84, 92, 85, false);
+    var botDunks = 0;
+    for (var i = 0; i < 60; i++) if (drive(bot, 5, undefined) === 'dunk') botDunks++;
+
+    var gate = {
+      shootKey:   drive(tall, 5, false),
+      dunkKey:    drive(tall, 5, true),
+      noArgs:     drive(tall, 5, undefined),
+      tooShort:   drive(small, 5, true),
+      tooFar:     drive(tall, 12, true)
+    };
+
+    /* And the drill that teaches it has to be completable. A drill judged on
+     * state that never arrives is worse than no drill: it strands a learner on
+     * a step with nothing to do but skip. */
+    BB.Engine.setState('tutorialDrills'); BB.Engine._applyPending(); BB.Engine.stop();
+    var s = BB.Engine.scene;
+    for (var w = 0; w < 40; w++) s.fixedUpdate(1 / 120);
+    var DUNK_DRILL = -1, dr = BB.Tutorial.DRILLS;
+    for (var n = 0; n < dr.length; n++) if (dr[n].id === 'dunk') DUNK_DRILL = n;
+    s.step = DUNK_DRILL; s._enterDrill();
+    // Give the learner a body that can actually throw one down.
+    s.pl.heightIn = 84;
+    s.pl.ratings.vertical = 95;
+    s.pl.ratings.drivingDunk = 92; s.pl.ratings.standingDunk = 92;
+    s.pl.phys = BB.Player.derivePhysical(s.pl.ratings);
+    var advanced = false;
+    for (var f = 0; f < 60 * 8 && !advanced; f++) {
+      var idle = !s.pl.action || s.pl.action === BB.Player.ACTION.IDLE ||
+                 s.pl.action === BB.Player.ACTION.MOVE;
+      if (s.pl.hasBall && !s.pl.isBusyShooting && idle) {
+        s.pl.placeAt(s.hoop.x - 6, s.hoop.y, 0);
+        s.pl.sprinting = true;
+        s.pl.vx = (s.hoop.x > s.pl.x ? 1 : -1) * s.pl.phys.maxSprint * 0.9;
+        s.pl.vy = 0;
+        s.pl._beginShot(true);
+      }
+      s.fixedUpdate(1 / 120); s.fixedUpdate(1 / 120); s.update(1 / 60, 1 / 60);
+      if (s.step > DUNK_DRILL) advanced = true;
+    }
+    BB.Engine.setState('menu'); BB.Engine._applyPending();
+
+    /* Tab is the browser's own focus key. If the game does not swallow it, the
+     * first press hands the keyboard to the browser chrome and the player is
+     * driving nothing — and if it swallows it ALWAYS, a keyboard user can no
+     * longer walk the menus. Both halves have to hold. */
+    function tabPrevented() {
+      var e = new KeyboardEvent('keydown', { code: 'Tab', bubbles: true, cancelable: true });
+      window.dispatchEvent(e);
+      return e.defaultPrevented;
+    }
+    BB.Menus.closeAll();
+    var tabInPlay = tabPrevented();
+    BB.Menus.replace('controls');
+    var tabInMenus = tabPrevented();
+    BB.Menus.closeAll();
+
+    return {
+      tabInPlay: tabInPlay, tabInMenus: tabInMenus,
+      shootKey: gate.shootKey, dunkKey: gate.dunkKey, noArgs: gate.noArgs,
+      tooShort: gate.tooShort, tooFar: gate.tooFar,
+      botDunks:   botDunks,
+      drillFound: DUNK_DRILL >= 0,
+      drillKeys:  DUNK_DRILL >= 0 ? dr[DUNK_DRILL].keys.slice() : [],
+      drillDone:  advanced,
+      bound:      (BB.Input.bindings.dunk || []).slice(),
+      label:      BB.Input.label('dunk'),
+      pageErr:    window.__pageErr || null
+    };
+  `, 'dunkkey');
+  if (r.err) check('dunk-key probe ran', false, r.err);
+  const o = r.out || {};
+
+  /* The complaint this section exists for: the same key in the same spot gave
+   * you a layup or a dunk depending on the build, and nothing could ask. */
+  check('the shoot key lays it in, even for a player who could dunk it',
+        o.shootKey === 'layup', 'a 6\'11" 92-vertical build got a ' + o.shootKey);
+  check('and the dunk key throws it down',
+        o.dunkKey === 'dunk', 'the same build on the dunk key got a ' + o.dunkKey);
+  /* Anything that is not an explicit ask is a layup — which is what keeps a
+   * missed call site from quietly restoring the old behaviour. */
+  check('asking for nothing in particular is a layup',
+        o.noArgs === 'layup', 'got a ' + o.noArgs);
+
+  /* Asking is necessary, not sufficient. The body still holds the veto, which
+   * is the whole of section [37] and must survive having intent added. */
+  check('but asking cannot make a body do what it cannot',
+        o.tooShort === 'layup',
+        'a 5\'10" 45-vertical build asked for a dunk and got a ' + o.tooShort);
+  /* Out past the takeoff window it is not even a finish at the rim — it is a
+   * jump shot, and pressing the dunk key from there must not drag one closer. */
+  check('and it cannot dunk from out past the takeoff window either',
+        o.tooFar === 'jumper',
+        'a dunk key press from 12 feet out produced a ' + o.tooFar);
+
+  /* The CPU has no keyboard. If intent were required of everyone, every AI
+   * dunk in the game would have silently disappeared. */
+  check('a CPU still dunks without pressing anything',
+        o.botDunks > 0, o.botDunks + ' dunks in 60 drives');
+
+  check('the dunk is on its own key, and the controls screen can name it',
+        Array.isArray(o.bound) && o.bound.indexOf('Tab') >= 0 &&
+        !!o.label && o.label !== '—',
+        'bound to ' + JSON.stringify(o.bound) + ', labelled ' + JSON.stringify(o.label));
+
+  check('and pressing it in play does not hand the keyboard to the browser',
+        o.tabInPlay === true, 'Tab was left to move focus off the canvas');
+  check('but the menus can still be walked with it',
+        o.tabInMenus === false, 'Tab was swallowed while a screen was up');
+
+  /* A control nobody is told about may as well not be bound. */
+  check('the walkthrough teaches the key it is actually bound to',
+        o.drillFound === true && (o.drillKeys || []).indexOf('dunk') >= 0,
+        'drill keys ' + JSON.stringify(o.drillKeys));
+  check('and throwing one down completes that drill',
+        o.drillDone === true, 'the drill never advanced');
+  check('dunk-key probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[11] screenshots');
+  console.log('\n[47] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],
     ['play_5v5', "BB.Engine.setState('fiveVfive'); BB.Engine._applyPending();", 900],
-    ['shootaround', "BB.Engine.setState('shootaround'); BB.Engine._applyPending();", 420]
+    ['shootaround', "BB.Engine.setState('shootaround'); BB.Engine._applyPending();", 420],
+    /* The dunk, caught at the two beats worth looking at: the ball cocked back
+     * behind the head with the off arm thrown wide, and the flush itself.
+     * Driven to a phase rather than to a tick count, because how long a player
+     * spends in the air depends on how high they jump. */
+    ['dunk_cock', dunkSetup(0.30), 0],
+    ['dunk_flush', dunkSetup(0.62), 0]
   ];
   for (const [name, setup, ticks] of shots) {
     const f = screenshot(name, setup, ticks);

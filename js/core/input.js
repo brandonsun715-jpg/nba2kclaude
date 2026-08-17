@@ -20,10 +20,29 @@
     left:      ['KeyA', 'ArrowLeft'],
     right:     ['KeyD', 'ArrowRight'],
     shoot:     ['Space'],
+    /* A dunk is its own press, because it was never its own decision.
+     *
+     * Space near the rim used to start a finish and let _beginShot() pick the
+     * animation, so the same key in the same spot came out a layup or a dunk
+     * depending on the build. The body gate stays — it still decides whether
+     * one is REACHABLE — but which finish you are asking for is now a thing
+     * you say. Space is a layup. Tab is a dunk. */
+    dunk:      ['Tab'],
     pass:      ['KeyJ'],
     lob:       ['KeyK'],
     sprint:    ['ShiftLeft', 'ShiftRight'],
+    /* One key per dribble move, sat under the right hand beside J/K/L.
+     *
+     * `dribble` stays as the one that picks a move for you — the pad has no
+     * free face buttons for six of anything, the tutorial teaches it, and
+     * nobody should have to learn six keys before they can dribble. */
     dribble:   ['KeyL'],
+    dribbleCross:  ['KeyU'],
+    dribbleTween:  ['KeyI'],
+    dribbleBehind: ['KeyO'],
+    dribbleHesi:   ['KeyH'],
+    dribbleInOut:  ['KeyN'],
+    dribbleSpin:   ['KeyM'],
     pickup:    ['KeyB'],
     steal:     ['KeyJ'],
     block:     ['KeyK'],
@@ -38,9 +57,14 @@
     camera:    ['KeyV']
   };
 
-  /* Gamepad button indices (standard mapping). */
+  /* Gamepad button indices (standard mapping).
+   *
+   * `dunk` shares A with `shoot` deliberately: a pad has no Tab, and leaving it
+   * unmapped would take dunking away from pad players altogether. The held
+   * sprint trigger is what separates them, and readInput() tests dunk first and
+   * falls through, so one press can never fire both. */
   const DEFAULT_PADS = {
-    shoot: [0], pass: [2], lob: [3], sprint: [7], dribble: [1], pickup: [5],
+    shoot: [0], dunk: [0], pass: [2], lob: [3], sprint: [7], dribble: [1], pickup: [5],
     steal: [2], block: [3], switchMan: [4], intense: [6],
     pause: [9], confirm: [0], cancel: [1],
     up: [12], down: [13], left: [14], right: [15]
@@ -76,6 +100,11 @@
         this.keys[e.code] = true;
         this.lastDevice = 'keyboard';
         if (SCROLL_KEYS.has(e.code)) e.preventDefault();
+        /* Tab walks focus off the canvas and onto the browser's chrome, which
+         * would make the dunk key steal the keyboard the first time it was
+         * pressed. It is also how a keyboard user moves through the menus, so
+         * it is only ours while no screen is up. */
+        else if (e.code === 'Tab' && !(BB.Menus && BB.Menus.isOpen)) e.preventDefault();
       }, { passive: false });
 
       global.addEventListener('keyup', (e) => {

@@ -58,7 +58,7 @@
       const World = BB.Game.ensureWorld();
 
       /* ---------------------------------------------------------- rosters */
-      this.teamA = new BB.Team({ name: 'Hardwood', abbr: 'HWD', primary: PAL.paint, secondary: PAL.chalk });
+      this.teamA = new BB.Team({ name: 'Home', abbr: 'HOM', primary: PAL.paint, secondary: PAL.chalk });
       BB.Team.generateRoster(this.teamA, (Math.random() * 1e9) | 0);
       const startersA = this.teamA.startingFive();
 
@@ -168,7 +168,12 @@
         p.events.on('steal', (e) => this._onSteal(e));
         p.events.on('block', (e) => this._onBlock(e));
         p.events.on('fumble', (pl) => this._onFumble(pl));
+        p.events.on('lockdown', (e) => this._onLockdown(e));
         p.events.on('violation', (e) => this._onViolation(e));
+        // Any of the ten can throw one down worth slowing the game for.
+        p.events.on('poster', () => {
+          if (BB.Engine) BB.Engine.slowMo(0.32, 0.50);
+        });
         p.events.on('foul', (e) => this._onFoul({ type: e.type, foulOn: e.by, against: e.victim }));
       }
     },
@@ -546,6 +551,14 @@
 
     /* =============================================================== events */
     _onScore(e) {
+      /* And the slow motion ends the instant it counts.
+       *
+       * A basket is also a restart — the ball gets checked at the top of the
+       * key, or everybody forms up for the inbound — and all of that happens on
+       * the frame the ball goes through. Holding the slow motion past this
+       * point would not be slowing the dunk, it would be slowing the reset. The
+       * flush is what the beat is for, and the flush is over. */
+      if (BB.Engine) BB.Engine.setTimeScale(1);
       if (this.phase === 'over') return;
       if (this.phase === 'freethrow') { this._resolveFreeThrow(true, e); return; }
 
@@ -570,13 +583,12 @@
       BB.Commentary.make(scorer.name, !!e.three, !!e.clean);
       BB.Commentary.streak(scorer.stats.streak, scorer.name);
 
-      e.hoop.swish(e.clean ? 1 : 0.6);
-      BB.Audio.play('swish', { pan: BB.Camera.panFor(e.x) });
-      BB.Audio.crowdBurst(scorer.team === this.teamA ? 0.6 : 0.3);
-      BB.Camera.addTrauma(0.08 * (BB.Settings.get('screenShake') || 1));
+      const slam = BB.Hoop.scored(e, scorer);
+      BB.Audio.crowdBurst((scorer.team === this.teamA ? 0.6 : 0.3) + (slam ? 0.12 : 0));
+      BB.Camera.addTrauma((slam ? 0.15 : 0.08) * (BB.Settings.get('screenShake') || 1));
       BB.FX.popup({
         x: e.hoop.x, y: e.hoop.y, z: C.RIM_HEIGHT + 1.5,
-        text: e.clean ? 'SWISH!' : 'GOOD!',
+        text: slam ? 'THROWN DOWN!' : (e.clean ? 'SWISH!' : 'GOOD!'),
         sub: (scorer.team === this.teamA ? this.teamA.abbr : this.teamB.abbr) + ' +' + pts,
         colour: e.three ? PAL.mint : PAL.gold, size: e.three ? 1.15 : 1.0, life: 1.2
       });
@@ -591,10 +603,21 @@
         return;
       }
 
+      const worth = BB.Replay.rateShot(e, scorer);
+      if (worth) {
+        BB.Replay.highlight({
+          weight: worth.weight, label: worth.label,
+          x: scorer.x, y: scorer.y, hoopX: e.hoop.x, hoopY: e.hoop.y
+        });
+      }
+
       this.phase = 'check';
       this.checkTimer = 0.9;
       this._formUp(scorer.team === this.teamA ? this.teamB : this.teamA);
     },
+
+    /** What a replay needs to redraw this scene. */
+    replayCast() { return { ball: this.ball, players: this.all }; },
 
     _onMiss(e) {
       if (this.phase === 'freethrow') { this._resolveFreeThrow(false, e); return; }
@@ -608,6 +631,15 @@
         shooter.onMiss();
       }
       BB.Commentary.miss(shooter ? shooter.name : '');
+    },
+
+    /* Only the controlled player can raise this — see Player._updateDefense —
+     * so it stays a single call rather than ten defenders announcing
+     * themselves every trip down the floor. */
+    _onLockdown(e) {
+      BB.Commentary.lockdown(e.by.name);
+      BB.FX.ring(e.by.x, e.by.y, PAL.gold, 1.1);
+      BB.FX.popup({ x: e.by.x, y: e.by.y, z: 8.0, text: 'LOCKED UP', colour: PAL.gold, size: 1.0, life: 1.1 });
     },
 
     _onSteal(e) {
@@ -955,12 +987,18 @@
       this.dim = U.approach(this.dim, menuOpen ? 0.55 : 0, 6, rawDt);
 
       const ball = this.ball;
-      const focus = ball.inFlight ? ball : (ball.owner || this.controlled);
+      // Whoever the user is holding, wherever the ball is. Switching defenders
+      // moves the focus far enough that the rig cuts rather than glides.
+      const focus = this.controlled;
+      // Downcourt is whichever basket the team in possession is attacking, so
+      // the forward rig turns around with the ball on a change of possession.
+      const aim = this._hoopFor(ball.owner || this.controlled);
+      if (aim) BB.Camera.setAim(aim.x, aim.y);
       BB.Camera.update(dt, { x: focus.x, y: focus.y }, { x: focus.vx || 0, y: focus.vy || 0 });
 
       const spread = Math.abs(this.score.away - this.score.home);
       const late = this.quarter >= QUARTERS && this.gameClock < 45;
-      BB.World.arena.update(dt, late && spread < 8 ? 0.5 : (spread < 8 ? 0.3 : 0.18));
+      BB.World.park.update(dt, late && spread < 8 ? 0.5 : (spread < 8 ? 0.3 : 0.18));
       BB.Audio.setCrowdIntensity(0.14 + (spread < 8 ? 0.28 : 0.12));
 
       this._updateHud();
@@ -968,7 +1006,7 @@
 
     render() {
       BB.Renderer.render({
-        camera: BB.Camera, court: BB.World.court, arena: BB.World.arena,
+        camera: BB.Camera, court: BB.World.court, park: BB.World.park,
         hoops: BB.World.hoops, ball: this.ball, entities: this.all,
         fx: BB.FX, dimmed: this.dim
       });

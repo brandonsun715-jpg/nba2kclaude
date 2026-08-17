@@ -213,23 +213,44 @@
         return true;
       } catch (e) { return false; }
     })(),
+    /* Saves were written under the old name for the game's whole life, and a
+     * rename is no reason to take somebody's career off them. Reads fall back
+     * to the old prefix and carry the value forward on the spot, so the first
+     * launch after updating migrates whatever it finds and never looks again. */
+    prefix: 'nba1k26.',
+    /* Every name this game has been saved under, newest first. The game has
+       been renamed twice; a player who has been here through both should not
+       lose a career to it, and somebody who skipped a version should migrate
+       straight from whichever name they still have on disk. */
+    legacyPrefixes: ['blacktop.', 'hardwood.'],
     get(key, fallback) {
       if (!this.available) return fallback;
       try {
-        const raw = global.localStorage.getItem('hardwood.' + key);
+        let raw = global.localStorage.getItem(this.prefix + key);
+        if (raw == null) {
+          for (let i = 0; i < this.legacyPrefixes.length && raw == null; i++) {
+            raw = global.localStorage.getItem(this.legacyPrefixes[i] + key);
+          }
+          if (raw != null) global.localStorage.setItem(this.prefix + key, raw);
+        }
         return raw == null ? fallback : JSON.parse(raw);
       } catch (e) { return fallback; }
     },
     set(key, value) {
       if (!this.available) return false;
       try {
-        global.localStorage.setItem('hardwood.' + key, JSON.stringify(value));
+        global.localStorage.setItem(this.prefix + key, JSON.stringify(value));
         return true;
       } catch (e) { return false; }
     },
     remove(key) {
       if (!this.available) return;
-      try { global.localStorage.removeItem('hardwood.' + key); } catch (e) { /* ignore */ }
+      try {
+        global.localStorage.removeItem(this.prefix + key);
+        for (let i = 0; i < this.legacyPrefixes.length; i++) {
+          global.localStorage.removeItem(this.legacyPrefixes[i] + key);
+        }
+      } catch (e) { /* ignore */ }
     }
   };
 

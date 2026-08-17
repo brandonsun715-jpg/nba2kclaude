@@ -24,19 +24,19 @@
    * are built once and shared rather than rebuilt on every menu <-> game
    * transition.
    */
-  const World = { ready: false, court: null, arena: null, hoops: null, team: null };
+  const World = { ready: false, court: null, park: null, hoops: null, team: null };
 
   function ensureWorld(team) {
-    team = team || { name: 'Hardwood', abbr: 'HWD', primary: PAL.paint, secondary: PAL.orange };
+    team = team || { name: 'Home', abbr: 'HOM', primary: PAL.paint, secondary: PAL.orange };
     if (!World.ready) {
       World.court = BB.Court.init();
       World.court.setTeam(team);
-      World.arena = BB.Arena.init(team);
+      World.park = BB.Park.init(team);
       World.hoops = C.HOOPS.map((h) => new BB.Hoop(h));
       World.ready = true;
     } else if (team !== World.team) {
       World.court.setTeam(team);
-      World.arena.setTeam(team);
+      World.park.setTeam(team);
     }
     World.team = team;
     return World;
@@ -46,13 +46,102 @@
    * Scene: menu
    * ======================================================================= */
   const MenuScene = {
+    pose: 'idle',
+    preview: false,
+
+    /* Where the standby figure stands, and which way he is turned when
+     * nothing is spinning him. */
+    FACING: Math.PI * 0.42,
+
+    /**
+     * How far LEFT of the player the camera aims, in feet.
+     *
+     * The standby player belongs on the right of frame because the menu's
+     * words live down the left, and the rig always centres whatever it is
+     * aimed at — so the aim point sits off to the player's left and he slides
+     * over to where the composition wants him. How far that is depends on the
+     * window: the rig's horizontal reach is its vertical one times the aspect
+     * ratio, so a fixed offset in feet that frames him beautifully on a wide
+     * monitor walks him clean off the edge of a tall narrow one.
+     */
+    offset() {
+      const cam = BB.Camera;
+      return U.clamp(1.9 * (cam.vw / Math.max(1, cam.vh)), 1.0, 4.2);
+    },
+
     enter() {
       ensureWorld();
-      BB.Camera.reset(C.HALF_L, C.HALF_W - 2, 1);
-      BB.Camera.setMode(BB.Camera.MODES.WIDE);
       BB.HUD.hide();
+
+      /* The figure on the front page is the player you actually made — same
+       * profile, same build, same colours the game will hand you when you
+       * press the button. A stock draft stands in until there is one. */
+      /* Standing well up the floor toward the camera side: the portrait rig
+       * sits just outside the sideline, so a figure out at mid-width is
+       * thirty feet away and reads as a doll. Close in, he fills the right of
+       * the frame and the court and stands fall away behind him. */
+      this.ball = new BB.Ball(World.hoops);
+      const h = this._buildHero();
+      this._t = 0;
+
+      BB.Camera.setMode(BB.Camera.MODES.PORTRAIT);
+      BB.Camera.reset(h.x - this.offset(), h.y, 1);
+      BB.Camera.update(0, { x: h.x - this.offset(), y: h.y }, null);
+
       BB.Menus.replace('main');
       BB.Audio.setCrowdIntensity(0.06, 2);
+    },
+
+    exit() { this.hero = null; this.ball = null; },
+
+    /** Builds the standby figure from whatever player is saved right now. */
+    _buildHero() {
+      const hx = C.HALF_L + 7, hy = C.COURT_W - 4.5;
+      const draft = BB.PlayerProfile.load() || BB.PlayerProfile.newDraft();
+      this.hero = new BB.Player(BB.PlayerProfile.toPlayerConfig(draft, { x: hx, y: hy }));
+      BB.PlayerProfile.applyAppearance(this.hero, draft);
+      // Turned a few degrees off square to the camera so the build reads in
+      // three-quarters rather than as a flat cutout.
+      this.hero.placeAt(hx, hy, this.FACING);
+      this.hero.human = false;   // no selection ring under a menu portrait
+      if (this.ball) this.hero.giveBall(this.ball);
+      return this.hero;
+    },
+
+    /**
+     * Rebuilds the figure after the saved player has changed underneath it.
+     * Erasing progress from the settings screen leaves the front page showing
+     * a player who no longer exists, right up until the next time the menu is
+     * entered — which for anyone who then presses Play is never.
+     */
+    refreshHero() {
+      if (!this.hero) return;
+      this.preview = false;
+      this.pose = 'idle';
+      this._buildHero();
+    },
+
+    /** Called by the menu as the selection moves along the mode row. */
+    spotlight(pose) { if (!this.preview) this.pose = pose || 'idle'; },
+
+    /**
+     * Lends the standby figure to the player creator.
+     *
+     * The creator edits a live model rather than a drawing of one, and this is
+     * that model — the same skinned mesh the game plays with, already lit and
+     * standing on the same floor. While it is borrowed the figure turns slowly
+     * on the spot so every side of the build can be seen, and the mode-driven
+     * poses stand down. Handed back exactly as it was found.
+     *
+     * @returns {object|null} the player to edit, or null if this scene is not
+     *          the one running.
+     */
+    previewMode(on) {
+      this.preview = !!on;
+      if (!this.hero) return null;
+      this.pose = 'idle';
+      if (!on) this.hero.facing = this.hero.moveFacing = this.FACING;
+      return this.hero;
     },
 
     fixedUpdate(dt) {
@@ -61,21 +150,79 @@
     },
 
     update(dt) {
-      // A slow, silent pan across the floor sells a "broadcast standby" feel.
-      const t = BB.Engine.elapsed * 0.05;
-      const fx = C.HALF_L + Math.sin(t) * 10;
-      const fy = C.HALF_W + Math.cos(t * 0.7) * 4;
+      this._t += dt;
+      const h = this.hero;
+      if (h && this.preview) {
+        // Turntable, slow enough to read the build rather than to show off.
+        h.facing = h.moveFacing = (h.facing + dt * 0.45) % (Math.PI * 2);
+      }
+      if (h) {
+        /* Each mode's idle is driven through the ordinary pose state the game
+         * already animates — no separate menu rig to keep in sync. What the
+         * player is doing IS what that mode is about. */
+        h.hasBall = false; h.isGuarding = false; h.action = null;
+        h.armRaise = 0; h.vx = h.vy = 0;
+        switch (this.pose) {
+          case 'dribble':
+            // Ball held and worked, never bounced: the true-scale ball beside
+            // a deliberately compressed figure looks enormous on the floor,
+            // and this close to camera there is nowhere for that to hide.
+            h.hasBall = true;
+            h.dribblePhase = Math.sin(this._t * 1.15) * 0.15;
+            break;
+          case 'shoot': {
+            // A slow loop: gather, rise, hold the follow-through, reset.
+            const k = (this._t % 3.4) / 3.4;
+            h.hasBall = true;
+            if (k < 0.45) { h.dribblePhase = Math.sin(this._t * 1.15) * 0.15; }
+            else if (k < 0.78) {
+              h.action = BB.Player.ACTION.METER;
+              h.meter.value = U.clamp01((k - 0.45) / 0.33);
+              h.armRaise = h.meter.value;
+            } else {
+              h.action = BB.Player.ACTION.RELEASE;
+              h.actionT = (k - 0.78) * 3.4;
+              h.armRaise = 1;
+            }
+            break;
+          }
+          case 'guard':
+            h.isGuarding = true;
+            h._guardBlend = U.approach(h._guardBlend, 1, 6, dt);
+            break;
+          case 'celebrate':
+            // Arms up and held — but only partway up the rise, because full
+            // extension puts both hands out through the top of this framing.
+            h.action = BB.Player.ACTION.BLOCK;
+            h.actionT = 0.03;
+            break;
+          default: break;
+        }
+        h._updatePose(dt);
+        if (h.hasBall && this.ball) {
+          const p = h.handPosition(TMP_HAND);
+          this.ball.place(p.x, p.y, p.z);
+        }
+      }
+
+      // A long, slow drift on the rig — a live camera on standby, not a
+      // locked-off still. Small enough that the figure stays put in frame.
+      const sway = Math.sin(this._t * 0.16) * 1.4;
+      const fx = (h ? h.x : C.HALF_L) - this.offset() + sway;
+      const fy = (h ? h.y : C.HALF_W) + Math.cos(this._t * 0.11) * 1.0;
       BB.Camera.update(dt, { x: fx, y: fy }, null);
-      World.arena.update(dt, 0.08);
+      World.park.update(dt, 0.08);
     },
 
     render() {
       BB.Renderer.render({
-        camera: BB.Camera, court: World.court, arena: World.arena,
-        hoops: World.hoops, ball: null, entities: [], fx: BB.FX, dimmed: 0
+        camera: BB.Camera, court: World.court, park: World.park,
+        hoops: World.hoops, ball: this.hero && this.hero.hasBall ? this.ball : null,
+        entities: this.hero ? [this.hero] : [], fx: BB.FX, dimmed: 0
       });
     }
   };
+  const TMP_HAND = { x: 0, y: 0, z: 0 };
 
   /* ==========================================================================
    * Scene: shootaround
@@ -145,11 +292,20 @@
 
       ball.events.on('score', (e) => this._onScore(e));
       ball.events.on('miss', (e) => this._onMiss(e));
+      this.player.events.on('poster', () => this._onPoster());
 
       void hoop0; void hoop1;
     },
 
     _onScore(e) {
+      /* And the slow motion ends the instant it counts.
+       *
+       * A basket is also a restart — the ball gets checked at the top of the
+       * key, or everybody forms up for the inbound — and all of that happens on
+       * the frame the ball goes through. Holding the slow motion past this
+       * point would not be slowing the dunk, it would be slowing the reset. The
+       * flush is what the beat is for, and the flush is over. */
+      if (BB.Engine) BB.Engine.setTimeScale(1);
       const three = e.three;
       const pts = three ? 3 : 2;
       this.points += pts;
@@ -158,12 +314,12 @@
       BB.Commentary.make(p.name, three, !!e.clean);
       BB.Commentary.streak(p.stats.streak, p.name);
 
-      e.hoop.swish(e.clean ? 1 : 0.6);
-      BB.Audio.play('swish', { pan: BB.Camera.panFor(e.x) });
-      BB.Audio.crowdBurst(U.clamp01(0.45 + p.stats.streak * 0.08));
-      BB.Camera.addTrauma(0.12 * (BB.Settings.get('screenShake') || 1));
+      const slam = BB.Hoop.scored(e, p);
+      BB.Audio.crowdBurst(U.clamp01((slam ? 0.62 : 0.45) + p.stats.streak * 0.08));
+      BB.Camera.addTrauma((slam ? 0.20 : 0.12) * (BB.Settings.get('screenShake') || 1));
 
-      const label = e.clean ? (p._lastShotQuality > 0.9 ? 'SWISH!' : 'BUCKET!') : 'GOOD!';
+      const label = slam ? 'THROWN DOWN!'
+        : (e.clean ? (p._lastShotQuality > 0.9 ? 'SWISH!' : 'BUCKET!') : 'GOOD!');
       BB.FX.popup({
         x: e.hoop.x, y: e.hoop.y, z: C.RIM_HEIGHT + 1.5,
         text: label, sub: '+' + pts + (p.stats.streak > 2 ? '   ' + p.stats.streak + ' IN A ROW' : ''),
@@ -173,6 +329,21 @@
       this.hype = U.clamp01(this.hype + 0.16 + Math.min(0.24, p.stats.streak * 0.03));
       this._updatePracticeHud();
       this._scheduleRetrieve();
+
+      const worth = BB.Replay.rateShot(e, p);
+      if (worth) {
+        BB.Replay.highlight({
+          weight: worth.weight, label: worth.label,
+          x: p.x, y: p.y, hoopX: e.hoop.x, hoopY: e.hoop.y
+        });
+      }
+    },
+
+    /** What a replay needs to redraw this scene. */
+    replayCast() { return { ball: this.ball, players: [this.player] }; },
+
+    _onPoster() {
+      if (BB.Engine) BB.Engine.slowMo(0.32, 0.50);
     },
 
     _onMiss(e) {
@@ -207,10 +378,16 @@
         }
       }
 
-      /* Ball-boy: nudge a dead, out-of-bounds ball back into play. */
-      if (ball.state === BB.Ball.STATE.LOOSE && ball.speed < 0.2 && ball.isOutOfBounds()) {
-        ball.place(this.hoop.x - 12, C.HALF_W, 3);
-        ball.vx = ball.vy = 0; ball.vz = 0;
+      /* Ball-boy. There is nobody to inbound it in a practice session, so the
+       * moment it lands outside the lines it is back in the shooter's hands.
+       *
+       * It used to wait for `speed < 0.2` and then drop the ball on the floor
+       * near the top of the key for them to walk over and collect. Both halves
+       * of that cost real time: a ball that clears the baseline bounces off
+       * the blacktop and rolls for whole seconds before it is slow enough to
+       * count, and then there is the walk. Nothing about either was practice. */
+      if (ball.outOfPlay && ball.owner == null) {
+        player.giveBall(ball);
       }
     },
 
@@ -225,11 +402,14 @@
       this.dim = U.approach(this.dim, menuOpen ? 0.55 : 0, 6, rawDt);
       this.hype = Math.max(0, this.hype - rawDt * 0.10);
 
-      const ball = this.ball;
-      const focus = ball.inFlight ? ball : this.player;
+      // The rig stays on the player, including while the shot is in the air:
+      // you watch your own jumper from where you took it.
+      const focus = this.player;
+      // Which way is downcourt, for the forward rig. Ignored by the others.
+      BB.Camera.setAim(this.hoop.x, this.hoop.y);
       BB.Camera.update(dt, { x: focus.x, y: focus.y }, { x: focus.vx, y: focus.vy });
 
-      World.arena.update(dt, this.hype);
+      World.park.update(dt, this.hype);
       BB.Audio.setCrowdIntensity(0.12 + this.hype * 0.75);
 
       this._updatePracticeHud();
@@ -237,7 +417,7 @@
 
     render() {
       BB.Renderer.render({
-        camera: BB.Camera, court: World.court, arena: World.arena,
+        camera: BB.Camera, court: World.court, park: World.park,
         hoops: World.hoops, ball: this.ball, entities: [this.player],
         fx: BB.FX, dimmed: this.dim
       });
@@ -319,9 +499,16 @@
       }));
       if (savedPlayer) BB.PlayerProfile.applyAppearance(this.player, draft);
 
+      /* The CPU gets a look of its own. Two figures in the same skin and the
+       * same hair standing a yard apart read as one player and their mirror,
+       * which is exactly what you do not want in a game about beating this
+       * specific guy. */
+      const P = BB.PlayerProfile;
       this.ai = new BB.Player({
         human: false, name: 'CPU', number: 5, position: 'SG',
-        overall: d.overall, height: 77, x: this.hoop.x - 22, y: C.HALF_W
+        overall: d.overall, height: 77, x: this.hoop.x - 22, y: C.HALF_W,
+        skin: P.SKIN_TONES[U.rng.i(0, P.SKIN_TONES.length - 1)],
+        hair: P.HAIR_COLORS[U.rng.i(0, P.HAIR_COLORS.length - 1)]
       });
       this.ai.jerseyMain = PAL.red;
       this.ai.jerseyTrim = PAL.chalk;
@@ -357,7 +544,6 @@
 
     exit() {
       BB.HUD.hide();
-      clearTimeout(this._slowmoT);
       BB.Engine.setTimeScale(1, true);
     },
 
@@ -382,10 +568,19 @@
       ball.events.on('score', (e) => this._onScore(e));
       ball.events.on('miss', (e) => this._onMiss(e));
 
+      /* A dunk worth watching slows the world down for it.
+       *
+       * Engine.slowMo unwinds itself and is cancelled by any explicit
+       * setTimeScale, so the pause path needs no special case: pausing during
+       * one and resuming comes back at full speed rather than stranding the
+       * game at a third of it. */
+      this.player.events.on('poster', () => this._onPoster());
+      this.ai.events.on('poster', () => this._onPoster());
       this.player.events.on('steal', (e) => this._onSteal(e));
       this.ai.events.on('steal', (e) => this._onSteal(e));
       this.player.events.on('block', (e) => this._onBlock(e));
       this.ai.events.on('block', (e) => this._onBlock(e));
+      this.player.events.on('lockdown', (e) => this._onLockdown(e));
       this.player.events.on('fumble', (p) => this._onFumble(p));
       this.ai.events.on('fumble', (p) => this._onFumble(p));
 
@@ -396,6 +591,14 @@
     },
 
     _onScore(e) {
+      /* And the slow motion ends the instant it counts.
+       *
+       * A basket is also a restart — the ball gets checked at the top of the
+       * key, or everybody forms up for the inbound — and all of that happens on
+       * the frame the ball goes through. Holding the slow motion past this
+       * point would not be slowing the dunk, it would be slowing the reset. The
+       * flush is what the beat is for, and the flush is over. */
+      if (BB.Engine) BB.Engine.setTimeScale(1);
       if (this.phase === 'over') return;
       if (this.phase === 'freethrow') { this._resolveFreeThrow(true, e); return; }
 
@@ -408,14 +611,13 @@
       BB.Commentary.streak(scorer.stats.streak, scorer.name);
       if (Math.max(this.score.you, this.score.cpu) >= this.target - 2) BB.Commentary.closeGame();
 
-      e.hoop.swish(e.clean ? 1 : 0.6);
-      BB.Audio.play('swish', { pan: BB.Camera.panFor(e.x) });
-      BB.Audio.crowdBurst(0.55);
-      BB.Camera.addTrauma(0.10 * (BB.Settings.get('screenShake') || 1));
+      const slam = BB.Hoop.scored(e, scorer);
+      BB.Audio.crowdBurst(slam ? 0.68 : 0.55);
+      BB.Camera.addTrauma((slam ? 0.18 : 0.10) * (BB.Settings.get('screenShake') || 1));
 
       BB.FX.popup({
         x: e.hoop.x, y: e.hoop.y, z: C.RIM_HEIGHT + 1.5,
-        text: e.clean ? 'SWISH!' : 'GOOD!',
+        text: slam ? 'THROWN DOWN!' : (e.clean ? 'SWISH!' : 'GOOD!'),
         sub: (scorer === this.player ? 'YOU' : 'CPU') + ' +' + pts,
         colour: e.three ? PAL.mint : PAL.gold, size: e.three ? 1.15 : 1.0, life: 1.3
       });
@@ -431,8 +633,19 @@
         this._awardFreeThrows(scorer, defender, 1);
         return;
       }
+      const worth = BB.Replay.rateShot(e, scorer);
+      if (worth) {
+        BB.Replay.highlight({
+          weight: worth.weight, label: worth.label,
+          x: scorer.x, y: scorer.y, hoopX: e.hoop.x, hoopY: e.hoop.y
+        });
+      }
+
       this._startCheck(scorer, defender);
     },
+
+    /** What a replay needs to redraw this scene. */
+    replayCast() { return { ball: this.ball, players: [this.player, this.ai] }; },
 
     _onMiss(e) {
       if (this.phase === 'over') return;
@@ -455,6 +668,14 @@
       }
     },
 
+    /* How slow, and for how long in real seconds. A dunk's flush is over in
+     * about a third of a second of game time; a third of a real second at 0.30
+     * stretches it to roughly a second on screen, which is long enough to read
+     * and short enough not to feel like the game took the controls away. */
+    _onPoster() {
+      if (BB.Engine) BB.Engine.slowMo(0.32, 0.50);
+    },
+
     _onSteal(e) {
       if (this.phase === 'over') return;
       BB.Commentary.steal(e.by.name);
@@ -465,6 +686,19 @@
       BB.FX.burst(e.by.x, e.by.y, 2.5, 10, PAL.chalk, 0.9);
       BB.FX.popup({ x: e.by.x, y: e.by.y, z: 7.5, text: 'STEAL!', colour: PAL.red, size: 1.15, life: 1.2 });
       BB.Camera.addTrauma(0.16 * (BB.Settings.get('screenShake') || 1));
+    },
+
+    /* Good defence, held. Deliberately quieter than a steal or a block: no
+     * screen flash and no trauma, because nothing has actually happened yet —
+     * the possession is still live and shaking the camera over a stance would
+     * read as an event that ended it. A ring and a word, and it gets out of
+     * the way. */
+    _onLockdown(e) {
+      if (this.phase === 'over') return;
+      BB.Commentary.lockdown(e.by.name);
+      BB.Audio.crowdBurst(0.3);
+      BB.FX.ring(e.by.x, e.by.y, PAL.gold, 1.1);
+      BB.FX.popup({ x: e.by.x, y: e.by.y, z: 8.0, text: 'LOCKED UP', colour: PAL.gold, size: 1.0, life: 1.1 });
     },
 
     _onFumble(p) {
@@ -486,11 +720,13 @@
       BB.FX.popup({ x: e.by.x, y: e.by.y, z: 9.5, text: 'BLOCKED!', colour: PAL.mint, size: 1.35, life: 1.3 });
       BB.Camera.addTrauma(0.24 * (BB.Settings.get('screenShake') || 1));
 
-      // A brief, highlight-reel slow-motion beat — real wall-clock timing so
-      // it lasts the same perceived length regardless of the slowdown itself.
-      clearTimeout(this._slowmoT);
-      BB.Engine.setTimeScale(0.28, false);
-      this._slowmoT = setTimeout(() => BB.Engine.setTimeScale(1, false), 380);
+      // A block is a highlight in its own right, and it has the one thing a
+      // slow-motion beat on the live moment needs: nothing about it restarts
+      // the possession on the same frame.
+      BB.Replay.highlight({
+        weight: 0.9, label: 'DENIED',
+        x: e.by.x, y: e.by.y, hoopX: this.hoop.x, hoopY: this.hoop.y
+      });
     },
 
     _onViolation(e) {
@@ -755,7 +991,11 @@
        * carrier steps/dribbles across it while still holding the ball —
        * both are a live-ball turnover to whoever didn't cause it. */
       const carrier = ball.owner;
-      const looseOut = ball.state === BB.Ball.STATE.LOOSE && ball.speed < 0.2 && ball.isOutOfBounds();
+      // Out on the touch-down, not once the ball has finished rolling: the old
+      // `speed < 0.2` gate meant a shot that cleared the baseline bounced and
+      // trundled for several seconds with both players stood watching it
+      // before the whistle everybody could already see coming.
+      const looseOut = ball.outOfPlay;
       const heldOut = carrier != null && !carrier.isBusyShooting && ball.isOutOfBounds();
       if ((looseOut || heldOut) && this.phase === 'live') {
         const loser = heldOut ? carrier : (ball.lastToucher === this.ai ? this.ai : this.player);
@@ -812,12 +1052,14 @@
 
       this.dim = U.approach(this.dim, menuOpen ? 0.55 : 0, 6, rawDt);
 
-      const ball = this.ball;
-      const focus = ball.inFlight ? ball : (ball.owner || this.player);
+      // Your man, always — a loose ball or a shot in the air does not take the
+      // camera off the player you are steering.
+      const focus = this.player;
+      BB.Camera.setAim(this.hoop.x, this.hoop.y);
       BB.Camera.update(dt, { x: focus.x, y: focus.y }, { x: focus.vx || 0, y: focus.vy || 0 });
 
       const spread = Math.abs(this.score.you - this.score.cpu);
-      World.arena.update(dt, spread < 3 ? 0.32 : 0.18);
+      World.park.update(dt, spread < 3 ? 0.32 : 0.18);
       BB.Audio.setCrowdIntensity(0.12 + (spread < 3 ? 0.3 : 0.15));
 
       this._updateHud();
@@ -825,7 +1067,7 @@
 
     render() {
       BB.Renderer.render({
-        camera: BB.Camera, court: World.court, arena: World.arena,
+        camera: BB.Camera, court: World.court, park: World.park,
         hoops: World.hoops, ball: this.ball, entities: [this.player, this.ai],
         fx: BB.FX, dimmed: this.dim
       });
@@ -856,6 +1098,10 @@
     .register('menu', MenuScene)
     .register('shootaround', ShootaroundScene)
     .register('oneVone', OneVOneScene);
+
+  /* The walkthrough is the 1 vs 1 scene with a coach over it, so it can only be
+   * built once that scene is on the register. */
+  if (BB.Tutorial) BB.Tutorial.install();
 
   BB.World = World;
   BB.Game = { ensureWorld };

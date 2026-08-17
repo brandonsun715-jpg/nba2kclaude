@@ -97,7 +97,11 @@
       return g;
     }
 
-    cancel() { this.active = false; this.result = null; }
+    /* Takes the bar away entirely, flash included. A cancelled shot is one
+     * that is not happening — a foul, a travel, a dunk that never needed
+     * timing — and leaving the release ring fading on screen would report a
+     * release that never occurred. */
+    cancel() { this.active = false; this.result = null; this.flash = 0; }
 
     /**
      * Decays the post-release flash ring only. Unlike update(), this is safe
@@ -123,17 +127,51 @@
     draw(ctx, cam) {
       if (!this.active && this.flash <= 0.01) return;
 
-      const anchor = cam.project(this.anchor.x, this.anchor.y, this.anchor.z + 6.6, TMP);
+      /* Where the bar hangs.
+       *
+       * ANCHOR_Z is the height the circle's CENTRE is pinned to, and the green
+       * window sits about R*0.75 above that — so what the eye actually tracks
+       * ends up roughly a foot higher again. At 6.6ft that put the green a full
+       * half a body-length above the shooter's head, with the whole bar
+       * floating clear of them: you had to look away from the player to read
+       * the one thing you are timing. Pinned at shoulder height instead, the
+       * green lands just over their head and the bar hangs down their side.
+       *
+       * The circle centre also moved in toward the anchor. The crescent bows
+       * only to the LEFT of that centre, so pushing the centre well right used
+       * to hold the bow out over the shooter — fine when the whole thing was
+       * above them, but once it comes down to head height it would be drawn
+       * across their chest. Near the anchor, the bow clears the shoulder and
+       * the bar runs down beside the figure rather than over it. */
+      const ANCHOR_Z = 4.6;
+      const anchor = cam.project(this.anchor.x, this.anchor.y, this.anchor.z + ANCHOR_Z, TMP);
       const R = 58 * cam.fit;
       const HALF_SPAN = 0.95; // radians either side of due-left — a tall, gently-bowed crescent
       const A0 = Math.PI - HALF_SPAN; // bottom
       const A1 = Math.PI + HALF_SPAN; // top
       const span = A1 - A0;
       const prof = this.profile;
-      // Circle centre sits to the right of the anchor so the leftward bow of
-      // the crescent lands roughly over/beside the shooter instead of well
-      // off to their side.
-      const cx = anchor.x + R * 0.62, cy = anchor.y;
+      let cx = anchor.x + R * 0.12, cy = anchor.y;
+
+      /* Keep the whole crescent in the clear.
+       *
+       * The bar is canvas; the scorebug is DOM sitting on top of it. A shooter
+       * anywhere up the floor puts the top of this bar underneath that bug,
+       * and since the bar fills bottom-to-top the part that disappears is the
+       * green window itself — the one part the player is actually reading. The
+       * same goes for the edges of the window. So the bar follows the shooter
+       * until it would leave the free area, then holds at the boundary rather
+       * than sliding out of sight.
+       *
+       * The crescent only bows LEFT of its circle centre, so its box is not
+       * centred on cx: it runs from cx - R to cx - R*cos(HALF_SPAN), and
+       * cy ± R*sin(HALF_SPAN). PAD covers the track's own thickness and the
+       * release flash, which rings a little wider still. */
+      const PAD = 24 * cam.fit;
+      const vExt = R * Math.sin(HALF_SPAN) + PAD;
+      const top = (BB.HUD && BB.HUD.safeTop ? BB.HUD.safeTop() : 0) * (cam.dpr || 1);
+      cy = U.clamp(cy, top + vExt, Math.max(top + vExt, cam.vh - vExt));
+      cx = U.clamp(cx, R + PAD, Math.max(R + PAD, cam.vw - PAD + R * Math.cos(HALF_SPAN)));
 
       ctx.save();
       ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -230,6 +268,42 @@
     const base = U.remap(U.clamp(rating == null ? 70 : rating, 25, 99), 25, 99, 0.022, 0.062);
     if (type === 'freethrow') return base; // always uncontested by rule
     const skill = U.clamp01(U.invLerp(25, 99, rating == null ? 70 : rating));
+
+    /* A layup's window is ENORMOUS, on purpose.
+     *
+     * The hard part of a layup is getting there — beating your man off the
+     * dribble, picking the takeoff, surviving the help. Once you are in the
+     * air a foot from the rim, asking for a sixtieth-of-a-second release is
+     * asking the wrong question, and it punishes the player for the one thing
+     * the drive was supposed to reward. So the bar goes almost entirely green:
+     * hold it through the rise, let go anywhere near the top, and it drops.
+     *
+     * What still decides a layup is the CONTEST. A body at the rim shrinks
+     * this hard, and solveShot keeps its own contest penalty on top, so
+     * driving into three defenders is still a bad idea — it is just no longer
+     * a timing minigame. */
+    if (type === 'layup') {
+      const w = U.remap(U.clamp(rating == null ? 70 : rating, 25, 99), 25, 99, 0.20, 0.34);
+      const c = U.clamp01(contest || 0);
+      return Math.max(0.05, w * (1 - c * 0.55));
+    }
+
+    /* A dunk you have to time gets a FREE THROW's window — literally `base`,
+     * the same expression the freethrow branch above returns, not a number
+     * that merely resembles it.
+     *
+     * The reasoning is the same one that makes a layup's window enormous, just
+     * less extreme. You only ever see this bar when your reach clears the rim
+     * but not by much (see Player#dunkHeadroom); the hard part was getting up
+     * there, and what is left is a comfortable, practised release rather than
+     * a sixtieth-of-a-second test. Clear the rim easily and there is no bar at
+     * all. Contest still tightens it — a body at the rim is the one thing that
+     * can still make a dunk a bad idea. */
+    if (type === 'dunk') {
+      const c = U.clamp01(contest || 0);
+      return Math.max(0.010, base * (1 - c * 0.40));
+    }
+
     const difficulty = U.clamp01(U.remap(dist, 9, 32, 0, 1));
     const shrink = difficulty * U.lerp(0.82, 0.22, skill);
     let w = Math.max(0.006, base * (1 - shrink));
@@ -271,6 +345,20 @@
     if (tier !== TIER.PERFECT && a <= g * 1.5) tier = TIER.EXCELLENT;
 
     return { tier, error: err, quality: tier.quality, late };
+  }
+
+  /**
+   * The grade a shot gets when there was never a meter to time.
+   *
+   * A dunk with real room over the rim skips the bar entirely (see
+   * Player#dunkHeadroom), and something still has to be handed to solveShot.
+   * Synthesizing a PERFECT here rather than passing null routes it down the
+   * existing `guaranteed` path — zero systematic bias, capped spread — which
+   * is exactly the promise being made by not showing a meter in the first
+   * place. Passing null instead would quietly grade it as a mediocre 0.62.
+   */
+  function autoGrade() {
+    return { tier: TIER.PERFECT, error: 0, quality: TIER.PERFECT.quality, late: false };
   }
 
   /* ==========================================================================
@@ -334,6 +422,7 @@
     const isSlightly = !!(p.grade && p.grade.tier &&
       (p.grade.tier.key === 'SLIGHTLY_EARLY' || p.grade.tier.key === 'SLIGHTLY_LATE'));
     const isLayup = p.type === 'layup';
+    const isDunk = p.type === 'dunk';
 
     let quality;
     if (isGreen || isExcellent || isSlightly) {
@@ -343,6 +432,21 @@
       // two lighter-green halos drawn just outside it (see draw()) - all
       // three read as "green" to the player, so all three are automatic.
       quality = 1.0;
+    } else if (isDunk) {
+      /* A dunk is the highest-percentage shot in basketball, and the model
+       * should say so: the ball is being carried through the ring by hand
+       * from a few inches away, so there is very little for physics to get
+       * wrong. The floor is high and comes off the dunk rating.
+       *
+       * What can still ruin it is a body in the way — contest bites harder
+       * here than on a layup, because a dunk commits you completely and there
+       * is no adjusting once you have left the floor — and a genuinely bad
+       * release, which matters more than on a layup (you are trying to put
+       * the ball in a specific place at a specific height, not float it off
+       * the glass) but nowhere near as much as on a jump shot. */
+      const ratingFactor = U.remap(rating, 25, 99, 0.74, 0.97);
+      quality = U.clamp01(ratingFactor - contest * 0.30
+        - U.clamp01(p.fatigue || 0) * 0.06 - (1 - timing) * 0.22);
     } else if (isLayup) {
       // A layup's real difficulty is getting all the way to the rim, not
       // split-second timing — even a mistimed release should still be a
@@ -381,7 +485,7 @@
     // guaranteed, it's guaranteed: zero systematic bias too.
     const guaranteed = isGreen || isExcellent || isSlightly;
     const timingBias = p.grade
-      ? -p.grade.error * (guaranteed ? 0 : (three ? 7.0 : (isLayup ? 1.6 : 4.6)))
+      ? -p.grade.error * (guaranteed ? 0 : (three ? 7.0 : (isLayup ? 1.6 : (isDunk ? 1.2 : 4.6))))
       : rng.gauss(0, 0.35);
 
     // A tiny sigma still has a real tail — an unlucky draw a couple standard
@@ -448,7 +552,7 @@
   }
 
   BB.Shooting = {
-    TIER, ShotMeter, grade, solveShot, arcHeight,
+    TIER, ShotMeter, grade, autoGrade, solveShot, arcHeight,
     makeReleaseProfile, profileFromRatings, greenWindowFor
   };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -34,6 +34,8 @@
     timeScale: 1,
     _targetScale: 1,
     _scaleRate: 6,
+    /* Real seconds left on a self-unwinding slow motion; 0 when none. */
+    _slowT: 0,
 
     fps: 60,
     frameMs: 0,
@@ -69,6 +71,8 @@
       this.pendingState = null;
       this.pendingParams = null;
 
+      // A replay is scrubbing over entities that are about to be thrown away.
+      if (BB.Replay) BB.Replay.reset();
       if (this.scene && this.scene.exit) this.scene.exit();
       const prev = this.state;
       this.scene = next;
@@ -99,7 +103,30 @@
      */
     setTimeScale(scale, snap) {
       this._targetScale = Math.max(0.02, scale);
+      /* An explicit request wins outright, and cancels any slow motion that was
+       * running. That is what makes the pause safe: pause sets 0 and resume
+       * sets 1, and neither has to know a dunk was in the air — without this a
+       * slow motion taken across a pause would come back and re-apply itself
+       * to a game the player had already resumed at full speed. */
+      this._slowT = 0;
       if (snap) this.timeScale = this._targetScale;
+    },
+
+    /**
+     * Slow the world down for a moment and let it come back on its own.
+     *
+     * Everything about a poster dunk is over in about half a second of game
+     * time, which is too fast to see the thing you just did. The easing in and
+     * out is the existing _scaleRate approach, so it ramps rather than steps,
+     * and the timer runs on REAL seconds — a slow motion that measured its own
+     * length in slowed time would take three times as long as asked.
+     *
+     * @param {number} scale  how slow, e.g. 0.30
+     * @param {number} secs   how long to hold it, in real seconds
+     */
+    slowMo(scale, secs) {
+      this._targetScale = Math.max(0.02, scale);
+      this._slowT = Math.max(0, secs);
     },
 
     /* ------------------------------------------------------------------ tick */
@@ -126,6 +153,10 @@
         this._fpsFrames = 0;
       }
 
+      if (this._slowT > 0) {
+        this._slowT -= raw;
+        if (this._slowT <= 0) { this._slowT = 0; this._targetScale = 1; }
+      }
       this.timeScale = U.approach(this.timeScale, this._targetScale, this._scaleRate, raw);
 
       BB.Input.beginFrame();
@@ -136,21 +167,30 @@
         /* Unscaled hook for UI, transitions and camera-independent timers. */
         if (scene.updateRealtime) scene.updateRealtime(raw);
 
-        if (scene.fixedUpdate) {
-          this._accum += raw * this.timeScale;
-          let steps = 0;
-          while (this._accum >= C.FIXED_DT && steps < 8) {
-            scene.fixedUpdate(C.FIXED_DT);
-            this._accum -= C.FIXED_DT;
-            this.simTime += C.FIXED_DT;
-            steps++;
+        /* The replay records off the live world and, while it is showing that
+         * recording back, writes over it — so the simulation has to sit those
+         * frames out entirely. It says so here rather than every scene having
+         * to remember to ask. */
+        const frozen = BB.Replay ? BB.Replay.beginFrame(raw, scene) : false;
+
+        if (!frozen) {
+          if (scene.fixedUpdate) {
+            this._accum += raw * this.timeScale;
+            let steps = 0;
+            while (this._accum >= C.FIXED_DT && steps < 8) {
+              scene.fixedUpdate(C.FIXED_DT);
+              this._accum -= C.FIXED_DT;
+              this.simTime += C.FIXED_DT;
+              steps++;
+            }
+            // Runaway protection: never let the backlog grow unbounded.
+            if (steps >= 8) this._accum = 0;
           }
-          // Runaway protection: never let the backlog grow unbounded.
-          if (steps >= 8) this._accum = 0;
+
+          if (scene.update) scene.update(raw * this.timeScale, raw);
         }
 
-        if (scene.update) scene.update(raw * this.timeScale, raw);
-        if (scene.render) scene.render(this._accum / C.FIXED_DT);
+        if (scene.render) scene.render(frozen ? 0 : this._accum / C.FIXED_DT);
       }
 
       BB.Input.endFrame();

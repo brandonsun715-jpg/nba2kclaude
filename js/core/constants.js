@@ -1,5 +1,5 @@
 /* =============================================================================
- * constants.js  —  Immutable configuration for HARDWOOD
+ * constants.js  —  Immutable configuration for NBA 1K26
  * -----------------------------------------------------------------------------
  * All world-space units are FEET. The court is modelled at true NBA dimensions
  * (94 x 50) so that every rating, distance and shot-percentage curve tuned later
@@ -52,7 +52,7 @@
 
     /* -------------------------------------------------------------- physics */
     GRAVITY: 32.174,       // ft/s^2
-    BALL_RADIUS: 0.395,    // ~9.47" circumference ball
+    BALL_RADIUS: 0.395,    // 9.48" across — a size 7, which is 29.5" round
     BALL_MASS: 1.4,
     // The arc solver (Ball.solveArc) assumes drag-free ballistic flight and
     // has no way to compensate for drag when computing a launch velocity.
@@ -64,7 +64,18 @@
     // negligibly affected by air resistance, so zero is both correct and
     // necessary rather than a simplification.
     AIR_DRAG: 0,
-    FLOOR_RESTITUTION: 0.755,
+    /* How much of its speed the ball keeps off the floor.
+     *
+     * This is a measured property of a legal basketball, not a feel knob. The
+     * NBA inflates to the rulebook's drop test: released from six feet, the
+     * ball must rebound to between 52 and 56 inches. That is e = sqrt(54/72) =
+     * 0.866 at the middle of the range.
+     *
+     * It was 0.755, which rebounds to 41 inches — a foot short of legal, and a
+     * ball nobody in the building would agree to play with. Everything
+     * downstream inherited it: rebounds died under the rim, deflections
+     * stopped where they were hit, and a loose ball was never a scramble. */
+    FLOOR_RESTITUTION: 0.866,
     FLOOR_FRICTION: 0.72,
     RIM_RESTITUTION: 0.42,
     RIM_FRICTION: 0.55,
@@ -119,8 +130,14 @@
   ];
 
   /* ------------------------------------------------------------------ theme
-   * "Court at Night": ink arena, warm maple floor, signal orange for broadcast
-   * furniture, mint reserved exclusively for perfect releases and made shots.
+   * "Summer Run": an outdoor park court in the middle of the afternoon. Teal
+   * acrylic inside the lines, a terracotta surround, weathered blacktop past
+   * that, and a hard blue sky over all of it. Mint stays reserved exclusively
+   * for perfect releases and made shots.
+   *
+   * The ink/slate family is kept: it is the interface's palette (menus, HUD,
+   * scorebug), and dark chrome over a bright court is exactly the contrast
+   * those want. It just no longer paints the world.
    */
   C.PAL = {
     ink: '#080B11',
@@ -130,10 +147,30 @@
     chalk: '#F3F0E7',
     chalkDim: 'rgba(243,240,231,0.62)',
 
-    maple: '#C08A4E',
-    mapleLight: '#D8A369',
-    mapleDark: '#9A6733',
-    mapleGrain: 'rgba(88,52,18,0.20)',
+    /* ---- the park ---- */
+    sky: '#4FA8E8',            // zenith
+    skyHaze: '#BBDFF4',        // horizon, and the colour distance fades into
+    sun: '#FFF4D6',
+
+    asphalt: '#5D6670',        // the pad the court is painted on
+    asphaltLight: '#6E7883',
+    asphaltDark: '#464E57',
+    asphaltGrain: 'rgba(24,28,34,0.22)',
+
+    acrylic: '#1E9C86',        // inside the lines
+    acrylicLight: '#2CB89E',
+    acrylicDark: '#177A69',
+    clay: '#C4623A',           // the surround outside the lines
+    clayLight: '#D97848',
+
+    grass: '#5FA33C',
+    grassDark: '#417329',
+    leaf: '#4E8F32',
+    leafLight: '#77B84A',
+    bark: '#6B4E32',
+
+    fence: '#9AA6AE',          // galvanised chain link
+    fencePost: '#7A868F',
 
     paint: '#1D4E8F',
     paintDeep: '#153A6C',

@@ -8,7 +8,7 @@
  *
  * One frame is:
  *   beginFrame(camera)   reset every bucket, upload the camera matrices
- *   ... submissions ...  from court, arena, hoops, players, ball, fx
+ *   ... submissions ...  from court, park, hoops, players, ball, fx
  *   flush()              opaque pass, floor, shadow pass, transparent pass
  *
  * Everything is drawn in at most a dozen draw calls regardless of how many
@@ -89,9 +89,55 @@
     gl_Position = u_viewProj * wp;
   }`;
 
-  /* Key light + hemispheric fill + rim. Tuned for "Court at Night": the arena
-   * is dark, the floor bounces warm maple light up into everyone's legs, and a
-   * cool rim traces every silhouette so players read against the black bowl. */
+  /* Sky. A screen-filling gradient drawn before anything else, evaluated along
+   * the real view ray so it holds still when the camera turns instead of
+   * sliding around with the frame. The horizon colour is also the fog colour,
+   * which is what makes distance dissolve into the sky rather than stopping at
+   * a hard line where the ground runs out. */
+  const SKY_VS = `#version 300 es
+  layout(location=0) in vec3 a_pos;
+  out vec2 v_ndc;
+  void main() {
+    // The quad primitive lies in X/Z spanning -0.5..0.5; doubled, that is the
+    // whole of clip space. z = w puts it exactly on the far plane.
+    v_ndc = vec2(a_pos.x * 2.0, a_pos.z * 2.0);
+    gl_Position = vec4(v_ndc, 1.0, 1.0);
+  }`;
+
+  const SKY_FS = `#version 300 es
+  precision highp float;
+
+  in vec2 v_ndc;
+
+  uniform vec3 u_camFwd;
+  uniform vec3 u_camRight;
+  uniform vec3 u_camUp;
+  uniform vec2 u_camTan;
+  uniform vec3 u_lightDir;
+  uniform vec3 u_fogColor;    // horizon haze
+  uniform vec3 u_skyColor;    // zenith
+
+  out vec4 outColor;
+
+  void main() {
+    vec3 d = normalize(u_camFwd + u_camRight * v_ndc.x * u_camTan.x
+                                + u_camUp * v_ndc.y * u_camTan.y);
+
+    // Haze piles up at the horizon and thins out fast overhead.
+    vec3 col = mix(u_fogColor, u_skyColor, smoothstep(-0.04, 0.46, d.y));
+
+    // The sun, and the wide glare around it.
+    float s = max(dot(d, normalize(u_lightDir)), 0.0);
+    col += vec3(1.0, 0.95, 0.80) * (pow(s, 220.0) * 1.15 + pow(s, 7.0) * 0.14);
+
+    outColor = vec4(col, 1.0);
+  }`;
+
+  /* Key light + hemispheric fill + rim. Tuned for "Summer Run": an outdoor
+   * court in the middle of the afternoon, so the key is a hard sun, the fill
+   * comes off a bright blue sky above and warm blacktop below, and the rim
+   * term is small — a strong rim light is a night-game trick and reads as
+   * plastic in daylight. */
   const SOLID_FS = `#version 300 es
   precision highp float;
 
@@ -116,29 +162,31 @@
     vec3 L = normalize(u_lightDir);
     float ndl = max(dot(N, L), 0.0);
 
-    // Broad arena rig: a second, weaker light from the opposite side stops the
-    // shadow side of every player going completely flat black.
+    // Bounce off the sky behind: a second, weaker light from the opposite side
+    // stops the shadow side of every player going completely flat black.
     float ndl2 = max(dot(N, normalize(vec3(-L.x, L.y * 0.55, -L.z))), 0.0);
 
-    // Hemispheric ambient: cool from the roof, warm maple bounce from below.
+    // Hemispheric ambient: open sky above, warm blacktop bounce from below.
+    // Outdoors this is the majority of the light on every shadowed surface,
+    // which is why none of it goes black the way it did in the bowl.
     float hemi = N.y * 0.5 + 0.5;
-    vec3 ambient = mix(vec3(0.16, 0.11, 0.07), vec3(0.20, 0.23, 0.30), hemi);
+    vec3 ambient = mix(vec3(0.34, 0.30, 0.25), vec3(0.42, 0.52, 0.64), hemi);
 
     vec3 albedo = v_color.rgb;
     float gloss = v_params.x;
     float emissive = v_params.y;
 
-    vec3 diffuse = albedo * (ambient + vec3(1.02, 0.97, 0.88) * ndl * 0.86
-                                     + vec3(0.42, 0.50, 0.66) * ndl2 * 0.30);
+    vec3 diffuse = albedo * (ambient + vec3(1.10, 1.05, 0.92) * ndl * 1.00
+                                     + vec3(0.44, 0.54, 0.70) * ndl2 * 0.34);
 
     vec3 H = normalize(L + V);
     float spec = pow(max(dot(N, H), 0.0), 12.0 + gloss * 90.0) * gloss;
 
     // Rim term: strongest where the surface turns away from the viewer.
-    float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0) * 0.55;
+    float rim = pow(1.0 - max(dot(N, V), 0.0), 3.0) * 0.20;
 
     vec3 col = diffuse + vec3(1.0, 0.96, 0.90) * spec
-             + vec3(0.36, 0.55, 0.78) * rim
+             + vec3(0.52, 0.66, 0.82) * rim
              + albedo * emissive;
 
     float dist = length(u_eye - v_world);
@@ -148,9 +196,9 @@
     outColor = vec4(col, v_color.a);
   }`;
 
-  /* Floor: the baked Canvas2D court art, relit and given a broadcast sheen.
-   * The gloss streak is a cheap stand-in for a real reflection — enough to
-   * read as polished maple under arena lights without a second render pass. */
+  /* Floor: the baked Canvas2D court art, relit. Acrylic over asphalt is matt
+   * next to a waxed indoor floor, so there is only a soft sheen left — enough
+   * to catch the sun where the paint is fresh. */
   const FLOOR_FS = `#version 300 es
   precision highp float;
 
@@ -176,13 +224,13 @@
     vec3 H = normalize(L + V);
 
     float ndl = max(dot(N, L), 0.0);
-    vec3 lit = tex.rgb * (0.42 + ndl * 0.72);
+    vec3 lit = tex.rgb * (0.72 + ndl * 0.62);
 
-    float spec = pow(max(dot(N, H), 0.0), 46.0) * 0.30;
-    // Grazing angles catch far more light off a waxed floor.
-    float fres = pow(1.0 - max(dot(N, V), 0.0), 4.0) * 0.22;
+    float spec = pow(max(dot(N, H), 0.0), 30.0) * 0.14;
+    // Grazing angles still pick up the sky, even off a matt surface.
+    float fres = pow(1.0 - max(dot(N, V), 0.0), 4.0) * 0.16;
 
-    vec3 col = lit + vec3(1.0, 0.95, 0.86) * spec + vec3(0.28, 0.42, 0.62) * fres;
+    vec3 col = lit + vec3(1.0, 0.95, 0.86) * spec + vec3(0.40, 0.56, 0.74) * fres;
 
     float dist = length(u_eye - v_world);
     float fog = 1.0 - exp(-dist * u_fogDensity);
@@ -215,11 +263,18 @@
     progSolid: null,
     progFloor: null,
     progShadow: null,
+    progSky: null,
 
     /* Camera state for the current frame. */
     _viewProj: null,
     _eye: new Float32Array(3),
     _time: 0,
+
+    /* Camera basis and half-frustum tangents, for the sky's view ray. */
+    _camFwd: new Float32Array(3),
+    _camRight: new Float32Array(3),
+    _camUp: new Float32Array(3),
+    _camTan: new Float32Array(2),
 
     /* Scratch matrices — reused so submission never allocates. */
     _m: null,
@@ -245,8 +300,10 @@
       this.progSolid = GLX.program(COMMON_VS, SOLID_FS);
       this.progFloor = GLX.program(COMMON_VS, FLOOR_FS);
       this.progShadow = GLX.program(COMMON_VS, SHADOW_FS);
+      this.progSky = GLX.program(SKY_VS, SKY_FS);
 
       const box = Geo.box(), sph = Geo.sphere(16, 12), seg = Geo.segment(12, 12);
+      const ballSph = Geo.sphere(30, 20);
       const cyl = Geo.cylinder(18), tor = Geo.torus(0.20, 30, 9);
       const quad = Geo.quad(), panel = Geo.panel();
 
@@ -257,6 +314,9 @@
         boxT: GLX.mesh(box, 200),
         sphere: GLX.mesh(sph, 400),
         sphereT: GLX.mesh(sph, 200),
+        // The basketball gets its own, much finer lathe. There is one of it,
+        // it is round by definition, and the camera never looks away from it.
+        ball: GLX.mesh(ballSph, 4),
         seg: GLX.mesh(seg, 900),
         segT: GLX.mesh(seg, 400),
         cyl: GLX.mesh(cyl, 300),
@@ -266,8 +326,12 @@
         crowd: GLX.mesh(box, 4400),
         quad: GLX.mesh(quad, 8),
         shadow: GLX.mesh(quad, 200),
-        floor: GLX.mesh(quad, 2)
+        floor: GLX.mesh(quad, 2),
+        // One instance, permanently. The sky shader reads none of the instance
+        // attributes; the buffer exists only to give the draw call a count.
+        sky: GLX.mesh(quad, 1)
       };
+      this.meshes.sky.n = 1;
 
       this.ready = true;
       return this;
@@ -280,7 +344,14 @@
       this._eye[0] = cam.eye[0];
       this._eye[1] = cam.eye[1];
       this._eye[2] = cam.eye[2];
+      this._camFwd.set(cam.fwd);
+      this._camRight.set(cam.right);
+      this._camUp.set(cam.up);
+      // proj[0] and proj[5] are 1/tan(half-fov) across and up.
+      this._camTan[0] = 1 / (cam.proj[0] || 1);
+      this._camTan[1] = 1 / (cam.proj[5] || 1);
       for (const k in this.meshes) this.meshes[k].n = 0;
+      this.meshes.sky.n = 1;
       this._poseCount = 0;
       this.dropped = 0;
     },
@@ -388,6 +459,12 @@
                 gloss, emissive, blend ? color[3] : 1);
     },
 
+    /** The basketball. Same shape as sphere(), drawn from the finer mesh. */
+    ballBody(x, y, z, radius, color, gloss) {
+      M4.fromBox(this._m, x, z, y, radius * 2, radius * 2, radius * 2);
+      this.push(this.meshes.ball, this._m, color, gloss, 0, 1);
+    },
+
     /**
      * Yaw-rotated ellipsoid — same signature as box(), different primitive.
      * A head is taller than it is deep and deeper than it is wide, so a plain
@@ -466,6 +543,18 @@
       const GLX = BB.GLX, gl = GLX.gl;
       const m = this.meshes;
 
+      /* --- sky first, with the depth buffer switched off entirely: it is the
+       * backdrop everything else is drawn over, and it must never win a depth
+       * test against real geometry however far away that geometry is. */
+      gl.disable(gl.DEPTH_TEST);
+      gl.depthMask(false);
+      gl.disable(gl.BLEND);
+      gl.disable(gl.CULL_FACE);
+      gl.useProgram(this.progSky.prog);
+      this._setCommon(this.progSky);
+      GLX.drawMesh(m.sky);
+      gl.enable(gl.CULL_FACE);
+
       gl.enable(gl.DEPTH_TEST);
       gl.depthMask(true);
       gl.disable(gl.BLEND);
@@ -488,6 +577,7 @@
       GLX.drawMesh(m.crowd);
       this._setShape(this.progSolid, 0);
       GLX.drawMesh(m.sphere);
+      GLX.drawMesh(m.ball);
       this._setShape(this.progSolid, 2);   // limb taper
       GLX.drawMesh(m.seg);
       this._setShape(this.progSolid, 0);
@@ -500,7 +590,9 @@
         const Skin = BB.Skin;
         gl.useProgram(Skin.prog.prog);
         this._setCommon(Skin.prog);
-        for (let i = 0; i < this._poseCount; i++) Skin.draw(this._poses[i]);
+        for (let i = 0; i < this._poseCount; i++) {
+          Skin.draw(this._poses[i], this._poses[i].hairStyle);
+        }
       }
 
       /* --- contact shadows: blended, depth-tested, no depth write */
@@ -543,18 +635,29 @@
       if (p.u.u_lightDir) gl.uniform3fv(p.u.u_lightDir, LIGHT_DIR);
       if (p.u.u_fogColor) gl.uniform3fv(p.u.u_fogColor, FOG_COLOR);
       if (p.u.u_fogDensity) gl.uniform1f(p.u.u_fogDensity, FOG_DENSITY);
+      if (p.u.u_skyColor) gl.uniform3fv(p.u.u_skyColor, SKY_COLOR);
+      if (p.u.u_camFwd) gl.uniform3fv(p.u.u_camFwd, this._camFwd);
+      if (p.u.u_camRight) gl.uniform3fv(p.u.u_camRight, this._camRight);
+      if (p.u.u_camUp) gl.uniform3fv(p.u.u_camUp, this._camUp);
+      if (p.u.u_camTan) gl.uniform2fv(p.u.u_camTan, this._camTan);
     }
   };
 
-  /* Key light comes from high above the far sideline, angled down the court —
-   * the same direction the old 2D build implied with its drop shadows. */
+  /* The sun: high, and off the far corner so it rakes across the court instead
+   * of flattening it. Same direction the old 2D build implied with its drop
+   * shadows, which is why the contact shadows still sit right. */
   const LIGHT_DIR = new Float32Array([0.32, 0.88, -0.35]);
-  const FOG_COLOR = new Float32Array([0.031, 0.043, 0.066]);
-  const FOG_DENSITY = 0.0035;
+  /* Horizon haze, and the colour distance fades into. It must match the sky's
+   * own horizon or the far end of the park ends on a visible seam. */
+  const FOG_COLOR = new Float32Array([0.733, 0.875, 0.957]);
+  const SKY_COLOR = new Float32Array([0.310, 0.659, 0.910]);
+  const FOG_DENSITY = 0.0026;
   const SHADOW_COL = [0, 0, 0, 1];
   const WHITE = [1, 1, 1, 1];
 
   S3.LIGHT_DIR = LIGHT_DIR;
+  S3.SKY_COLOR = SKY_COLOR;
+  S3.FOG_COLOR = FOG_COLOR;
   S3.SOLID_FS = SOLID_FS;
   BB.S3 = S3;
 })(typeof window !== 'undefined' ? window : globalThis);

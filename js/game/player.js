@@ -4,7 +4,7 @@
  * A Player owns three things: RATINGS (25-99 attributes that never change
  * during a game), STATE (position, velocity, action) and PRESENTATION (a small
  * vector figure drawn fresh every frame — there is no sprite art in this
- * project, so the body is built from primitives the same way arena.js draws
+ * project, so the body is built from primitives the same way park.js draws
  * its bench and crowd figures).
  *
  * Input is optional. A Player with `human = true` reads BB.Input each frame;
@@ -87,18 +87,158 @@
   }
   adoptMeshBuild(BB.PLAYER_MESH && BB.PLAYER_MESH.landmarks);
 
+  /**
+   * How far the toe sits in front of the ankle, in skeleton units.
+   *
+   * The foot is the one bone the pose solver has to know the shape of. Rolling
+   * up onto the toe at push-off means lifting the ankle by exactly the toe's
+   * own length times the sine of the roll — do it by any other number and the
+   * shoe either hovers or sinks through the blacktop. Read off the same bind
+   * skeleton draw() places the mesh with, so the two cannot drift apart.
+   */
+  BONE.toe = (function () {
+    const M = BB.PLAYER_MESH;
+    if (!M || !M.bind || !M.bind.footL) return 0.16;
+    return (-M.bind.footL[1][1] / M.height) * REF_STATURE;
+  })();
+
+  /**
+   * How far the fingertips reach past the wrist, in skeleton units.
+   *
+   * The solver's arm stops at the wrist, but what has to clear a ten-foot rim
+   * is the hand — and on this build that is another fifth of a skeleton unit,
+   * enough to matter when the question is whether a dunk is on. Measured off
+   * the same bind skeleton as BONE.toe, for the same reason: derived from the
+   * mesh, so re-baking the model cannot silently move the rim out of reach.
+   */
+  BONE.hand = (function () {
+    const M = BB.PLAYER_MESH;
+    if (!M || !M.bind || !M.bind.handL) return 0.19;
+    const h = M.bind.handL;
+    const len = Math.hypot(h[1][0] - h[0][0], h[1][1] - h[0][1], h[1][2] - h[0][2]);
+    return (len / M.height) * REF_STATURE;
+  })();
+
   /* Limbs do not hang in a vertical plane straight off the joint they start at.
-   * Arms converge toward the body as they go down — the wrists sit well inside
-   * the shoulders — while legs splay the other way onto a base wider than the
-   * hips. These are each joint's lateral offset as a fraction of the limb's
-   * root width, and they are what stops the arms reading as slabs bolted to the
-   * outside of the torso. The pose solver can't express any of this itself: it
-   * works in a single flat plane, and everything past the IK origin's own x
-   * becomes forward motion so that a run cycle scissors properly. */
+   * These are each joint's lateral offset as a fraction of the limb's root
+   * width. The pose solver can't express any of this itself: it works in a
+   * single flat plane, and everything past the IK origin's own x becomes
+   * forward motion so that a run cycle scissors properly.
+   *
+   * The arm numbers are measured against the mesh rather than chosen by eye.
+   * This body is half a stature wide through the ribs (torso radius 0.100 of
+   * stature) and its shoulder joints sit at 0.109, so an arm pulled even
+   * slightly inboard of its own shoulder buries the humerus inside the
+   * ribcage: the earlier 0.84/0.74 put the elbow at 0.091 and the wrist at
+   * 0.081, both well inside a chest that reaches 0.100 — which is why the
+   * arms read as melted into the jersey and tore the deltoid open. Hanging
+   * them all but straight down off the joint, converging only slightly, keeps
+   * the limb outside the torso with its surface just brushing it.
+   *
+   * NOT the bind pose's own lateral spread, which is a tempting thing to adopt
+   * and is wrong: the mesh is bound in an A-pose with the arms held out, so its
+   * elbow sits 1.41 shoulder-widths wide and its wrist 1.72. Feeding those to a
+   * runtime that HANGS the arms pins the hands out at bind width whatever the
+   * solver does with the rest of the limb, and the figure stands like a
+   * scarecrow. The bind spread describes the pose the model was drawn in; these
+   * describe the pose the game puts it in. */
+  /* How fast a shooter squares up to the basket, in "fraction closed per
+   * second". Fixed rather than scaled off the player's agility: squaring up
+   * for a jump shot is not an athletic feat, and scaling it would mean the
+   * least agile builds are the ones left shooting sideways. From facing dead
+   * away this is within seven degrees of square by the end of the gather,
+   * which is the earliest a shot can possibly be released. */
+  const SQUARE_UP = 32;
+
   const SPLAY = {
-    elbow: 0.84, wrist: 0.74,
+    elbow: 1.06, wrist: 1.02,
     knee: 1.08, ankle: 1.23
   };
+
+  /* How much of an arm's reach a pose is allowed to spend. Just inside full
+   * extension, because an arm at exactly 1.0 is locked out with no elbow in it,
+   * and one past 1.0 comes back clamped and draws as a pole. Applied centrally
+   * to every hand target — see the cap at the end of _updatePose. */
+  const ARM_CAP = 0.97;
+  /* The same for a leg, but tighter: a push-off really does straighten the leg
+   * almost fully, and a knee that never quite extends reads as a crouch that
+   * will not finish. */
+  const LEG_CAP = 0.99;
+  /* And the limit at the other end, which is an ANGLE rather than a distance.
+   *
+   * This used to be 1.06 times the difference between the two arm bones — the
+   * closest a bare two-bone hinge can put its end on its own root. That is
+   * geometry, not anatomy: it corresponds to 176 degrees of elbow flexion, an
+   * arm folded flat with the forearm lying along the upper arm. AAOS puts
+   * normal elbow flexion at about 150; the forearm stops against the biceps.
+   *
+   * The difference is not academic. Measured across every pose, seven of them
+   * sat at or near the old limit — all three layup finishes were pinned at
+   * exactly it — and at that fold the upper arm and forearm meshes occupy the
+   * same space and skin into one smooth lobe hanging off the shoulder. That is
+   * the balloon arm in the layup and the follow-through.
+   *
+   * Stated as the third side of a triangle with the two bones and the included
+   * angle the joint actually allows, so it retunes with the model.
+   *
+   * The knee has no counterpart here, and deliberately: measured across every
+   * pose the deepest knee is 141 degrees of flexion on a dunk's gather and
+   * everything else is under 129, against an AAOS normal of about 135 — so
+   * there is nothing to clamp. It would also be a number computed from
+   * BONE.shin, which currently means floor-to-knee rather than knee-to-ankle
+   * (see the stride stretch), so a limit written against it would be measuring
+   * the wrong bone.
+   */
+  const ELBOW_FLEX_MAX = 150 * Math.PI / 180;
+
+  /**
+   * How close a two-bone limb's end can get to its own root, given the tightest
+   * the joint between them actually bends: the law of cosines on the two bones
+   * and the angle left between them at full flexion.
+   */
+  function fold(a, b, flexMax) {
+    return Math.sqrt(a * a + b * b - 2 * a * b * Math.cos(Math.PI - flexMax));
+  }
+
+  /* How far from the rim a sprinting drive can still take off for a layup, in
+   * feet. A real drive leaves the floor outside the restricted area (4ft) and
+   * covers the rest in the air, so this has to be comfortably past it or the
+   * shots that most want to be layups come out as jump shots. */
+  const LAYUP_TAKEOFF = 11;
+
+  /* ------------------------------------------------------------------ dunking
+   * Whether a dunk is on is a question about a body and a ten-foot rim, not a
+   * dice roll: can this player's hand actually carry the ball over the ring?
+   * The answer comes from the two numbers the simulation already uses for
+   * exactly those two things — standing reach (from height) and jump height
+   * (from the vertical rating) — so the gate can never promise something the
+   * jump then fails to deliver.
+   *
+   * DUNK_CLEAR is how far ABOVE the ring the hand has to get. Level with the
+   * rim is a player hanging off it, not a player dunking on it.
+   *
+   * DUNK_EASY is the headroom past which the flush stops being in doubt. Below
+   * it you have the reach but not to spare, and the shot gets a meter; above
+   * it there is nothing left to time and the meter never appears.
+   *
+   * DUNK_DRIVE_LIFT is the extra lift a running takeoff converts out of its
+   * own momentum. It is used by BOTH dunkHeadroom() and _startJump(), and has
+   * to stay that way — the moment the gate predicts one number and the jump
+   * produces another, the gate is lying. */
+  const DUNK_CLEAR = 0.45;
+  const DUNK_EASY = 0.85;
+  const DUNK_DRIVE_LIFT = 1.10;
+  /* How far out a running dunk can leave the floor. Shorter than a layup's
+   * takeoff — you can float a layup in from distance, but a dunk has to arrive
+   * with the ball already above the rim. */
+  const DUNK_TAKEOFF = 7.5;
+  /* How far the wrist gets from the shoulder at the top of a dunk, in skeleton
+   * units. Full arm reach is upperArm + forearm; this stays just inside it,
+   * because a target the IK cannot reach comes back clamped and a clamped arm
+   * draws poker-straight with no elbow at all. Shared by the pose and by
+   * drawnReach() so the drawing and the maths cannot disagree about how high
+   * this player's hand actually gets. */
+  const DUNK_REACH = 0.93;
 
   // Nobody stands with locked knees, least of all somebody guarding you. The
   // hips ride this fraction lower than a fully extended leg would put them,
@@ -215,13 +355,165 @@
   };
 
   /* ---------------------------------------------------------- dribble moves
-   * Crossover / behind-the-back / hesitation change direction on the spot to
-   * create separation; spin turns the whole body away from the defender.
-   * Durations are how long the move's own animation/kick lasts; cooldown
-   * (set in _startMove) is the minimum gap before another move can start. */
-  const MOVE_DURATION = { crossover: 0.30, behindBack: 0.36, spin: 0.46, hesitation: 0.42 };
-  const MOVE_COOLDOWN = { crossover: 0.32, behindBack: 0.38, spin: 0.65, hesitation: 0.40 };
-  const MOVE_CHAIN_WINDOW = 0.55; // a second dribble press within this window chains into behind-the-back
+   * `dur` is how long the move's own animation and kick last; `cool` is the
+   * minimum gap before another can start; `swap` is whether the ball finishes
+   * in the other hand, which is the thing that makes a move a move; `kick` is
+   * the lateral burst that sells the change of direction, in ft/s; `risk`
+   * multiplies the chance of losing the handle.
+   *
+   * Only four of these existed and none of them moved the ball — see BALL_PATH.
+   */
+  const MOVES = {
+    crossover:   { dur: 0.38, cool: 0.40, swap: true,  kick: 4.1, risk: 1.00 },
+    betweenLegs: { dur: 0.48, cool: 0.45, swap: true,  kick: 3.1, risk: 1.20 },
+    behindBack:  { dur: 0.50, cool: 0.50, swap: true,  kick: 4.8, risk: 1.40 },
+    hesitation:  { dur: 0.50, cool: 0.48, swap: false, kick: 0,   risk: 0.90 },
+    inAndOut:    { dur: 0.40, cool: 0.38, swap: false, kick: 1.8, risk: 1.00 },
+    spin:        { dur: 0.56, cool: 0.78, swap: true,  kick: 0,   risk: 1.40 }
+  };
+  const MOVE_DURATION = {};
+  for (const k in MOVES) MOVE_DURATION[k] = MOVES[k].dur;
+  const MOVE_CHAIN_WINDOW = 0.55; // a second press within this window chains
+  /* How much of a move is spent collecting the ball out of whatever the
+   * bounce was doing when the key went down.
+   *
+   * Kept short, because the gather blends from wherever the ball WAS toward the
+   * path — so every frame of it is a frame the path's own shape is diluted, and
+   * the start of the path is where the ball is furthest out to the side. At
+   * 0.30 it was eating a quarter of the move's lateral travel. Four or five
+   * frames is enough to hide the join. */
+  const MOVE_GATHER = 0.16;
+
+  /* Which input action starts which move. Order matters only in that the first
+   * pressed key wins, and nobody presses two at once on purpose. */
+  const MOVE_KEYS = [
+    ['dribbleCross', 'crossover'],
+    ['dribbleTween', 'betweenLegs'],
+    ['dribbleBehind', 'behindBack'],
+    ['dribbleHesi', 'hesitation'],
+    ['dribbleInOut', 'inAndOut'],
+    ['dribbleSpin', 'spin']
+  ];
+
+  /* ----------------------------------------------------------- the ball path
+   * Where the BALL is through each move, in the player's own frame: `fwd`
+   * ahead of them, `lat` to their RIGHT, `up` off the floor, all in skeleton
+   * units so a bigger player has a proportionally bigger handle.
+   *
+   * The durations are about a quarter longer than the real thing, and the kicks
+   * a fifth bigger to pay for it. A crossover takes three tenths of a second in
+   * a gym, which is eighteen frames — over before the eye has found the ball,
+   * and on a figure five feet tall at broadcast distance that is a flicker
+   * rather than a move. The extra time is what makes it legible; the extra kick
+   * is so a move still buys the step it used to, because a longer move is a
+   * longer window for the defender to recover in.
+   *
+   * This is the piece that did not exist. The moves animated an arm and left
+   * the ball glued to the right wrist, so — measured on every frame of both —
+   * a crossover and a behind-the-back were the same thing: the ball travelling
+   * from behind the player to in front of them, seven inches to their right,
+   * at a lateral position that never changed by so much as a thousandth. It
+   * never crossed the body, never went behind it, and was never once in the
+   * left hand, because handPosition() asked handAt() for a side and handAt()
+   * defaults to the right.
+   *
+   * A move is a thing the BALL does. The hands are posed to meet it.
+   *
+   * `fall(k)` is the free-fall shape — 0 at the palm, 1 at the floor, squared
+   * so the ball is quickest where it is lowest. Sideways travel is linear,
+   * because nothing pushes a ball sideways once it has left the hand; the two
+   * paths that curve say why.
+   *
+   * `c` carries the figure's own dimensions: `lo` the ball's centre resting on
+   * the floor, `hi` the height it tops out at in the hand, `lat` how far to the
+   * side a hand dribbles it, and `dir` which hand it starts in (+1 right).
+   */
+  function fall(k) { const s = k < 0.5 ? k * 2 : (1 - k) * 2; return s * s; }
+
+  /* Where a resting dribble keeps the ball, fore/aft — the same offset the
+   * dribbling-hand pose uses. EVERY path starts and ends here, and at its
+   * hand's own lateral, because the free bounce takes over on the frame the
+   * move ends and anywhere else is a jump. Height is the one thing that may
+   * differ, and _syncDribblePhase picks the bounce up at whatever height the
+   * move left the ball at. */
+  const REST_FWD = 0.11;
+  /* How far past the resting hand a move carries the ball sideways, as a
+   * multiple of it. At 1.48 the ball finishes outside the foot on each side. */
+  const MOVE_SPREAD = 1.58;
+
+  const BALL_PATH = {
+    /* Straight across the front on one hard bounce. Low and quick — the whole
+     * move IS the bounce, and it clears out in front so it misses the feet. */
+    crossover(k, c) {
+      return {
+        fwd: REST_FWD + Math.sin(k * Math.PI) * 0.20,
+        lat: U.lerp(c.lat * c.dir, -c.lat * c.dir, k),
+        up: U.lerp(c.hi * 0.70, c.lo, fall(k))
+      };
+    },
+    /* Through the gap, back-to-front, and lower than a crossover because it has
+     * to pass under the crotch. The stance splits to open the gap — see the
+     * pose — or the ball goes through a thigh. */
+    betweenLegs(k, c) {
+      return {
+        fwd: REST_FWD - Math.sin(k * Math.PI) * 0.15,
+        lat: U.lerp(c.lat * c.dir, -c.lat * c.dir, k),
+        up: U.lerp(c.hi * 0.58, c.lo, fall(k))
+      };
+    },
+    /* Round the back, bouncing behind the heels.
+     *
+     * The fore/aft curve is the one place a straight line would be wrong. The
+     * ball leaves the hand travelling back and across and comes up on the far
+     * side in front — which only reconciles because the PLAYER is running
+     * forward underneath it, and this frame moves with the player. In the
+     * gym you are stepping past the ball while it is behind you. */
+    behindBack(k, c) {
+      return {
+        fwd: REST_FWD - Math.sin(k * Math.PI) * 0.76,
+        lat: U.lerp(c.lat * c.dir, -c.lat * c.dir, k),
+        up: U.lerp(c.hi * 0.82, c.lo, fall(k))
+      };
+    },
+    /* The ball comes up and STOPS there while the body rises as if to pull up.
+     * The stall is the whole fake; then it is pushed out ahead and the player
+     * goes with it. Same hand throughout — a hesi that changes hands is a
+     * crossover. */
+    hesitation(k, c) {
+      const hold = U.ease.outCubic(U.clamp01(k / 0.55));
+      const go = k > 0.55 ? (k - 0.55) / 0.45 : 0;
+      return {
+        // Out in front and back under the hand, because the player is running
+        // onto it — the ball is not left out there, it is arrived at.
+        fwd: REST_FWD + Math.sin(go * Math.PI) * 0.26,
+        lat: c.lat * c.dir,
+        up: U.lerp(U.lerp(c.lo, c.hi, hold), c.lo, go * go)
+      };
+    },
+    /* In toward the midline and back out without ever reaching it — a
+     * crossover the ball does not complete. The hand rolls over the outside of
+     * the ball to bring it back, which is why it stays on the same side. */
+    inAndOut(k, c) {
+      const swing = Math.sin(k * Math.PI);
+      return {
+        fwd: REST_FWD + swing * 0.12,
+        lat: c.lat * c.dir * (1 - swing * 0.94),
+        up: U.lerp(c.hi * 0.76, c.lo, fall(k))
+      };
+    },
+    /* Carried, not bounced. Through a spin the ball is pinned in against the
+     * hip and the body turns around it — which is the only way to keep it from
+     * the defender whose side you are turning your back to. */
+    spin(k, c) {
+      const s = U.ease.inOutSine(k);
+      return {
+        fwd: REST_FWD - Math.sin(k * Math.PI) * 0.12,
+        // Pulled in tight through the turn, out to the hand at either end.
+        lat: U.lerp(c.lat * c.dir, -c.lat * c.dir, s) * (1 - Math.sin(k * Math.PI) * 0.30),
+        up: c.hi * 0.68 - Math.sin(k * Math.PI) * c.hi * 0.16
+      };
+    }
+  };
 
   let NEXT_ID = 1;
 
@@ -255,6 +547,9 @@
       this.heightIn = cfg.height || 79;
       this.skin = cfg.skin || '#C99268';
       this.hair = cfg.hair || '#1B1310';
+      // Which haircut, out of the shells baked into the mesh. The scalp is
+      // always there; the style is the volume sitting on top of it.
+      this.hairStyle = cfg.hairStyle || 'fade';
       this.jerseyMain = (this.team && this.team.primary) || PAL.paint;
       this.jerseyTrim = (this.team && this.team.secondary) || PAL.orange;
 
@@ -279,13 +574,22 @@
       this.meter = new BB.Shooting.ShotMeter();
       this.shotType = null;        // 'jumper' | 'layup' | 'dunk'
       this.pendingShot = null;
+      this.driving = false;        // set per attempt by _beginShot: arrived with real speed
+      this.dunkAuto = false;       // this dunk clears the rim easily enough to skip the meter
 
       /* -------------------------------------------------------- animation */
       this.stridePhase = 0;
       this.dribblePhase = 0;
+      /* Which hand the ball is in: +1 right, -1 left. It had no answer before,
+       * which is to say the answer was always the right hand — handPosition()
+       * asked handAt() without a side and handAt() defaults. A crossover that
+       * does not change hands is an arm waving. */
+      this.dribbleHand = 1;
+      this._moveFromHand = 1;
       this.armRaise = 0;           // 0..1, hands up for a shot
       this.lean = 0;               // signed, forward lean from acceleration
       this.squash = 0;             // landing squash-and-stretch
+      this.visualLift = 0;         // DRAWN-only height, feet — see _frame()
 
       this.stats = { att: 0, made: 0, streak: 0, bestStreak: 0 };
       this.events = new U.Emitter();
@@ -296,6 +600,15 @@
       this.blockCooldown = 0;
       this._blockConnected = false;
       this.boundX = null;        // optional [min, max] world-x play boundary
+      /* Defence. `guardHeld` is the key; `isGuarding` is whether the stance is
+       * actually up (which also needs a man with the ball to guard). Quality is
+       * how good the position is right now, 0..1, and lockedT how long it has
+       * been good for — that pair is what the ring under the feet is drawn
+       * from and what the "LOCKED UP" call is earned with. */
+      this.guardHeld = false;
+      this.defenseQuality = 0;
+      this.lockedT = 0;
+      this._lockShown = 0;
       this.isGuarding = false;   // set by the scene: true while actively defending —
                                   // drives a crouched, arms-wide stance in _updatePose().
                                   // False everywhere nothing sets it (1v1 unaffected).
@@ -309,6 +622,10 @@
       this._wanderTimer = 0;
       this._wanderSign = 1;
       this.layupStyle = 'standard';
+      /* Which dunk. Purely presentational, exactly like layupStyle — the shot
+       * maths does not know or care which one is playing. */
+      this.dunkStyle = 'tomahawk';
+      this.posterDunk = false;   // this dunk earned the slow motion
       this._beliefX = null;      // AI defense: lagged belief of the opponent's position
       this._beliefY = null;
 
@@ -344,9 +661,18 @@
        * nothing here allocates per frame. */
       this._animClock = U.rng.f(0, 6.28); // phase-offset so idle players don't sync
       this.pose = {
-        hipY: 0, shoulderY: 0, headY: 0, torsoLean: 0, hipLean: 0, armRoll: 0,
-        footL: { x: 0, y: 0 }, footR: { x: 0, y: 0 },
-        handL: { x: 0, y: 0 }, handR: { x: 0, y: 0 },
+        hipY: 0, shoulderY: 0, headY: 0, torsoLean: 0, hipLean: 0, armRoll: 0, armTuck: 0,
+        // `side` is a lateral foot offset, across the body rather than along
+        // the forward axis — the shuffle of a defensive slide, which cannot be
+        // expressed in the solver's single flat plane.
+        footL: { x: 0, y: 0, pitch: 0, side: 0 },
+        footR: { x: 0, y: 0, pitch: 0, side: 0 },
+        /* `side` nudges a wrist off the pose plane; `lat` and `elbowLat`
+         * place it outright, in skeleton units, positive toward the player's
+         * right. Null means "derive it from SPLAY and the tuck", which is what
+         * every pose except the shot does — see wristWidth(). */
+        handL: { x: 0, y: 0, side: 0, twist: 0, lat: null, elbowLat: null },
+        handR: { x: 0, y: 0, side: 0, twist: 0, lat: null, elbowLat: null },
         kneeL: { jx: 0, jy: 0, ex: 0, ey: 0 }, kneeR: { jx: 0, jy: 0, ex: 0, ey: 0 },
         elbowL: { jx: 0, jy: 0, ex: 0, ey: 0 }, elbowR: { jx: 0, jy: 0, ex: 0, ey: 0 }
       };
@@ -358,7 +684,27 @@
 
     /* ------------------------------------------------------------- queries */
     get radius() { return 0.85; }
-    get handZ() { return U.remap(this.heightIn, 68, 90, 6.6, 8.6) + this.z; }
+    /** Fingertips of a flat-footed player with one arm straight up, in feet.
+     * The half of the dunk gate that comes from the body rather than the legs,
+     * and the same reach handZ has always been built on. */
+    get standingReach() { return U.remap(this.heightIn, 68, 90, 6.6, 8.6); }
+    get handZ() { return this.standingReach + this.z; }
+
+    /**
+     * The same fingertip reach, but for the figure that actually gets DRAWN —
+     * which is a different number, and that is the whole problem this solves.
+     *
+     * The court, the rim and the ball are true size; the figure is deliberately
+     * compressed to somewhere between 4.5 and 5.55 feet (HEIGHT_LO/HI), so its
+     * drawn hand sits well below where standingReach says the player's hand is.
+     * Everywhere else that gap is harmless — nothing else in the game asks a
+     * drawn limb to touch a true-scale object. A dunk asks exactly that, so the
+     * gap has to be a number rather than a surprise. See visualLift.
+     */
+    get drawnReach() {
+      return (REST_HIP + BONE.torso +
+              (BONE.upperArm + BONE.forearm) * DUNK_REACH + BONE.hand) * this.bodyScale;
+    }
     get eyeZ() { return U.remap(this.heightIn, 68, 90, 5.6, 7.4) + this.z; }
     get isBusyShooting() {
       return this.action === ACTION.GATHER || this.action === ACTION.METER ||
@@ -373,7 +719,14 @@
     /** Fills the shared FRAME with this player's body axes, scale and squash. */
     _frame() {
       const f = FRAME;
-      f.x = this.x; f.y = this.y; f.z = this.z;
+      /* visualLift is DRAWN height only, and only ever non-zero on a dunk.
+       *
+       * The simulation keeps using this.z for everything that matters —
+       * collisions, the contest, where the ball launches from — so nothing
+       * about the shot changes. What changes is that the compressed figure's
+       * hand actually arrives at the true-scale ring instead of swinging
+       * eight inches under it while the ball goes in anyway. */
+      f.x = this.x; f.y = this.y; f.z = this.z + this.visualLift;
       f.s = this.bodyScale;
       f.squash = 1 - this.squash * 0.22;
       f.stretch = 1 + this.squash * 0.16;
@@ -392,12 +745,17 @@
      * computed from a player's real 6'7" lands about two feet above the head of
      * the 5-foot figure that gets drawn.
      */
-    handAt(out) {
+    handAt(out, side) {
       out = out || { x: 0, y: 0, z: 0 };
       const p = this.pose, f = this._frame();
+      const s = side < 0 ? -1 : 1;           // the shooting hand by default
+      const el = s < 0 ? p.elbowL : p.elbowR;
+      const w = s * BONE.shoulderW;
       const lean = p.torsoLean * 0.45 + this.lean * 0.16;
-      posePoint(TMP_P0, f, p.elbowR.ex, p.elbowR.ey, BONE.shoulderW,
-                BONE.shoulderW * SPLAY.wrist, lean, p.armRoll, -p.shoulderY * f.stretch);
+      // Through wristWidth, so this is the hand the renderer draws rather than
+      // a second guess at it — this answer is where the carried ball is put.
+      posePoint(TMP_P0, f, el.ex, el.ey, w, wristWidth(p, s), lean,
+                s * p.armRoll, -p.shoulderY * f.stretch);
       out.x = TMP_P0[0]; out.y = TMP_P0[1]; out.z = TMP_P0[2];
       return out;
     }
@@ -411,9 +769,16 @@
       out = out || { x: 0, y: 0, z: 0 };
       const p = this.pose, f = this._frame();
       const knee = side < 0 ? p.kneeL : p.kneeR;
+      const foot = side < 0 ? p.footL : p.footR;
       const w = side * BONE.hipW;
       const lean = p.hipLean * 0.45 + this.lean * 0.16;
-      posePoint(TMP_P0, f, knee.ex, knee.ey, w, side * BONE.stance, lean);
+      /* Including the foot's own lateral offset, which this dropped — so it
+       * answered with a foot the renderer does not draw. Everything that
+       * steps sideways lives in that field: the defensive slide, and the wide
+       * stance a between-the-legs opens up. Measured against draw(), the two
+       * were a stance-width apart whenever either was happening. */
+      posePoint(TMP_P0, f, knee.ex, knee.ey, w,
+                side * BONE.stance + (foot.side || 0), lean);
       out.x = TMP_P0[0]; out.y = TMP_P0[1]; out.z = TMP_P0[2];
       return out;
     }
@@ -431,17 +796,142 @@
         out.z = U.lerp(this.handZ - 0.6, this.handZ + 1.6, this.armRaise);
         return out;
       }
-      this.handAt(out);
+      /* Mid-move the ball is not in a hand at all — it is in the air between
+       * two of them, which is the entire point of a dribble move and the thing
+       * the old code had no way to express. */
+      if (this.moveState && BALL_PATH[this.moveState]) {
+        return this._moveBallPos(out);
+      }
+      this.handAt(out, this.dribbleHand);
       out.z = this._dribbleZ(out.z);
       return out;
     }
 
-    /** Ball height across one bounce: floor at the bottom, palm at the top. */
+    /**
+     * The figure's own handle dimensions, in skeleton units, for BALL_PATH.
+     *
+     * Computed from constants rather than read off the live pose, so the ball
+     * path and the hands posed to meet it (in _updatePose) cannot disagree
+     * about where the ball is, whichever runs first in a frame.
+     */
+    _pathCtx(out) {
+      out = out || PATH_CTX;
+      out.lo = C.BALL_RADIUS / this.bodyScale;
+      // A waist-high dribble tops out a little above the hip, which is what
+      // "waist-high" means.
+      out.hi = REST_HIP * 1.15;
+      /* How far to the side a move puts the ball.
+       *
+       * A resting dribble keeps it at the hand, about a shoulder half-width
+       * out. A move pushes it PAST that — outside the foot on that side —
+       * because the point of a crossover is that the ball ends up somewhere the
+       * defender has to move to cover. At the hand's own width the whole
+       * lateral travel was 1.16ft, one and a half ball-widths, on a figure five
+       * feet tall: accurate, and nearly invisible. */
+      out.lat = BONE.shoulderW * SPLAY.wrist * MOVE_SPREAD;
+      out.dir = this._moveFromHand;
+      return out;
+    }
+
+    /** World point on the current move's ball path. */
+    _moveBallPos(out) {
+      const mv = MOVES[this.moveState];
+      const k = U.clamp01(this.moveT / mv.dur);
+      const b = BALL_PATH[this.moveState](k, this._pathCtx());
+      const s = this.bodyScale;
+      const fx = Math.cos(this.facing), fy = Math.sin(this.facing);
+      // The player's right, in world terms — the same axis posePoint uses.
+      const rx = Math.sin(this.facing), ry = -Math.cos(this.facing);
+      out.x = this.x + (b.fwd * fx + b.lat * rx) * s;
+      out.y = this.y + (b.fwd * fy + b.lat * ry) * s;
+      out.z = this.z + b.up * s;
+
+      /* Gather onto the path over the first beat, from wherever the ball
+       * happened to be when the move started.
+       *
+       * A move can begin at any point in the bounce, and the path's first
+       * point is where the hand takes it — so without this the ball jumps
+       * across the gap between the two on the frame the key goes down. A real
+       * move starts on the catch, and this is that catch: the hand collects
+       * the ball and puts it on its way. */
+      const g = k / MOVE_GATHER;
+      if (g < 1 && this._ball0) {
+        const w = U.ease.inOutSine(g);
+        out.x = U.lerp(this._ball0.x, out.x, w);
+        out.y = U.lerp(this._ball0.y, out.y, w);
+        out.z = U.lerp(this._ball0.z, out.z, w);
+      }
+      return out;
+    }
+
+    /**
+     * Put the free-running bounce back in step with a height the ball is
+     * already at, so leaving a move does not jump it.
+     *
+     * _dribbleZ is a parabola between the floor and the palm; this inverts it
+     * on the falling branch, which is the branch the ball is on when a move
+     * hands it back.
+     */
+    _syncDribblePhase(z) {
+      const handZ = this.handAt(TMP_V, this.dribbleHand).z;
+      const low = C.BALL_RADIUS;
+      const high = Math.max(low + 0.05, handZ - C.BALL_RADIUS * 0.5);
+      const q = Math.sqrt(U.clamp01((high - z) / (high - low)));
+      this.dribblePhase = Math.floor(this.dribblePhase) + 1 + q * 0.5;
+    }
+
+    /**
+     * Where the shot meter hangs: the spot on the floor this player is over.
+     *
+     * Not the hand. The hand is where the ball leaves from, which is calibrated
+     * against the true-scale ten-foot rim and sits around nine feet up — and it
+     * climbs for the whole rise, and again for the jump. Hanging the bar off it
+     * put the bar up level with the backboard and slid it upward while the
+     * player was trying to time it. The floor under the shooter is the one
+     * point that holds still for the length of a shot, and it is where the
+     * shooter is looking anyway.
+     */
+    meterAnchor(out) {
+      out = out || { x: 0, y: 0, z: 0 };
+      out.x = this.x; out.y = this.y; out.z = 0;
+      return out;
+    }
+
+    /**
+     * Ball height across one bounce: floor at the bottom, palm at the top.
+     *
+     * A real parabola, not a cosine. Under gravity a ball is at its FASTEST at
+     * the floor and its slowest at the top; a raised cosine is slowest at both
+     * ends, so the old ball hung around down by the boards on every bounce and
+     * shot through the middle of its travel. It is the difference between a
+     * dribble and something bobbing on a string, and it is on screen for the
+     * whole game.
+     */
     _dribbleZ(handZ) {
-      const low = C.BALL_RADIUS + 0.02;
-      const high = Math.max(low, handZ - C.BALL_RADIUS * 0.5);
-      const c = (Math.cos(this.dribblePhase * Math.PI * 2) + 1) * 0.5; // 1 = in hand
-      return U.lerp(low, high, c);
+      const low = C.BALL_RADIUS;
+      const high = Math.max(low + 0.05, handZ - C.BALL_RADIUS * 0.5);
+      // 0 at the palm, 1 at the floor, so the shape below is the free fall.
+      const u = this.dribblePhase - Math.floor(this.dribblePhase);
+      const q = 2 * Math.min(u, 1 - u);
+      return high - (high - low) * q * q;
+    }
+
+    /**
+     * How many bounces a second this dribble runs at.
+     *
+     * Derived from how high the ball is going rather than picked: a ball that
+     * falls `h` and comes back takes `2*sqrt(2h/g)` to do it, and no dribbler
+     * gets to choose otherwise. The rate was a hand-set 1.7-3.0Hz against an
+     * apex the pose put at chest height, which is a ball falling three feet in
+     * a third of a second — about three times gravity.
+     *
+     * So the height is the control and the rate follows, which is also how it
+     * works in the hand: to dribble faster you dribble LOWER.
+     */
+    _dribbleRate(handZ) {
+      const low = C.BALL_RADIUS;
+      const high = Math.max(low + 0.05, handZ - C.BALL_RADIUS * 0.5);
+      return 1 / (2 * Math.sqrt(2 * (high - low) / C.GRAVITY));
     }
 
     /* --------------------------------------------------------------- setup */
@@ -451,12 +941,31 @@
     }
 
     giveBall(ball) {
+      /* Two players cannot both be holding it. Every path that changes hands
+       * in the live game — a steal, a block, a rebound — clears the loser's
+       * flag itself, so this has never bitten; it is here because a flag that
+       * contradicts ball.owner silently disables everything downstream that
+       * asks "am I on the ball", including the whole defensive read. */
+      const prev = ball.owner;
+      if (prev && prev !== this) prev.hasBall = false;
       ball.hold(this);
       this.hasBall = true;
       this._dribbleLive = true;
+      // Hands come down to take it. Taking possession is never the follow
+      // through of a shot, and the decay in updatePostShot would otherwise
+      // leave the ball floating at the release point for a moment first —
+      // which on a made basket is the exact moment the player is looking.
+      this.armRaise = 0;
       this._pivotX = null;
       this._pivotY = null;
       this._traveled = false;
+      /* Take it in the strong hand. A player catching a pass has not just
+       * finished a crossover, and leaving the hand wherever the last
+       * possession ended would start them dribbling left-handed for no reason
+       * anyone watching could account for. */
+      this.dribbleHand = 1;
+      this._moveFromHand = 1;
+      this.moveState = null;
       // aiPatience otherwise defaults to 0 and is only ever reset after a
       // shot — meaning a player's FIRST possession (a rebound, a steal, the
       // opening tip) would immediately read as "out of patience" and force
@@ -474,24 +983,70 @@
     readInput(input) {
       const v = input.moveVector(TMP_MOVE);
       this.sprinting = input.down('sprint') && v.mag > 0.05;
-      this.intentX = v.x;
-      this.intentY = v.y;
+
+      /* Move relative to the CAMERA, not to the court's axes.
+       *
+       * W used to mean "toward court -y" whatever the camera was doing, which
+       * only lines up with the screen for a rig parked on the sideline. Under
+       * the forward rig — looking down the floor, with the court's length
+       * running INTO the screen — W walked the player sideways and A/D pushed
+       * them toward and away from the camera.
+       *
+       * The rig's own basis, flattened onto the floor, is the fix: W drives
+       * away from the camera and D drives to the right of frame, whichever rig
+       * is running and wherever it has swung to. The sideline rigs come out
+       * exactly as they were, because their forward already IS court -y.
+       */
+      const cam = BB.Camera;
+      let fx = cam.fwd[0], fy = cam.fwd[2];      // GL z is court y
+      const fl = Math.hypot(fx, fy) || 1;
+      fx /= fl; fy /= fl;
+      let rx = cam.right[0], ry = cam.right[2];
+      const rl = Math.hypot(rx, ry) || 1;
+      rx /= rl; ry /= rl;
+
+      // moveVector gives +x for right and -y for up the screen.
+      this.intentX = rx * v.x - fx * v.y;
+      this.intentY = ry * v.x - fy * v.y;
       this.intentMag = v.mag;
 
+      /* Space is a layup and Tab is a dunk. On a pad both live on A — there is
+       * no Tab and no spare face button — so when the two actions come off the
+       * SAME press, the held sprint trigger is what tells them apart. Testing
+       * dunk first and falling through means one press can never start two
+       * shots, and a pad press without sprint lands on the layup below. */
       if (this.hasBall && !this.isBusyShooting) {
-        if (input.pressed('shoot')) this._beginShot();
+        if (input.pressed('dunk') && (!input.pressed('shoot') || input.down('sprint'))) {
+          this._beginShot(true);
+        } else if (input.pressed('shoot')) {
+          this._beginShot(false);
+        }
       }
 
       /* Same physical keys as pass/lob double as steal/block on defense —
        * there is nobody to pass to while you don't have the ball. */
+      // Held, not tapped: the stance is a thing you stay in.
+      this.guardHeld = !!input.down('intense');
+
       if (!this.hasBall && this._ballRef) {
         if (input.pressed('steal')) this.trySteal(this._ballRef);
         if (input.pressed('block')) this.tryBlock(this._ballRef);
       }
 
-      if (this.hasBall && !this.isBusyShooting && this._dribbleLive && input.pressed('dribble')) {
-        const lateral = input.down('left') ? -1 : (input.down('right') ? 1 : 0);
-        this._tryDribbleMove(lateral, input.down('sprint'));
+      /* A key per move, and one that picks for you.
+       *
+       * The named keys go straight to the move — no direction, because a move
+       * does not take one: the ball is in a hand and there is only one way out
+       * of it. `dribble` is still here for the pad, which has no free face
+       * buttons, and for anyone who would rather press one key than six. */
+      if (this.hasBall && !this.isBusyShooting && this._dribbleLive) {
+        for (let i = 0; i < MOVE_KEYS.length; i++) {
+          if (input.pressed(MOVE_KEYS[i][0]) && this.startMove(MOVE_KEYS[i][1])) break;
+        }
+        if (input.pressed('dribble')) {
+          const lateral = input.down('left') ? -1 : (input.down('right') ? 1 : 0);
+          this._tryDribbleMove(lateral, input.down('sprint'));
+        }
       }
 
       if (this.hasBall && !this.isBusyShooting && input.pressed('pickup')) {
@@ -523,11 +1078,17 @@
     _tryDribbleMove(lateral, sprintHeld) {
       if (this.moveCooldown > 0 || this.moveState) return false;
 
+      /* The generic dribble button, still here because the AI drives it and
+       * because nobody should have to learn six keys to dribble. Chaining
+       * escalates: a second press inside the window goes between the legs, a
+       * third goes behind the back, which is the order they come in when
+       * somebody is actually stringing a handle together. */
+      const chained = (this._animClock - this._lastMoveT) < MOVE_CHAIN_WINDOW;
       let type = null;
       if (sprintHeld && (this.intentMag || 0) > 0.25) {
         type = 'spin';
-      } else if (lateral !== 0 && (this._animClock - this._lastMoveT) < MOVE_CHAIN_WINDOW) {
-        type = 'behindBack';
+      } else if (lateral !== 0 && chained) {
+        type = this._lastMoveType === 'crossover' ? 'betweenLegs' : 'behindBack';
       } else if (lateral !== 0) {
         type = 'crossover';
       } else if ((this.intentMag || 0) < 0.25) {
@@ -535,35 +1096,56 @@
       }
       if (!type) return false;
 
-      this._startMove(type, lateral || (U.rng.chance(0.5) ? 1 : -1));
+      this.startMove(type);
+      return true;
+    }
+
+    /**
+     * Start a named move. The public entry point — one key per move drives
+     * this directly, and _tryDribbleMove picks a name and calls it.
+     *
+     * There is no direction argument, because a move does not get one: you
+     * cannot cross over from your left hand into your left hand. Which way the
+     * ball goes, which way the body breaks and which way the defender is sold
+     * all follow from the hand it is in.
+     */
+    startMove(type) {
+      if (!MOVES[type] || this.moveCooldown > 0 || this.moveState) return false;
+      if (!this.hasBall || !this._dribbleLive || this.isBusyShooting) return false;
+      this._startMove(type, this.dribbleHand);
       return true;
     }
 
     _startMove(type, dir) {
+      // Where the ball is RIGHT NOW, before moveState redirects handPosition
+      // onto the path — _moveBallPos gathers it from here.
+      this._ball0 = Object.assign(this._ball0 || {}, this.handPosition(TMP_V));
       this.moveState = type;
       this.moveT = 0;
       this.moveDir = dir;
+      this._moveFromHand = this.dribbleHand;
+      this._lastMoveType = type;
       this._lastMoveT = this._animClock;
-      this.moveCooldown = MOVE_COOLDOWN[type];
+      const mv = MOVES[type];
+      this.moveCooldown = mv.cool;
 
       // Harder, more committal moves are riskier for a shaky ball handler.
-      const riskMul = (type === 'spin' || type === 'behindBack') ? 1.4 : 1.0;
-      const fumbleChance = U.remap(this.ratings.ballHandle, 25, 99, 0.16, 0.008) * riskMul;
+      const fumbleChance = U.remap(this.ratings.ballHandle, 25, 99, 0.16, 0.008) * mv.risk;
       this._moveFumble = U.rng.chance(fumbleChance);
 
       if (type === 'spin') {
         this._spinFromFacing = this.facing;
         this._spinToFacing = this.facing + Math.PI * dir;
-      } else {
-        // A brief lateral kick sells the change of direction; normal
-        // acceleration/deceleration physics takes over immediately after,
-        // so it never fights the regular movement model.
-        const kick = { crossover: 3.4, behindBack: 4.0, hesitation: 0 }[type] || 0;
-        if (kick) {
-          const perp = this.facing + Math.PI / 2;
-          this.vx += Math.cos(perp) * dir * kick;
-          this.vy += Math.sin(perp) * dir * kick;
-        }
+      } else if (mv.kick) {
+        /* A brief lateral kick sells the change of direction; normal
+         * acceleration/deceleration physics takes over immediately after, so
+         * it never fights the regular movement model.
+         *
+         * `dir` is the hand the ball STARTED in, and the two agree: the ball
+         * leaves your right hand going left, and so do you. */
+        const perp = this.facing + Math.PI / 2;
+        this.vx += Math.cos(perp) * dir * mv.kick;
+        this.vy += Math.sin(perp) * dir * mv.kick;
       }
 
       // The actual mechanism that sells a shake: nudge the defender's
@@ -571,8 +1153,7 @@
       // briefly lags behind. A fumbled move sells nothing — you telegraphed
       // it by bobbling the ball.
       if (this.opponent && this.opponent._beliefX != null && !this._moveFumble) {
-        const strength = U.remap(this.ratings.ballHandle, 25, 99, 0.5, 2.4) *
-          (type === 'spin' ? 1.35 : type === 'behindBack' ? 1.15 : type === 'hesitation' ? 0.9 : 1.0);
+        const strength = U.remap(this.ratings.ballHandle, 25, 99, 0.5, 2.4) * mv.risk;
         const perp = this.facing + Math.PI / 2;
         this.opponent._beliefX += Math.cos(perp) * dir * strength;
         this.opponent._beliefY += Math.sin(perp) * dir * strength;
@@ -625,20 +1206,77 @@
       // Fresh (stamina=1) should run at full speed; gassed (stamina=0) should
       // be noticeably slower - not the other way around.
       const gassed = 0.65 + this.stamina * 0.35;
-      const top = (this.sprinting ? this.phys.maxSprint : this.phys.maxSpeed) * gassed;
+      // No sprinting out of a stance, and a slide is a shade slower than a run.
+      const sprinting = this.sprinting && !this.isGuarding;
+      /* Guarded, and going at them. A live defender right in front of you takes
+       * better than a third off the top end and a fifth off the first step, so
+       * a drive into good position is a wrestle rather than a straight line —
+       * which, with a defender who only gives up 8% of their own top end to
+       * hold the stance, is what makes staying in front possible at all. */
+      const pressure = this.pressure();
+      const top = (sprinting ? this.phys.maxSprint : this.phys.maxSpeed) * gassed *
+                  (this.isGuarding ? 0.92 : 1) * (1 - pressure * 0.40);
       const targetVx = ix * top;
       const targetVy = iy * top;
 
-      const accel = mag > 0.02 ? this.phys.accel : this.phys.decel;
+      /* A defensive slide is not a run. It gives up a little top-end — you
+       * cannot sprint out of a stance — and buys back quicker changes of
+       * direction, which is what actually keeps you in front of somebody:
+       * staying with a handler is won on the first step after they move, not
+       * on how fast you can go in a straight line. */
+      const slide = this.isGuarding ? 1 : 0;
+      const accel = (mag > 0.02 ? this.phys.accel : this.phys.decel) *
+                    (1 + slide * 0.55) * (1 - pressure * 0.22);
       this.vx = U.moveToward(this.vx, targetVx, accel * dt);
       this.vy = U.moveToward(this.vy, targetVy, accel * dt);
 
       const speed = Math.hypot(this.vx, this.vy);
       this.lean = U.approach(this.lean, U.clamp01(speed / top) * (mag > 0.02 ? 1 : 0), 6, dt);
 
+      /* Squaring up.
+       *
+       * A jump shot is taken AT the rim. From the moment the gather starts the
+       * shoulders turn to the basket and stay there for the length of the
+       * shot, whatever the feet are doing — the stick still steers where the
+       * player goes, it just stops steering which way they are pointed. Left
+       * to the movement code, holding a direction through the release let a
+       * shot go up sideways or with the shooter's back to the basket.
+       *
+       * Layups and dunks are deliberately not included: a drive finishes at
+       * whatever angle it attacked from, and the euro step and the hop step
+       * ARE angles. */
+      const squaring = this.targetHoop != null &&
+        (this.action === ACTION.GATHER || this.action === ACTION.METER) &&
+        (this.shotType === 'jumper' || this.shotType === 'freethrow');
+
+      /* In a stance you stay square to the man. Turning your back on a ball
+       * handler is the one thing defence never does, and it is what the
+       * movement code would otherwise do the moment you slid sideways. */
+      const foe = this.isGuarding ? this._ballRef && this._ballRef.owner : null;
+      const marking = foe && foe !== this ? foe : null;
+
       if (this.moveState === 'spin') {
         const k = U.clamp01(this.moveT / MOVE_DURATION.spin);
         this.facing = U.angleLerp(this._spinFromFacing, this._spinToFacing, U.ease.outCubic(k));
+      } else if (squaring) {
+        const aim = Math.atan2(this.targetHoop.y - this.y, this.targetHoop.x - this.x);
+        this.facing = U.angleLerp(this.facing, aim, U.clamp01(SQUARE_UP * dt));
+        // Still track where they are steering, so the run cycle underneath
+        // reads the feet correctly the moment the shot is over.
+        if (mag > 0.15) this.moveFacing = Math.atan2(iy, ix);
+      } else if (marking) {
+        /* Locked on, not merely turning towards. A stance points at the man
+         * and the stick only decides where you slide — you never present a
+         * shoulder, let alone your back, whatever direction you are moving.
+         *
+         * Turning towards him at a rate, however fast, is not the same thing:
+         * a handler who changes direction hard is asking the defender to turn
+         * faster than any rate would allow, and every degree of lag is a
+         * degree of the floor they have won. moveFacing keeps tracking the
+         * stick underneath, which is what the slide gait in _updatePose reads
+         * to shuffle the feet sideways instead of scissoring them. */
+        this.facing = Math.atan2(marking.y - this.y, marking.x - this.x);
+        if (mag > 0.15) this.moveFacing = Math.atan2(iy, ix);
       } else if (mag > 0.15) {
         this.moveFacing = Math.atan2(iy, ix);
         this.facing = U.angleLerp(this.facing, this.moveFacing, U.clamp01(this.phys.turnRate * dt));
@@ -646,22 +1284,11 @@
         this.facing = U.angleLerp(this.facing, this.pivotTarget, U.clamp01(this.phys.turnRate * 1.6 * dt));
       }
 
-      if (speed > 0.05) {
-        // Advance the stride by GROUND COVERED, not by elapsed time.
-        //
-        // A time-based rate has no relationship to how fast the body is
-        // actually travelling, so the planted foot slides backwards under the
-        // player and the whole run reads as skating. Tying phase to distance
-        // makes a foot stay where it was put: one full cycle is two steps, and
-        // a step carries the body twice the stride amplitude.
-        const strideLen = U.lerp(0.17, 0.50, U.clamp01(speed / top));
-        const perCycle = Math.max(0.35, 4 * strideLen * this.bodyScale);
-        this.stridePhase += (speed * dt / perCycle) * Math.PI * 2;
-      }
-      if (this.hasBall && this._dribbleLive && this.action === ACTION.MOVE) {
-        this.dribblePhase += dt * (1.7 + (speed / top) * 1.3);
-      } else if (this.hasBall && this._dribbleLive && this.action === ACTION.IDLE) {
-        this.dribblePhase += dt * 1.5;
+      if (speed > 0.05) this._advanceStride(speed, top, dt);
+      if (this.hasBall && this._dribbleLive &&
+          (this.action === ACTION.MOVE || this.action === ACTION.IDLE)) {
+        // Gravity sets the rate, off the height the pose is dribbling at.
+        this.dribblePhase += dt * this._dribbleRate(this.handAt(TMP_V).z);
       }
 
       this._integrate(dt);
@@ -676,6 +1303,13 @@
       this.y = U.clamp(this.y, pad - C.APRON, C.COURT_W - pad + C.APRON);
       if (this.boundX) this.x = U.clamp(this.x, this.boundX[0], this.boundX[1]);
 
+      /* Re-aim the lock after the step, not before it. Everything above works
+       * off where the body was at the top of the tick, so a defender sliding
+       * hard came out of the frame a degree or two off the man — small, but
+       * it is the difference between a lock and a very fast turn, and it is
+       * free to take back here. */
+      if (marking) this.facing = Math.atan2(marking.y - this.y, marking.x - this.x);
+
       /* Stamina: drains while sprinting, recovers otherwise. Tuned so a
        * real sprint costs something noticeable (a below-average player
        * empties the tank in well under 10s of continuous sprinting) and
@@ -688,7 +1322,36 @@
         this.stamina = Math.min(1, this.stamina + 0.045 * dt);
       }
 
-      this.action = mag > 0.05 ? ACTION.MOVE : (this.isBusyShooting ? this.action : ACTION.IDLE);
+      /* Moving does NOT overwrite a shot.
+       *
+       * This line used to force ACTION.MOVE on any tick with movement intent,
+       * which clobbered GATHER and METER the frame after they were set. Press
+       * shoot while running and the shot began, was overwritten before the
+       * meter could tick once, and nothing happened — no attempt, no release,
+       * the ball still in hand. Holding sprint made it look like sprint was
+       * the culprit; standing still was the only way to shoot at all.
+       *
+       * A finish already returns before reaching here (see the top of this
+       * method); this covers the wind-up and the follow-through. */
+      if (!this.isBusyShooting && this.action !== ACTION.RELEASE) {
+        this.action = mag > 0.05 ? ACTION.MOVE : ACTION.IDLE;
+      }
+    }
+
+    /**
+     * Advances the stride by GROUND COVERED, not by elapsed time.
+     *
+     * A time-based rate has no relationship to how fast the body is actually
+     * travelling, so the planted foot slides backwards under the player and
+     * the whole run reads as skating. Tying phase to distance makes a foot
+     * stay where it was put: each foot sweeps twice the stride amplitude while
+     * it is down, and it is down for `stance` of the cycle, so a cycle has to
+     * carry the body 2 * stride / stance for the contact to hold still.
+     */
+    _advanceStride(speed, top, dt) {
+      const g = gaitOf(speed);
+      const perCycle = Math.max(0.35, (2 * g.stride / g.stance) * this.bodyScale);
+      this.stridePhase += (speed * dt / perCycle) * Math.PI * 2;
     }
 
     _integrate(dt) {
@@ -703,6 +1366,117 @@
      * the defender's relevant rating and whether they're airborne with the
      * shooter both nudge it further.
      */
+    /**
+     * How well this player is guarding `foe` right now, 0..1.
+     *
+     * Four things, and they are the four things a coach shouts: be close, be
+     * between them and the basket, be square to them, and be in a stance.
+     * Being ON them is not the same as being close — inside about a yard is a
+     * foul waiting to happen and reads as reaching rather than as position, so
+     * the closeness term falls away again at the bottom.
+     */
+    guardQuality(foe) {
+      if (!foe || foe === this) return 0;
+      const hoop = foe.targetHoop || foe.fixedHoop || U.nearestHoop(foe.x);
+      if (!hoop) return 0;
+
+      const d = U.dist(this.x, this.y, foe.x, foe.y);
+      /* Close is good; ON TOP of them is where it stops helping.
+       *
+       * The second term used to start punishing at 2.1 feet and bottom out at
+       * 1.0, which graded a defender pressed right up into the handler at 0.58
+       * while one standing three feet off scored 0.90. Two feet is not too
+       * close to guard somebody, it is exactly where you want to be — the
+       * penalty belongs where bodies are genuinely tangled and the handler can
+       * simply step through you. */
+      const near = U.clamp01(U.remap(d, 8.5, 2.8, 0, 1)) *
+                   U.clamp01(U.remap(d, 0.55, 1.25, 0.45, 1));
+      if (near <= 0) return 0;
+
+      // On the line from the ball to the rim they are attacking.
+      const toRim = Math.atan2(hoop.y - foe.y, hoop.x - foe.x);
+      const toMe = Math.atan2(this.y - foe.y, this.x - foe.x);
+      const online = U.clamp01(1 - Math.abs(U.angleDelta(toRim, toMe)) / 1.25);
+
+      // Square to them, not turned around watching the ball go by.
+      const off = Math.abs(U.angleDelta(Math.atan2(foe.y - this.y, foe.x - this.x), this.facing));
+      const square = U.clamp01(1 - off / 1.4);
+
+      const stance = this.isGuarding ? 1 : 0.5;
+      const skill = U.remap(this.ratings.perimeterDefense, 25, 99, 0.82, 1.08);
+      /* Multiplied, not added up.
+       *
+       * Weighted terms summed together gave a defender who had been blown by
+       * completely — trailing on the wrong side of the man, with the whole
+       * floor open in front of him — better than half marks, because the
+       * closeness and the squareness still paid out in full. Being between
+       * your man and the basket is not one contribution among three: if you
+       * are not there you are not guarding anybody, and everything else is
+       * worth a fraction of what it would otherwise be. */
+      return U.clamp01(near * (0.15 + online * 0.85) * (0.55 + square * 0.45) *
+                       stance * skill);
+    }
+
+    /**
+     * How hard this player is being guarded RIGHT NOW, 0..1. Zero for anybody
+     * who does not have the ball.
+     *
+     * The point of it is that good defensive position has to cost the handler
+     * something on the floor, not only on the shot. A defender who graded well
+     * and then watched the ball go past them at full speed was a scoreboard,
+     * not an obstacle.
+     *
+     * Directional, because a defender is only in the way if they are in the
+     * way: the same man at the same distance behind you as you drive away is
+     * not guarding anything, and slowing you down for it would make beating
+     * somebody feel worse than being stuck in front of them.
+     */
+    pressure() {
+      if (!this.hasBall) return 0;
+      const d = this.opponent;
+      if (!d || !d.defenseQuality) return 0;
+      const dist = U.dist(this.x, this.y, d.x, d.y);
+      // Full weight from about two and a half feet, which is where a defender
+      // is actually on you rather than merely near you.
+      const close = U.clamp01(U.remap(dist, 6.0, 2.4, 0, 1));
+      if (close <= 0) return 0;
+      const heading = this.intentMag > 0.05
+        ? Math.atan2(this.intentY, this.intentX) : this.facing;
+      const toDef = Math.atan2(d.y - this.y, d.x - this.x);
+      const inPath = U.clamp01(1 - Math.abs(U.angleDelta(heading, toDef)) / 1.35);
+      return U.clamp01(d.defenseQuality * close * inPath);
+    }
+
+    /**
+     * Runs every tick for every player. Decides whether the stance is up, how
+     * good the position is, and how long it has been good for.
+     */
+    _updateDefense(dt, ball) {
+      const foe = ball && ball.owner;
+      const onBall = !!(foe && foe !== this && !this.hasBall);
+
+      // A human is only in a stance while they are holding the key for it. The
+      // AI's scene sets isGuarding for itself and is left alone.
+      if (this.human) this.isGuarding = !!(this.guardHeld && onBall);
+
+      const q = onBall ? this.guardQuality(foe) : 0;
+      // Smoothed, because this drives something drawn on the floor and a raw
+      // per-tick number flickers.
+      this.defenseQuality = U.approach(this.defenseQuality, q, 6, dt);
+
+      if (this.defenseQuality > 0.70 && this.isGuarding) this.lockedT += dt;
+      else this.lockedT = Math.max(0, this.lockedT - dt * 2.5);
+      if (this._lockShown > 0) this._lockShown -= dt;
+
+      /* Sustained, not momentary. Standing in the right place for a frame is
+       * luck; holding it for well over a second while they try to get past is
+       * the thing worth saying out loud. */
+      if (this.human && this.lockedT > 1.2 && this._lockShown <= 0) {
+        this._lockShown = 4.0;
+        this.events.emit('lockdown', { by: this, on: foe, quality: this.defenseQuality });
+      }
+    }
+
     _computeContest() {
       const d = this.opponent;
       if (!d) return 0;
@@ -714,7 +1488,12 @@
       const skillRating = perimeter ? d.ratings.perimeterDefense : d.ratings.interiorDefense;
       const skill = U.remap(skillRating, 25, 99, 0.55, 1.18);
       const jumpBonus = d.jumping ? 0.16 : 0;
-      return U.clamp01(proximity * skill + jumpBonus);
+      /* Real position is worth something. A defender who is in a stance, on
+       * the line and square gets credit for it here, which is where a contest
+       * turns into a lower percentage — otherwise holding the stance would be
+       * a costume rather than defence. */
+      const stanceBonus = (d.defenseQuality || 0) * 0.22;
+      return U.clamp01(proximity * skill + jumpBonus + stanceBonus);
     }
 
     /**
@@ -828,6 +1607,32 @@
     }
 
     /* --------------------------------------------------------------- jump */
+
+    /**
+     * How far past the rim this player's hand gets, in feet. The whole dunk
+     * mechanic is this one number.
+     *
+     * Positive means the ball can physically be carried over the ring, so a
+     * dunk is on; negative means it cannot, and no amount of wanting it makes
+     * it happen — that attempt finishes as a layup instead. Past DUNK_EASY
+     * there is enough room to spare that the flush is a formality and the shot
+     * skips the meter entirely.
+     *
+     * Every term is a number the game already simulates: reach off height,
+     * lift off the vertical rating, the same stamina tax _startJump applies
+     * (a gassed player really does lose their dunk late in a game), and the
+     * same drive bonus the jump itself will use. The dunk RATING only nudges
+     * it — a great dunker gets to the rim off marginally less, but no rating
+     * lets a short player with no hops throw one down.
+     */
+    dunkHeadroom(driving) {
+      const staminaFactor = 0.72 + this.stamina * 0.28;
+      const lift = this.phys.jumpHeight * (driving ? DUNK_DRIVE_LIFT : 1) * staminaFactor;
+      const rating = driving ? this.ratings.drivingDunk : this.ratings.standingDunk;
+      const skillLift = U.remap(rating, 25, 99, -0.18, 0.18);
+      return this.standingReach + lift + skillLift - (C.RIM_HEIGHT + DUNK_CLEAR);
+    }
+
     _startJump(heightMul) {
       this.jumping = true;
       this.squash = 0;
@@ -836,6 +1641,68 @@
       const staminaFactor = 0.72 + this.stamina * 0.28;
       const h = this.phys.jumpHeight * (heightMul == null ? 1 : heightMul) * staminaFactor;
       this.vz = Math.sqrt(2 * C.GRAVITY * h);
+      // How high this particular jump will actually get. The dunk's drawn lift
+      // is paced against it so the extra height arrives with the apex rather
+      // than on a timer that knows nothing about how high anybody jumps.
+      this._jumpApex = h;
+    }
+
+    /**
+     * The last two steps of a drive, where a dunker plants to ARRIVE at the
+     * rim rather than to keep going past it.
+     *
+     * A takeoff is not a fixed brake. Real players read the distance left and
+     * gather accordingly — hard from a step away, barely at all from seven
+     * feet out — and it is the one adjustment that decides whether the hand
+     * meets the ring or waves at it from a couple of feet short. A flat
+     * multiplier cannot do that: whatever it is tuned for, every other takeoff
+     * distance under- or overshoots, and the finish comes out either lobbing
+     * the ball the last stretch or flying under the backboard.
+     *
+     * So it is a solve, not a constant. The jump's own hang time is already
+     * known by the time this runs, and the distance still to cover is simply
+     * where the rim is, so the speed that lands the hand on the ring is a
+     * division. It only ever SLOWS them — a gather cannot make you faster —
+     * and it keeps a floor, because a drive that plants to a dead stop reads
+     * as somebody who tripped.
+     */
+    _gatherIntoDunk() {
+      const hoop = this.targetHoop;
+      if (!hoop) return;
+      const cur = Math.hypot(this.vx, this.vy);
+      if (cur < 0.5) return;
+      const tApex = Math.max(0.15, this.vz / C.GRAVITY);
+      // The hand reaches out ahead of the body, so the BODY is aimed short of
+      // the ring by about that much.
+      const togo = Math.max(0, U.dist(this.x, this.y, hoop.x, hoop.y) - 1.0);
+      const k = U.clamp((togo / tApex) / cur, 0.20, 1);
+      this.vx *= k; this.vy *= k;
+    }
+
+    /**
+     * Closes the gap between the drawn figure and the true-scale rim, for a
+     * dunk and nothing else.
+     *
+     * Paced by how far off the floor the player already is, not by a timer:
+     * that way it is exactly zero at takeoff (a figure that starts lifting
+     * while its feet are still down reads as floating), grows with the jump,
+     * peaks with it, and is back to zero on landing without needing to be
+     * told. What the eye sees is simply somebody who jumped high enough.
+     */
+    _updateVisualLift(dt) {
+      const dunking = this.shotType === 'dunk' &&
+        (this.action === ACTION.DUNK || this.action === ACTION.METER ||
+         this.action === ACTION.GATHER);
+      if (!dunking || !this.jumping) {
+        this.visualLift = U.approach(this.visualLift, 0, 14, dt);
+        return;
+      }
+      // Where the drawn fingertips would top out on this jump, against where
+      // the ring actually is. Zero for a figure already tall enough to get
+      // there on its own.
+      const apex = Math.max(0.4, this._jumpApex || 0);
+      const shortfall = Math.max(0, (C.RIM_HEIGHT + C.BALL_RADIUS) - (this.drawnReach + apex));
+      this.visualLift = U.approach(this.visualLift, shortfall * U.clamp01(this.z / apex), 16, dt);
     }
 
     updateJump(dt) {
@@ -856,12 +1723,34 @@
     }
 
     /* ---------------------------------------------------------- shot flow */
-    _beginShot() {
+    /**
+     * @param {boolean} [wantDunk]  the player asked for a dunk specifically.
+     *   Human only — the CPU has no keyboard and keeps its own willingness
+     *   roll. Ignored entirely if the body cannot reach the rim from here.
+     */
+    _beginShot(wantDunk) {
       const hoop = this.fixedHoop || U.nearestHoop(this.x);
       const dHoop = U.dist(this.x, this.y, hoop.x, hoop.y);
       const close = dHoop <= C.RESTRICTED_R + 1.2;
       const speed = Math.hypot(this.vx, this.vy);
       const driving = speed > this.phys.maxSpeed * 0.35;
+
+      /* Sprinting at the rim and pressing shoot is a LAYUP. Not a dice roll,
+       * not a jumper that happens to be taken close in — the one move the
+       * whole drive was for.
+       *
+       * Three conditions, all of them things the player can feel: they are
+       * sprinting, they are still carrying real speed, and they are pointed at
+       * the basket rather than drifting past it. LAYUP_TAKEOFF is how far out
+       * a takeoff can still cover — a drive is launched from outside the
+       * restricted area and floats in, so the old "within five feet" test
+       * turned exactly the shots that should be layups into jump shots. */
+      const toHoop = Math.atan2(hoop.y - this.y, hoop.x - this.x);
+      const headingAtRim = speed > 0.5 &&
+        Math.abs(U.angleDelta(toHoop, Math.atan2(this.vy, this.vx))) < 1.0;
+      const attacking = headingAtRim && dHoop <= LAYUP_TAKEOFF &&
+        (this.sprinting ? speed > this.phys.maxSpeed * 0.55    // holding sprint: take their word for it
+                        : speed > this.phys.maxSpeed * 0.85);  // otherwise they have to really be moving
 
       this.targetHoop = hoop;
       this.action = ACTION.GATHER;
@@ -869,12 +1758,48 @@
       this.armRaise = 0;
       this._shotFouled = false;
 
-      if (close) {
-        const wantsDunk = driving
-          ? U.rng.chance(this.phys.dunkChance)
-          : U.rng.chance(this.phys.dunkChance * 0.55);
+      if (attacking || close) {
+        this.driving = driving || attacking;
+
+        /* Dunk or layup is decided by the body, not by chance.
+         *
+         * The old rule rolled dice against a dunk rating, which meant height
+         * and vertical — the two things that actually decide whether somebody
+         * can dunk — had no say at all: a 5'10" player with no hops threw one
+         * down whenever the roll came up, and a seven-footer got denied.
+         *
+         * Now it is the question a real player's body asks. Can the hand carry
+         * the ball over a ten-foot rim from here? If not, the finish is a
+         * layup, and no rating overrides that. A running takeoff can leave the
+         * floor from out at DUNK_TAKEOFF, because a drive covers the last of
+         * that distance in the air; standing still, the rim has to be right
+         * there. */
+        const inDunkRange = this.driving
+          ? (headingAtRim && dHoop <= DUNK_TAKEOFF)
+          : dHoop <= C.RESTRICTED_R * 0.9;
+        const headroom = this.dunkHeadroom(this.driving);
+
+        /* A human has to ASK for it now.
+         *
+         * Space near the rim used to start a finish and let this function pick
+         * the animation, so the same key in the same spot came out a layup or a
+         * dunk depending on the build — the two finishes shared a keybind and
+         * there was no way to call for one. Space is the layup; Tab is the
+         * dunk. The body still gets the last word either way: ask for one you
+         * cannot reach and the headroom test below turns it into a layup, the
+         * same as it always did.
+         *
+         * A CPU has no keyboard, so its own willingness roll is what it keeps —
+         * a seven-footer with a 40 dunk rating should mostly lay it in rather
+         * than throw down every trip, which is the one job dunkChance has left. */
+        const willing = this.human
+          ? wantDunk === true
+          : U.rng.chance(0.35 + this.phys.dunkChance * 0.65);
+        const wantsDunk = inDunkRange && headroom >= 0 && willing;
+
         this.shotType = wantsDunk ? 'dunk' : 'layup';
-        this.driving = driving;
+        // No meter once there is real room to spare: nothing is left to time.
+        this.dunkAuto = wantsDunk && headroom >= DUNK_EASY;
 
         // Finishing style: a euro step reads from driving at an angle across
         // the direct line to the rim (stepping around a defender); a hop
@@ -884,17 +1809,35 @@
         // feel distinct from an open lane.
         this.layupStyle = 'standard';
         if (this.shotType === 'layup' && driving) {
-          const toHoopAngle = Math.atan2(hoop.y - this.y, hoop.x - this.x);
           const velAngle = Math.atan2(this.vy, this.vx);
-          const angleDiff = Math.abs(U.angleDelta(toHoopAngle, velAngle));
+          const angleDiff = Math.abs(U.angleDelta(toHoop, velAngle));
           if (angleDiff > 0.45) {
             this.layupStyle = 'euro';
           } else if (this.opponent && U.dist(this.x, this.y, this.opponent.x, this.opponent.y) < 4.2) {
             this.layupStyle = 'hop';
           }
         }
+
+        /* Which dunk, on the same argument as the layup styles above: the shot
+         * maths is untouched and only the picture changes, but a dunk with a
+         * body in the way should not look like a dunk with the rim to yourself.
+         *
+         * The read is what the situation already knows. Room to spare and a run
+         * at it is the one you show off on, so the ball goes out on a long arc
+         * away from the body. Somebody at the rim, or only just enough height,
+         * and you take it up the middle in two hands where nobody can get at
+         * it — which is also the only shape that does not need the arm fully
+         * extended to work. Everything else is the tomahawk. */
+        this.dunkStyle = 'tomahawk';
+        if (this.shotType === 'dunk') {
+          const guarded = this.opponent &&
+            U.dist(this.x, this.y, this.opponent.x, this.opponent.y) < 4.6;
+          if (guarded || headroom < DUNK_CLEAR) this.dunkStyle = 'power';
+          else if (driving && headroom >= DUNK_EASY) this.dunkStyle = 'cradle';
+        }
       } else {
         this.shotType = 'jumper';
+        this.dunkAuto = false;
       }
     }
 
@@ -907,7 +1850,10 @@
       this.armRaise = 0;
       this.shotType = 'freethrow';
       this.driving = false;
+      this.dunkAuto = false;
       this.layupStyle = 'standard';
+      this.dunkStyle = 'tomahawk';
+      this.posterDunk = false;
       this._shotFouled = false;
     }
 
@@ -934,9 +1880,37 @@
           this.action = ACTION.METER;
           this.actionT = 0;
           if ((this.shotType === 'jumper' || this.shotType === 'freethrow') && !this.jumping) this._startJump(0.55);
-          if (this.shotType === 'layup') this._startJump(0.7);
-          if (this.shotType === 'dunk') this._startJump(1.0);
-          const p = this.handPosition(TMP_V);
+          // A driving layup leaves the floor harder than a standing one —
+          // that lift is what carries a takeoff from outside the paint all
+          // the way under the rim.
+          if (this.shotType === 'layup') this._startJump(this.driving ? 0.88 : 0.7);
+          if (this.shotType === 'dunk') {
+            // The same multiplier dunkHeadroom() predicted with. The moment
+            // the gate and the jump disagree, the gate is promising a rim the
+            // jump never reaches.
+            this._startJump(this.driving ? DUNK_DRIVE_LIFT : 1.0);
+            if (this.driving) this._gatherIntoDunk();
+          }
+
+          /* A dunk with room to spare has no meter at all.
+           *
+           * There is nothing left to time: the hand is going over the rim
+           * whatever happens between here and the apex, and putting a bar on
+           * screen would be asking the player to pass a test that cannot be
+           * failed. So the shot commits immediately on a synthesized perfect
+           * release and goes straight to the flush. The absence of the bar IS
+           * the feedback — it is how the game says "you're dunking on them".
+           *
+           * cancel() rather than simply not starting it: the meter object is
+           * long-lived and its post-release flash ring would otherwise still
+           * be fading in from whatever the previous shot did. */
+          if (this.shotType === 'dunk' && this.dunkAuto) {
+            this.meter.cancel();
+            this._commitShot(BB.Shooting.autoGrade());
+            return;
+          }
+
+          const p = this.meterAnchor(TMP_V);
           const baseProfile = this._profileFor(this.shotType);
           const dist = this.targetHoop ? U.dist(this.x, this.y, this.targetHoop.x, this.targetHoop.y) : 0;
           const contestNow = this.shotType === 'freethrow' ? 0 : this._computeContest();
@@ -964,8 +1938,7 @@
         return;
       }
 
-      const p = this.handPosition(TMP_V);
-      this.meter.setAnchor(p);
+      this.meter.setAnchor(this.meterAnchor(TMP_V));
       const auto = this.meter.update(dt);
       if (auto) { this._commitShot(auto); return; }
 
@@ -1013,6 +1986,19 @@
       this.action = (type === 'jumper' || type === 'freethrow') ? ACTION.RELEASE : (type === 'dunk' ? ACTION.DUNK : ACTION.LAYUP);
       this.actionT = 0;
       this.pendingShot = { grade, type };
+      /* Was this one worth slowing down for?
+       *
+       * Decided here because here is where it is knowable — the grade exists
+       * for exactly one instant, between the release and the ball leaving. A
+       * scene reading it later would be reading it off a shot that has already
+       * happened.
+       *
+       * Either the release was timed (perfect or excellent) or there was
+       * nothing to time: dunkAuto is the wide-open dunk that skips the meter
+       * because the hand is going over the ring whatever happens, which is the
+       * definition of a poster. */
+      const timed = grade && grade.quality != null && grade.quality >= 0.86;
+      this.posterDunk = type === 'dunk' && (timed || this.dunkAuto);
 
       // Layups/dunks release a beat after commit, in sync with the animation
       // reaching the rim; jumpers and free throws release immediately since
@@ -1048,10 +2034,39 @@
       ball.shotWasThree = sol.isThree && pending.type !== 'dunk' && pending.type !== 'freethrow';
       ball.isFreeThrow = pending.type === 'freethrow';
       const apex = pending.type === 'dunk' ? 0.6 : sol.apex;
-      if (pending.type === 'dunk' && dist < C.RIM_RADIUS + 1.3) {
-        // Point-blank slam: thrown straight down through the rim rather than
-        // arced, which is what sells the finish.
-        ball.launch((hoop.x - hand.x) * 1.8, (hoop.y - hand.y) * 1.8, -6, BB.Ball.STATE.SHOT);
+      /* A running dunk takes off well outside the restricted area and is still
+       * carrying that speed at the apex, so the old 1.3ft window was narrow
+       * enough that a real drive-and-slam would fall out of it and get thrown
+       * as an arced shot instead. */
+      if (pending.type === 'dunk' && dist < C.RIM_RADIUS + 2.5) {
+        /* Point-blank slam: thrown straight down through the rim rather than
+         * arced, which is what sells the finish.
+         *
+         * The aim error goes in too. Without it a dunk was the one shot in the
+         * game that physically could not miss, whatever the timing or the
+         * contest — the solved error was computed and then discarded. A
+         * guaranteed release (green, or the auto-dunk's synthesized perfect)
+         * has its error capped at a fraction of an inch and still drops every
+         * time; a badly mistimed one now has something to actually clang off. */
+        /* Aimed by solving the flight, not by a fixed multiplier.
+         *
+         * The old `× 1.8` assumed the hand was always a particular distance
+         * from the ring, which a running dunk is not: a drive that takes off
+         * at seven feet is still carrying that speed at the apex and can be
+         * anywhere from short of the rim to past it. Too fast and the ball
+         * sailed over, too slow and it fell in front — the one shot in the
+         * game whose aim did not depend on where it was thrown from.
+         *
+         * Falling from the hand to the ring with an initial -6 takes a known
+         * time, so the horizontal velocity that covers the gap in exactly that
+         * time is a solve rather than a guess. It comes out right from under
+         * the rim, from seven feet out, and from past the hoop — which is a
+         * reverse dunk, and now looks like one. */
+        const drop = Math.max(0.35, hand.z - C.RIM_HEIGHT);
+        const t = (Math.sqrt(36 + 2 * C.GRAVITY * drop) - 6) / C.GRAVITY;
+        ball.launch((hoop.x + sol.errX - hand.x) / t,
+                    (hoop.y + sol.errY - hand.y) / t,
+                    -6, BB.Ball.STATE.SHOT);
         ball.targetHoop = hoop;
       } else {
         ball.shootAt(hoop, apex, sol.errX, sol.errY, sol.errShort);
@@ -1071,13 +2086,40 @@
         if (this.actionT > 0.5 && !this.jumping) this.action = ACTION.IDLE;
       } else if (this.action === ACTION.LAYUP || this.action === ACTION.DUNK) {
         this.actionT += dt;
-        const fireAt = this.action === ACTION.DUNK ? 0.30 : 0.22;
-        if (this.pendingShot && this.actionT >= fireAt) {
+
+        /* A dunk goes through the rim at the TOP of the jump, not at a fixed
+         * time after the button.
+         *
+         * The old flat 0.30s could not know how high this particular player
+         * jumps: a big vertical takes past 0.45s to reach the apex, so the
+         * ball was being put through the ring while its owner was still on the
+         * way up — the one moment of the whole animation that has to line up,
+         * and it did not. Syncing to vz crossing zero makes it land right for
+         * every jump, which is the same trick the block contest already uses
+         * for its swat. The floor gives the arm time to swing back and come
+         * over; the ceiling is a backstop so a dunk released on the ground
+         * (nothing does this today) can never hang forever. */
+        let fireAt;
+        if (this.action === ACTION.DUNK) {
+          const atApex = !this.jumping || this.vz <= 0;
+          fireAt = (atApex && this.actionT >= 0.12) || this.actionT >= 0.55;
+        } else {
+          fireAt = this.actionT >= 0.22;
+        }
+        if (this.pendingShot && fireAt) {
           this._ballRef = ball;
+          /* The flush is the moment worth slowing down for, and this is it —
+           * the frame the ball goes through the ring. Raised as an event rather
+           * than reaching for BB.Engine from inside a player: the engine's clock
+           * is the whole game's, and one figure on the floor has no business
+           * setting it. A scene decides whether to take it. */
+          if (this.action === ACTION.DUNK && this.posterDunk) {
+            this.events.emit('poster', { by: this, style: this.dunkStyle });
+          }
           this._fireBall(this.pendingShot);
         }
         this.armRaise = this.action === ACTION.DUNK
-          ? U.clamp01(this.actionT / 0.3)
+          ? U.clamp01(this.actionT / 0.18)
           : U.approach(this.armRaise, 0.7, 5, dt);
         if (this.actionT > 0.65 && !this.jumping) {
           this.action = ACTION.IDLE;
@@ -1091,6 +2133,21 @@
       } else if (this.action === ACTION.STEAL) {
         this.actionT += dt;
         if (this.actionT > 0.26) this.action = ACTION.IDLE;
+      } else if (this.armRaise > 0) {
+        /* Nothing is driving the arms any more, so put them down.
+         *
+         * Left alone, armRaise simply stopped wherever the release animation
+         * abandoned it — about 0.135 every time, because RELEASE hands over to
+         * IDLE on a half-second timer rather than on the arm reaching the
+         * bottom, and no other branch touches it again until the NEXT shot
+         * starts. handPosition() reads anything above 0.05 as "still shooting"
+         * and answers with the release point, which is calibrated against the
+         * true-scale ten-foot rim rather than against the figure. So from the
+         * first jump shot onward the ball hung two and a half feet above that
+         * player's head and never bounced again — loudest on a make, where the
+         * ball comes straight back to the scorer for the check. */
+        this.armRaise = U.approach(this.armRaise, 0, 7, dt);
+        if (this.armRaise < 0.004) this.armRaise = 0;
       }
     }
 
@@ -1107,8 +2164,20 @@
           this._fumbleBall();
           this._fumbleAt = -1;
         }
-        if (this.moveT >= MOVE_DURATION[this.moveState]) this.moveState = null;
+        if (this.moveT >= MOVES[this.moveState].dur) {
+          /* The ball finishes where the path put it. A move that swaps hands
+           * has carried it to the other one, and the resting dribble has to
+           * pick it up there or it teleports back across the body on the frame
+           * the move ends. */
+          const endZ = this._moveBallPos(TMP_V).z;
+          if (MOVES[this.moveState].swap) this.dribbleHand = -this._moveFromHand;
+          this.moveState = null;
+          // Pick the bounce up at the height the move left the ball at, so it
+          // does not jump on the frame the move ends.
+          this._syncDribblePhase(endZ);
+        }
       }
+      this._updateDefense(dt, ball);
       this.updateShotState(dt, ball);
       this.updateMovement(dt);
       this.updateJump(dt);
@@ -1124,11 +2193,37 @@
         }
       }
 
-      if (this.hasBall && ball.owner === this && !this.isBusyShooting) {
-        const p = this.handPosition(TMP_V);
-        ball.place(p.x, p.y, p.z);
+      /* The ball rides in the hand right up to the launch — INCLUDING through
+       * the gather, the meter and the rise.
+       *
+       * It used to stop tracking the moment a shot began, which on a set jump
+       * shot nobody could see: the shooter barely moves between the gather and
+       * the release. On a drive it is glaring. The player takes off from ten
+       * feet out, sails in toward the rim, and the ball hangs in the air back
+       * where he left the floor until it teleports into his hand to launch.
+       * `_fireBall` clears ownership, so this stops on its own the instant the
+       * shot is actually away. */
+      if (this.hasBall && ball.owner === this) {
+        if (this.isBusyShooting) {
+          /* Winding up, the ball sits in the hand that is DRAWN.
+           *
+           * handPosition() answers with the release point instead, which is
+           * deliberately calibrated against the true-scale ten-foot rim rather
+           * than against the figure — the shot arc is computed from it. The
+           * figure is compressed to about five feet, so those two answers sit
+           * a couple of feet apart, and carrying the ball at the second one
+           * floats it above the player's head for the whole gather and rise.
+           * Gameplay still launches from the release point; only the carry
+           * moved. */
+          const h = this.handAt(TMP_V);
+          ball.place(h.x, h.y, h.z + C.BALL_RADIUS * 0.5);
+        } else {
+          const p = this.handPosition(TMP_V);
+          ball.place(p.x, p.y, p.z);
+        }
       }
 
+      this._updateVisualLift(dt);
       this._updatePose(dt);
     }
 
@@ -1181,10 +2276,25 @@
 
       const A = TMP_P0, B = TMP_P1, D = TMP_P2, E = TMP_P3, F = TMP_P4;
 
-      /* Model units to world feet. The mesh is authored at its own stature, so
-       * everything scales off the ratio between that and the posed figure. */
-      const statP = -p.headY + BONE.headR;
-      const g = (statP * f.s) / Skin.height;
+      /* Model units to world feet.
+       *
+       * This is a property of the BUILD, not of what the player is doing. It
+       * used to be derived from p.headY — a pose quantity — so the whole mesh
+       * breathed with the pose: girth, shoulder width, head size and shoe size
+       * all scaled together. Measured, a 6'7" figure came out 7.0% SHORTER the
+       * moment it dropped into a defensive stance and 2.7% TALLER while it was
+       * shooting, because a crouch lowers the head and armRaise lifted it. A
+       * player is not smaller for crouching; their legs are bent, which is
+       * what setBone's along-bone stretch is already for.
+       *
+       * REF_HEIGHT * bodyScale is exactly the figure's drawn height in feet, so
+       * this is "drawn feet per model unit" and it cannot move mid-pose. */
+      const g = (REF_HEIGHT * f.s) / Skin.height;
+      /* Published so the scale the mesh is ACTUALLY drawn at can be measured
+       * from outside. Without it a check can only recompute what it thinks
+       * draw() should be doing, which is exactly the kind of check that agrees
+       * with itself while the renderer does something else. */
+      p.drawScale = g;
       const ref = REF_DIR;
       ref[0] = f.fx; ref[1] = f.fy; ref[2] = 0;
 
@@ -1193,17 +2303,34 @@
        * the runtime places them by measuring the same fractions along the posed
        * body rather than by guessing which joint each one belongs to. Hip and
        * shoulder are the two known points; everything else rides that line and
-       * therefore inherits the lean and the crouch for free. */
+       * therefore inherits the lean and the crouch for free.
+       *
+       * The two ends of that line are the MESH's own hip and shoulder, not the
+       * posed ones. Reading them off the pose meant the mapping's origin and
+       * span drifted with every crouch, so the bind hip no longer landed on the
+       * posed hip and every spine bone was stretched by the difference on every
+       * frame. Against the mesh's landmarks the bind hip maps to exactly the
+       * posed hip and the bind shoulder to exactly the posed shoulder, which is
+       * the only version of this that is not approximately wrong. */
       posePoint(HIP, f, 0, p.hipY, 0, 0, hipLean);
       posePoint(SHO, f, 0, p.shoulderY, 0, 0, torsoLean);
-      const hipH = -p.hipY / statP;
-      const span = (-p.shoulderY / statP) - hipH;
-      const spineAt = (out, h) => mixPt(out, HIP, SHO, span > 1e-6 ? (h - hipH) / span : 0);
+      const spineAt = (out, h) =>
+        mixPt(out, HIP, SHO, SPINE_SPAN > 1e-6 ? (h - SPINE_HIP) / SPINE_SPAN : 0);
 
       for (const name of SPINE_BONES) {
         const seg = Skin.bind[name];
         spineAt(A, seg[0][2] / Skin.height);
         spineAt(B, seg[1][2] / Skin.height);
+        /* The head does not ride the lean.
+         *
+         * Every other bone on this line inherits the hip-to-shoulder tilt,
+         * which is right for a spine and wrong for a neck: a sprinter's chest
+         * pitches a long way forward but the eyes stay level and on the play,
+         * and the neck is what takes the difference back out. Left following
+         * the spine, the face at full tilt is aimed at the floor five feet
+         * ahead. The base stays welded to the top of the torso and only the
+         * crown swings back over it, so nothing detaches. */
+        if (name === 'head') uprightHead(A, B);
         Skin.setBone(sp, name, A, B, ref, g);
       }
 
@@ -1216,16 +2343,31 @@
       const toeDrop = (Skin.bind.footL[0][2] - Skin.bind.footL[1][2]) * g;
       for (const leg of LEGS) {
         const knee = leg.side < 0 ? p.kneeL : p.kneeR;
+        const foot = leg.side < 0 ? p.footL : p.footR;
         const sfx = leg.side < 0 ? 'L' : 'R';
         const w = leg.side * BONE.hipW;
+        /* The slide's lateral step. The hip stays put and the foot goes out,
+         * with the knee taking a little over half of it so the leg reads as
+         * one limb rather than a shin swinging off a static thigh. */
+        const out = foot.side || 0;
         posePoint(A, f, 0, p.hipY, 0, w, hipLean);
-        posePoint(B, f, knee.jx, knee.jy, w, w * SPLAY.knee, hipLean);
-        posePoint(D, f, knee.ex, knee.ey, w, leg.side * BONE.stance, hipLean);
+        posePoint(B, f, knee.jx, knee.jy, w, w * SPLAY.knee + out * 0.55, hipLean);
+        posePoint(D, f, knee.ex, knee.ey, w, leg.side * BONE.stance + out, hipLean);
         D[2] += ankleUp;
 
-        E[0] = D[0] + f.fx * toeFwd;
-        E[1] = D[1] + f.fy * toeFwd;
-        E[2] = D[2] - toeDrop;
+        /* The foot pitches about the ankle: toe down through push-off, toe up
+         * to clear the floor and land heel-first. _updatePose has already put
+         * the matching lift into the ankle target, so through push-off the
+         * contact point stays exactly where it was planted and the heel is
+         * what comes up. */
+        const pitch = foot.pitch || 0;
+        const cp = Math.cos(pitch), sp2 = Math.sin(pitch);
+        const outFwd = toeFwd * cp - toeDrop * sp2;
+        const outUp = -toeFwd * sp2 - toeDrop * cp;
+
+        E[0] = D[0] + f.fx * outFwd;
+        E[1] = D[1] + f.fy * outFwd;
+        E[2] = D[2] + outUp;
 
         Skin.setBone(sp, 'thigh' + sfx, A, B, ref, g);
         Skin.setBone(sp, 'shin' + sfx, B, D, ref, g);
@@ -1237,12 +2379,28 @@
       for (const arm of ARMS) {
         const el = arm.side < 0 ? p.elbowL : p.elbowR;
         const sfx = arm.side < 0 ? 'L' : 'R';
+        const hand = arm.side < 0 ? p.handL : p.handR;
         const w = arm.side * BONE.shoulderW;
         const roll = arm.side * p.armRoll;
         const pivot = -p.shoulderY * f.stretch;
+
+        /* The third axis.
+         *
+         * The solver works in ONE flat plane per limb pair, and everything
+         * lateral has been mirrored: armRoll rotates both arms out by the same
+         * angle in opposite directions, so whatever it does to one hand it
+         * does to the other. That is fine for a stance and useless for a jump
+         * shot, where the whole point is that the two hands are doing
+         * DIFFERENT things — one under the ball, one on the side of it.
+         *
+         * wristWidth/elbowWidth answer where across the body each joint goes:
+         * a nudge off the plane for most poses, an outright placement for the
+         * ones (the shot) that have to hold two hands a measured distance
+         * apart. Both live outside draw() so handAt() and the reach cap read
+         * the same answer the renderer draws. */
         posePoint(A, f, 0, p.shoulderY, 0, w, torsoLean);
-        posePoint(B, f, el.jx, el.jy, w, w * SPLAY.elbow, torsoLean, roll, pivot);
-        posePoint(D, f, el.ex, el.ey, w, w * SPLAY.wrist, torsoLean, roll, pivot);
+        posePoint(B, f, el.jx, el.jy, w, elbowWidth(p, arm.side), torsoLean, roll, pivot);
+        posePoint(D, f, el.ex, el.ey, w, wristWidth(p, arm.side), torsoLean, roll, pivot);
 
         // The solver stops at the wrist; the hand carries on the way the
         // forearm was already pointing.
@@ -1252,9 +2410,22 @@
         F[1] = D[1] + (dy / L) * handLen;
         F[2] = D[2] + (dz / L) * handLen;
 
+        /* Palm twist.
+         *
+         * The mesh is bound in an A-pose with the arms held out and the palms
+         * turned back. Bringing one down to the hip is a big swing, and a real
+         * arm does not make it rigidly: the forearm rotates internally on the
+         * way down so the palm ends up facing the thigh. This rig has no wrist
+         * and no twist bone, so the hand kept whatever facing the bind gave it
+         * and the palms pointed backwards in every hanging pose.
+         *
+         * `ref` is what pins rotation about a bone's own length, so spinning
+         * the hand's copy of it about the forearm axis IS the twist — one
+         * rotation, no new bone, and it costs nothing when the angle is zero. */
         Skin.setBone(sp, 'upperArm' + sfx, A, B, ref, g);
         Skin.setBone(sp, 'forearm' + sfx, B, D, ref, g);
-        Skin.setBone(sp, 'hand' + sfx, D, F, ref, g);
+        const tw = (hand.twist == null ? 0 : hand.twist) * arm.side;
+        Skin.setBone(sp, 'hand' + sfx, D, F, tw ? spin(ref, dx / L, dy / L, dz / L, tw, HREF) : ref, g);
       }
 
       /* ------------------------------------------------------------- kit
@@ -1269,15 +2440,59 @@
       copyCol(z[1], this._col('jersey', this.jerseyMain));
       copyCol(z[2], this._col('shorts', U.shade(this.jerseyMain, -0.08)));
       copyCol(z[3], this._col('shoe', PAL.chalk));
-      copyCol(z[4], this._col('hair', U.shade(this.skin, -0.42)));
-      copyCol(z[5], this._col('trim', this.jerseyTrim));
+      // The player's own hair colour, not a darkened skin tone. The creator
+      // has offered seven of them since the day it shipped and every one of
+      // them landed on the floor: this zone was painted from `skin`, so a
+      // black-haired player and a blond one came out identical.
+      /* A shaved head is the one style with no shell to draw, so it has to be
+       * done in colour: paint the scalp with the skin tone (a shade down, the
+       * way a fresh shave actually reads) instead of the hair colour. Every
+       * other style leaves the scalp as hair and lets its shell add the
+       * volume. */
+      copyCol(z[4], this.hairStyle === 'bald'
+        ? this._col('scalp', U.shade(this.skin, -0.10))
+        : this._col('hair', this.hair || U.shade(this.skin, -0.42)));
+      /* Zone 5 is the face. It was declared as the jersey trim and then never
+       * used — the rigger emitted nothing in it — so the slot was free for the
+       * brows, eyes and mouth, which need a colour of their own that is not
+       * the hair (a face is not a haircut) and not the skin (or it vanishes).
+       * Derived from the skin tone rather than fixed, so it stays a face on
+       * every complexion instead of two black dots on a dark one. */
+      copyCol(z[5], this._col('face', U.shade(this.skin, -0.52)));
       Skin.setZones(sp, z);
+      sp.hairStyle = this.hairStyle;
+      // The number on the back. Clamped because the glyph table only holds 0-99.
+      sp.number = U.clamp(Math.round(this.number || 0), 0, 99);
 
       if (this.human) {
         // Selection ring under the controlled player. A torus, not a quad: a
         // square marker reads as a decal stuck to the floor at this camera
         // angle, where a ring reads as a marker sitting on it.
         S3.ring(this.x, this.y, 0.05, 0.98, MINT, 0.35, 0.22);
+      }
+
+      /* How the defence is going, drawn on the floor where the player is
+       * already looking — at their own feet and the man in front of them.
+       *
+       * A second ring outside the selection one, which grows and brightens
+       * with the quality of the position and goes gold once it has been held
+       * long enough to count. This is the only readout: no number, no bar off
+       * in a corner, because what it is describing is where the body is
+       * standing and that is the thing being watched.
+       *
+       * Controlled player only. Every player on the floor computes a quality
+       * — the contest maths reads it off the AI too — but ten rings lit up at
+       * once is wallpaper, and this one is feedback on what YOU are doing. */
+      if (this.human && this.defenseQuality > 0.05) {
+        const q = this.defenseQuality;
+        const locked = U.clamp01(this.lockedT / 1.2);
+        const col = lerpCol(GUARD_COL, LOCK_COL, locked);
+        /* S3.ring draws opaque, so the strength of the position has to be
+         * carried by the colour itself: a weak stance sits dark against the
+         * blacktop and a good one burns. */
+        const lift = 0.45 + q * 0.55;
+        col[0] *= lift; col[1] *= lift; col[2] *= lift;
+        S3.ring(this.x, this.y, 0.04, 1.18 + q * 0.42, col, 0.3, 0.20);
       }
     }
 
@@ -1416,24 +2631,55 @@
       // bend in both knees even when the player is doing nothing. Standing
       // locked out is the single thing that most makes a figure look like a
       // mannequin instead of an athlete waiting for the ball.
-      const hipY = -REST_HIP;
+      let hipY = -REST_HIP;
       let shoulderY = hipY - BONE.torso;
       // Athletes carry a few degrees of forward lean at rest — weight over the
       // balls of the feet, ready to move, never stacked bolt upright.
       let torsoLean = 0.025;
       let hipLean = null; // null = "follow torsoLean", set explicitly to diverge (real twist)
+      let pitchL = 0, pitchR = 0;
+
+      /* Every hand target below is written as THIS HAND'S OWN SHOULDER plus an
+       * offset, never as a bare number.
+       *
+       * draw() sends whatever is left after subtracting the arm's own shoulder
+       * x down the player's FORWARD axis, so a pair of hand targets at -0.30
+       * and +0.30 is not a symmetric pose at all: with the shoulder joints at
+       * ±0.20 it hangs the left hand a fifth of a unit behind the body and the
+       * right hand the same distance in front of it. Anchoring on the shoulder
+       * is what makes a symmetric pose come out symmetric, and it is why a
+       * figure that was meant to be standing still no longer stands like it is
+       * mid-stumble. */
+      const shL = -BONE.shoulderW, shR = BONE.shoulderW;
 
       let flX = -BONE.hipW, flY = 0;
       let frX = BONE.hipW, frY = 0;
-      // Hands hang just inside full extension so the elbows keep a soft bend.
-      let hlX = -0.30, hlY = reachY(shoulderY, 0.96);
-      let hrX = 0.30, hrY = reachY(shoulderY, 0.96);
+      // Lateral foot displacement, off the solver's plane entirely. Only the
+      // slide writes it; everything else leaves the feet under the hips.
+      let sideL = 0, sideR = 0;
+      /* Hands hang just inside full extension so the elbows keep a soft bend —
+       * and far enough inside it to survive the idle bob. At 0.96 the breathing
+       * sway added below pushed the resting hand past the arm's actual reach
+       * every few seconds, and a target the solver has to clamp draws a locked
+       * straight arm with the elbow gone. */
+      let hlX = shL, hlY = reachY(shoulderY, 0.93);
+      let hrX = shR, hrY = reachY(shoulderY, 0.93);
 
       /* ---- locomotion base layer: run cycle, or idle breathing/sway ------ */
       if (running) {
         const phase = this.stridePhase;
-        const strideLen = U.lerp(0.17, 0.50, speedFrac);
-        const lift = U.lerp(0.055, 0.21, speedFrac);
+        const gait = gaitOf(speed);
+
+        /* The body rises through the float and sinks through mid-stance, twice
+         * a cycle — and hips and shoulders move together, because a bob
+         * applied to the shoulders alone is not a bob at all, it is the spine
+         * concertinaing. Anchored on mid-stance (half of stance into the
+         * cycle) so it stays in step when the stance fraction changes with
+         * speed. */
+        const bob = -U.lerp(0.004, 0.026, speedFrac)
+                  * Math.cos(phase * 2 - Math.PI * 2 * gait.stance);
+        hipY += gait.crouch - bob;   // pose y is negative for up
+        shoulderY = hipY - BONE.torso;
 
         // Each leg walks a stance-then-swing cycle, half a period apart.
         // A plain sine on both axes cannot describe a run: it sends the
@@ -1441,33 +2687,83 @@
         // the floor, so the foot has to slide no matter how the phase is
         // driven. During stance the foot tracks straight back at exactly the
         // rate the body moves forward, which is what leaves it standing still
-        // on the hardwood.
-        stepFoot(STEP_L, phase + Math.PI, strideLen, lift);
-        stepFoot(STEP_R, phase, strideLen, lift);
-        flX = -BONE.hipW + STEP_L.x; flY = STEP_L.y;
-        frX = BONE.hipW + STEP_R.x; frY = STEP_R.y;
+        // on the blacktop.
+        stepFoot(STEP_L, phase + Math.PI, gait);
+        stepFoot(STEP_R, phase, gait);
 
-        // The swing runs from a straight trailing arm at the hip up to a
-        // sharply bent lead arm at chest height — the range has to stay inside
-        // the arm's actual reach or the IK clamps it and both arms lock rigid.
-        const armSwing = U.lerp(0.22, 0.58, speedFrac);
-        const armPump = U.lerp(0.22, 0.52, speedFrac);
-        hlX = -0.30 + Math.sin(phase) * armSwing * 0.46;
-        hlY = reachY(shoulderY, 1.02 - Math.max(0, Math.sin(phase)) * armPump);
-        hrX = 0.30 + Math.sin(phase + Math.PI) * armSwing * 0.46;
-        hrY = reachY(shoulderY, 1.02 - Math.max(0, Math.sin(phase + Math.PI)) * armPump);
+        /* Which way the body is travelling relative to which way it is
+         * pointed. Normally these are the same thing and this is a no-op, but
+         * a defender locked onto their man — and a shooter squaring up on the
+         * move — travel one way while facing another, and the stride has to
+         * know the difference or the figure moonwalks: feet scissoring
+         * forwards while the body slides sideways.
+         *
+         * `along` is signed, so backing up back-pedals for free rather than
+         * running on the spot. */
+        const rel = U.angleDelta(this.facing, this.moveFacing);
+        const along = Math.cos(rel);
+        // posePoint's `width` axis is the facing direction turned -90 degrees,
+        // so the rightward component of the heading carries a minus sign.
+        const lateral = -Math.sin(rel);
 
-        // A touch of vertical bob and stride-linked hip counter-rotation —
-        // the shoulders lead a full sprint slightly ahead of the hips.
-        shoulderY += Math.abs(Math.sin(phase * 2)) * -0.014 * speedFrac;
+        flX = -BONE.hipW + STEP_L.x * along; flY = STEP_L.y; pitchL = STEP_L.pitch;
+        frX = BONE.hipW + STEP_R.x * along; frY = STEP_R.y; pitchR = STEP_R.pitch;
+
+        /* The shuffle. One foot reaches out the way the body is going while
+         * the other pushes and recovers, and they never cross — cross your
+         * feet in a slide and you are beaten. Capped below the width of the
+         * stance for that reason, which also keeps the sideways displacement
+         * small enough that the leg's true 3D length barely changes: the
+         * solver works in the flat plane and knows nothing about this axis. */
+        const shuffle = U.clamp(lateral * gait.stride * 1.15,
+                                -BONE.stance * 0.8, BONE.stance * 0.8);
+        sideR = shuffle * Math.sin(phase);
+        sideL = -sideR;
+
+        /* Arms swing as pendulums from the shoulder, on an arc rather than up
+         * and down a line: the hand travels forward AND rises as it comes
+         * through, which is the shape the eye actually reads as an arm
+         * swinging. The elbow keeps a real bend throughout because the hand
+         * rides at a fraction of full reach — driving it out past full reach
+         * makes the IK clamp, and a clamped arm is a straight arm, frozen.
+         *
+         * cos, not sin: the left arm hits its front stop at the same instant
+         * the right foot hits its own, which is what contralateral means. A
+         * quarter-cycle out and the figure looks like it is being puppeted. */
+        /* The hand climbs as it comes forward and falls as it goes back —
+         * from past the hip behind to chest height in front, in one monotone
+         * sweep.
+         *
+         * It used to swing the whole arm as a rigid pendulum about the
+         * shoulder, so the hand rode a circular arc: level at both ends and
+         * DIPPING half a foot in the middle. Measured, the hand finished the
+         * forward swing two inches higher than it started the back one, which
+         * is not an arm swing, it is a pair of hands paddling. What the eye
+         * reads as running is the diagonal — low and back, high and forward —
+         * and the elbow folding tight at the front and opening out behind
+         * comes out of that shape for free, because the hand is close to the
+         * shoulder at one end of it and far away at the other. */
+        const swL = Math.cos(phase), swR = -swL;
+        const amp = U.lerp(0.09, 0.30, speedFrac);      // fore and aft, pose units
+        const carry = U.lerp(0.52, 0.47, speedFrac);    // hand height at mid-swing
+        const rise = U.lerp(0.08, 0.27, speedFrac);     // how much higher in front
+        const drop = 0.02;                              // and how much lower behind
+        const high = carry - rise, low = carry + drop;
+        const hL = U.lerp(low, high, U.ease.inOutSine((swL + 1) * 0.5));
+        const hR = U.lerp(low, high, U.ease.inOutSine((swR + 1) * 0.5));
+        hlX = shL + swL * amp; hlY = shoulderY + hL;
+        hrX = shR + swR * amp; hrY = shoulderY + hR;
+
         torsoLean = speedFrac * 0.16;
-        hipLean = torsoLean - Math.sin(phase) * 0.05 * speedFrac;
+        hipLean = torsoLean - Math.cos(phase) * 0.04 * speedFrac;
       } else if (!this.jumping) {
         const sway = Math.sin(t * 1.15) * 0.024;
         const breathe = Math.sin(t * 0.85) * 0.014;
         const weightShift = Math.sin(t * 0.42) * 0.028; // slow idle weight transfer, knee to knee
         flX += sway + weightShift; frX -= sway - weightShift;
-        flY = Math.max(0, -weightShift) * 0.4; frY = Math.max(0, weightShift) * 0.4;
+        // The unweighted foot comes up off the floor, never down through it:
+        // pose y is negative for up, so a positive lift here buries the shoe.
+        flY = -Math.max(0, -weightShift) * 0.4; frY = -Math.max(0, weightShift) * 0.4;
         shoulderY += breathe;
         hlY += Math.sin(t * 1.0 + 1.4) * 0.020;
         hrY += Math.sin(t * 1.0) * 0.020;
@@ -1480,10 +2776,38 @@
        * isGuarding, since those all require states this excludes anyway. */
       const guardTarget = (this.isGuarding && !this.jumping && !this.hasBall && !this.isBusyShooting) ? 1 : 0;
       this._guardBlend = U.approach(this._guardBlend, guardTarget, 7, dt);
+      /* Per-hand lateral offset, off the pose plane. Zero for everything that
+       * wants the old mirrored behaviour; the shot and the carry set it. */
+      let hlSide = 0, hrSide = 0;
+      /* Outright lateral placement for a wrist and its elbow, in skeleton units
+       * across the body. Null leaves it to SPLAY and the tuck. A pose that has
+       * to hold two hands a MEASURED distance apart — a ball's width — cannot
+       * get there by nudging, because the tuck and the roll both move the pair
+       * together and neither of them knows how big a ball is. */
+      let hlLat = null, hrLat = null, elLatL = null, elLatR = null;
+      /* Palm rotation about the forearm, mirrored per side. The resting value
+       * turns the palms in toward the thighs, which is where a hanging arm
+       * actually leaves them; poses that need a different palm say so. */
+      let hlTwist = 0.85, hrTwist = 0.85;
       let armRoll = 0;
+      /* How far the arms are drawn in toward the body's centreline, 0..1.
+       *
+       * The pose solver works in ONE flat plane per limb pair and the lateral
+       * offset is a constant applied at draw time, so left and right hands are
+       * always a shoulder-width apart however the plane is posed. That is fine
+       * for everything except the one thing a basketball player does most: put
+       * both hands on the same ball. armRoll cannot close it either — it is a
+       * rotation about shoulder height, so it barely moves a hand that is AT
+       * shoulder height and it shortens the ones that are not. */
+      let armTuck = 0;
       if (this._guardBlend > 0.001) {
         const g = this._guardBlend;
-        shoulderY += g * 0.12;                    // lower center of gravity
+        // Lower centre of gravity. The whole upper body sinks — hips, shoulders
+        // and the hands riding off them — because dropping the shoulders alone
+        // does not crouch a figure, it shortens its spine by a fifth.
+        const drop = g * 0.12;
+        hipY += drop; shoulderY += drop;
+        hlY += drop; hrY += drop;
         flX -= g * 0.12; frX += g * 0.12;          // wider base
         // Arms spread wide. This one cannot be expressed as an x offset the way
         // the stance can: the solver works in a single flat plane, and draw()
@@ -1494,6 +2818,50 @@
         // stance actually looks like from the sideline.
         armRoll = g * 0.62;
         torsoLean = (torsoLean || 0) + g * 0.05;   // a touch of alert forward lean
+
+        /* The active hand. A stance with both arms held out symmetrically is a
+         * scarecrow; what defence actually looks like is one hand out wide and
+         * the other reaching in at the ball, jabbing at it and pulling back.
+         *
+         * The lead hand goes FORWARD, which in the pose plane is straight at
+         * whoever is being guarded, because the stance turns the body to face
+         * them. It reaches to the height the ball is actually being carried
+         * at, and how far it commits scales with how close the ball is — you
+         * do not swipe at a ball ten feet away. */
+        const b = this._ballRef;
+        const foe = b && b.owner;
+        if (foe && foe !== this) {
+          const d = U.dist(this.x, this.y, foe.x, foe.y);
+          const commit = g * U.clamp01(U.remap(d, 6.5, 2.0, 0, 1));
+          if (commit > 0.001) {
+            // Ball height, in this figure's own units, off its own shoulder.
+            const ballUp = U.clamp((this.z + 2.6 - b.z) / Math.max(this.bodyScale, 0.01),
+                                   -0.30, 0.55);
+            // A jab: the hand works at the ball rather than hanging there.
+            const jab = 0.055 * Math.sin(this._animClock * 5.2);
+            /* Where the hand wants to be: out in front, at the height the ball
+             * is being carried. Both offsets are measured from the shoulder,
+             * so they can be capped together — an arm cannot reach a long way
+             * forward AND a long way down at the same time, and asking it to
+             * would only get the whole limb clamped straight by the solver. */
+            let fwd = 0.50 + jab;
+            let up = ballUp;
+            const cap = (BONE.upperArm + BONE.forearm) * 0.93;
+            const len = Math.hypot(fwd, up);
+            if (len > cap) { const s = cap / len; fwd *= s; up *= s; }
+            /* Blended by commitment rather than scaled by it. Scaling the
+             * offsets shortened the reach twice over — once here and again
+             * through the blend — and left the hand tucked against the ribs at
+             * exactly the range where the ball is worth reaching for. */
+            hrX = U.lerp(hrX, shR + fwd, commit);
+            hrY = U.lerp(hrY, shoulderY + up, commit);
+            // And the off hand drops out of the way, palm down, walling off
+            // the drive rather than mirroring the reach.
+            hlX = shL + commit * 0.10;
+            hlY = U.lerp(hlY, shoulderY + 0.34, commit * 0.6);
+            armRoll = g * U.lerp(0.62, 0.40, commit);
+          }
+        }
       }
 
       /* ---- airborne base layer: tuck on the way up, reach on the way down */
@@ -1505,76 +2873,174 @@
         frX = BONE.hipW * 0.55; frY = -tuck - fall * 0.02;
       }
 
-      /* ---- dribbling hand: reaches down on the bounce, up on the catch --- */
+      /* ---- dribbling hand: reaches down on the bounce, up on the catch ---
+       * Whichever hand the ball is actually in. It was hard-coded to the right
+       * one, and so was every pose the game has ever drawn. */
       if (this.hasBall && !this.isBusyShooting) {
         const c = (Math.cos(this.dribblePhase * Math.PI * 2) + 1) * 0.5; // 1=held high, 0=at the bounce
-        hrX = 0.32;
-        hrY = U.lerp(reachY(shoulderY, 1.02), reachY(shoulderY, 0.72), c);
-        hlX = -0.04; hlY = reachY(shoulderY, 0.98); // guide hand stays close, out of the way
+        const on = this.dribbleHand, off = -on;
+        const onX = (on < 0 ? shL : shR) + 0.11;   // ball works out in front of the hip
+        const onY = U.lerp(reachY(shoulderY, 0.99), reachY(shoulderY, 0.72), c);
+        const offX = (off < 0 ? shL : shR) + 0.09; // guide hand close, out of the way
+        const offY = reachY(shoulderY, 0.94);
+        if (on < 0) { hlX = onX; hlY = onY; hrX = offX; hrY = offY; }
+        else { hrX = onX; hrY = onY; hlX = offX; hlY = offY; }
       }
 
-      /* ---- dribble moves: crossover / behind-the-back / spin / hesitation -
-       * Each of these now visibly winds the shoulders against the hips
-       * (hipLean vs torsoLean) instead of the whole body swinging as one
-       * rigid block — that counter-twist is most of what sells a real
-       * change-of-direction move rather than just an arm waving sideways. */
-      if (this.moveState && this.hasBall) {
-        const dur = MOVE_DURATION[this.moveState];
-        const k = U.clamp01(this.moveT / dur);
+      /* ---- dribble moves ------------------------------------------------
+       * The hands are posed to MEET THE BALL, wherever BALL_PATH has put it.
+       *
+       * This used to be six hand-authored arm animations with the ball glued
+       * to the right wrist, which is why none of them looked like the move
+       * they were named after — the ball was not in any of them. Driving the
+       * hands off the path instead means the two cannot disagree, and it is
+       * the same reasoning as everywhere else in this file: one definition,
+       * read by everybody who needs the answer.
+       *
+       * The hand that lets the ball go follows it out; the hand that receives
+       * it comes to meet it. In between, neither is on it — which is exactly
+       * what a dribble move is. */
+      if (this.moveState && this.hasBall && BALL_PATH[this.moveState]) {
+        const mv = MOVES[this.moveState];
+        const k = U.clamp01(this.moveT / mv.dur);
         const dir = this.moveDir;
+        const b = BALL_PATH[this.moveState](k, this._pathCtx());
+        const src = this._moveFromHand;
 
-        if (this.moveState === 'crossover') {
-          const sweep = U.ease.inOutSine(k);
-          // Lower and sharper than a normal dribble — the ball dips toward
-          // the floor at the midpoint of the sweep, the classic low snap.
-          const dip = Math.sin(sweep * Math.PI);
-          hrX = U.lerp(-0.34 * dir, 0.34 * dir, sweep);
-          hrY = hipY + 0.10 + dip * 0.14;
-          hlX = -hrX * 0.32; hlY = hipY + 0.30 - dip * 0.06;
-          torsoLean = -dip * dir * 0.07;
-          hipLean = dip * dir * 0.035; // hips barely move — the fake lives in the shoulders
-          shoulderY += dip * 0.03;
+        /* How much each hand is ON the ball right now. A move that changes
+         * hands pushes it out of one and gathers it into the other, with a beat
+         * in between where neither has it — that beat is the move. A move that
+         * does NOT change hands never lets go, so its hand stays with the ball
+         * the whole way; weighting it like a hand-off left the ball out in
+         * front of a hesitation with nobody near it. */
+        let wL, wR;
+        if (mv.swap) {
+          const give = 1 - U.ease.inOutSine(U.clamp01(k / 0.42));
+          const take = U.ease.inOutSine(U.clamp01((k - 0.52) / 0.48));
+          wL = src < 0 ? give : take;
+          wR = src > 0 ? give : take;
+        } else {
+          wL = src < 0 ? 1 : 0;
+          wR = src > 0 ? 1 : 0;
+        }
 
-        } else if (this.moveState === 'behindBack') {
-          const sweep = U.ease.inOutSine(k);
-          const dip = Math.sin(sweep * Math.PI);
-          // A wider, lower sweep that carries past the hip to read as going
-          // around the body, with real torso wind-up against planted hips.
-          hrX = U.lerp(-0.40 * dir, 0.44 * dir, sweep);
-          hrY = hipY + 0.02 + dip * 0.18;
-          hlX = -hrX * 0.28; hlY = hipY + 0.28;
-          torsoLean = dip * dir * 0.09;
-          hipLean = dip * dir * 0.02;
+        /* A hand goes to the ball, but only as far as an arm goes. A
+         * dribbler's hand stays OVER the ball; it does not chase it to the
+         * floor, and asking it to means handing the solver a target outside
+         * the arm, which comes back clamped and draws as a pole. */
+        const reach = (w, side) => {
+          const sh = side < 0 ? shL : shR;
+          const over = Math.min(-b.up - 0.10, reachY(shoulderY, 0.97));
+          /* Both hands drop into the move whether or not they are on the ball.
+           * A hand that returns to its resting height the moment it lets go
+           * draws as an arm hanging while the ball crosses on its own — and
+           * mid-move is exactly when neither hand has it, so that was most of
+           * the move. Real hands stay low and live over the whole thing. */
+          const idle = reachY(shoulderY, 0.94 + 0.05 * Math.sin(k * Math.PI));
+          return {
+            x: U.lerp(sh + 0.09, sh + b.fwd, w),
+            y: U.lerp(idle, over, w),
+            lat: U.lerp(side * BONE.shoulderW * SPLAY.wrist, b.lat, w)
+          };
+        };
+        const L = reach(wL, -1);
+        const R = reach(wR, 1);
+        hlX = L.x; hlY = L.y; hlLat = L.lat;
+        hrX = R.x; hrY = R.y; hrLat = R.lat;
+        /* The elbow sits on the line from its shoulder to its wrist, a little
+         * short of halfway. Pinning it outboard of the wrist instead made the
+         * upper arm travel sideways on its own — and a bone that has to cover
+         * lateral ground has that much less left for the plane the solver
+         * works in, so the hand came back clamped at exactly the moments the
+         * ball is furthest out to the side. */
+        elLatL = U.lerp(-BONE.shoulderW, L.lat, 0.45);
+        elLatR = U.lerp(BONE.shoulderW, R.lat, 0.45);
+        armTuck = 0;
+        armRoll = 0;
+
+        /* The counter-twist is most of what sells a change of direction: the
+         * shoulders wind against the hips rather than the whole body swinging
+         * as one block. Driven off where the ball is, so it leans into the
+         * move instead of being timed separately from it. */
+        const across = -b.lat / Math.max(1e-6, BONE.shoulderW);
+        torsoLean = across * 0.085;
+        hipLean = across * 0.030;
+
+        if (this.moveState === 'betweenLegs') {
+          /* THE GAP HAS TO BE WIDER THAN THE BALL.
+           *
+           * It was not. Measured at the bounce: the lateral gap between the
+           * feet is 0.71ft and a basketball is 0.79ft across, so the ball was
+           * about an inch INSIDE each leg — more once the calves are counted.
+           * The stance split fore/aft, which is right, but it never opened
+           * sideways, so "between the legs" was drawn as through them.
+           *
+           * The width comes off the BALL, which is the only thing that can
+           * decide it: its own diameter, plus a third of one of daylight
+           * either side so you can see it go through rather than infer it.
+           * `side` is the same per-foot lateral offset the defensive slide
+           * uses, so the leg reach cap already accounts for it.
+           *
+           * Eased over the move, so the player steps wide and recovers instead
+           * of their feet jumping apart. */
+          const open2 = Math.sin(k * Math.PI);
+          const wantHalf = (C.BALL_RADIUS * 2 * 1.50) / 2 / this.bodyScale;
+          const extra = Math.max(0, wantHalf - BONE.stance) * open2;
+          sideL -= extra; sideR += extra;
+
+          /* And the foot on the side the ball is LEAVING steps forward, which
+           * is the stance you are already in when you put it between them.
+           *
+           * Kept modest. Isolating the two halves of this stance against the
+           * render, the sideways opening is clean at any width the ball needs,
+           * but past about this much fore/aft step the hem of the moving leg
+           * GAPES. The shorts leg is an open tube a little wider than the
+           * thigh; once the knee folds far enough the shin leaves through its
+           * side and you look into the opening.
+           *
+           * It is not a tear — the weights are continuous, measured, zero
+           * discontinuity — and it is not fixable by taking the shin off the
+           * hem. That was tried: shorts weighted purely to the thigh do stop
+           * the hem overshooting a raised knee in a stride, but the tube then
+           * stays rigid on the thigh instead of tracking the leg, and in a
+           * deep crouch it gapes wider than before. The shin weight is doing
+           * real work. What this wants is hem geometry that closes, which is a
+           * change to the model rather than to the rig.
+           *
+           * The ball's own dip is shallow to match, so it still crosses
+           * between the feet rather than behind the back one. */
+          const split = Math.sin(k * Math.PI) * 0.16;
+          if (src > 0) { frX += split; flX -= split * 0.6; }
+          else { flX += split; frX -= split * 0.6; }
+          // Sink into it. A wide stance taken standing up is a straddle; the
+          // hips have to drop or the legs are above the ball, not around it.
+          const sink = open2 * 0.09;
+          flY -= 0.05 + sink; frY -= 0.05 + sink;
+          hipY += sink * 0.85; shoulderY += sink * 0.85;
 
         } else if (this.moveState === 'spin') {
-          // Ball protected in tight to the body for the whole rotation, low
-          // and compact, with a deeper knee bend to sell the pivot.
-          hrX = 0.11; hrY = hipY + 0.22;
-          hlX = -0.15; hlY = hipY + 0.30;
+          // Compact through the turn: feet under the hips, knees loaded.
           flX *= 0.42; frX *= 0.42;
           flY -= 0.05; frY -= 0.05;
-          // The shoulders lead the turn; hips catch up a beat behind.
           torsoLean = 0;
           hipLean = 0;
 
         } else if (this.moveState === 'hesitation') {
-          if (k < 0.55) {
-            // The freeze: a held, deliberately low dribble with a real
-            // crouch and a sharper stutter than before.
-            const kk = U.clamp01(k / 0.55);
-            const stutter = (Math.cos(this._animClock * 16) + 1) * 0.5;
-            const crouch = U.ease.outCubic(kk) * 0.14;
-            hrX = 0.30; hrY = hipY + 0.02 + stutter * 0.04 + crouch * 0.3;
-            hlX = 0.08; hlY = hipY + 0.26;
-            flY -= crouch * 0.5; frY -= crouch * 0.5;
-            torsoLean = crouch * 0.5;
-          } else {
-            // The burst: full extension as the player explodes forward,
-            // hand climbing back up and out ahead of the body.
-            const go = U.ease.outCubic((k - 0.55) / 0.45);
-            hrX = U.lerp(0.30, 0.40, go); hrY = U.lerp(hipY + 0.16, hipY + 0.50, go);
-            torsoLean = U.lerp(0.07, -0.10, go);
-          }
+          /* The freeze, then the burst. The body rises as if pulling up — that
+           * is the fake — and drops back into the drive as the ball goes out
+           * in front. */
+          const rise = U.ease.outCubic(U.clamp01(k / 0.55));
+          const go = k > 0.55 ? U.ease.outCubic((k - 0.55) / 0.45) : 0;
+          const crouch = rise * 0.14 * (1 - go);
+          flY -= crouch * 0.5; frY -= crouch * 0.5;
+          torsoLean = crouch * 0.5 - go * 0.12;
+
+        } else if (this.moveState === 'crossover' || this.moveState === 'behindBack') {
+          // Sink into it. A crossover taken standing upright is a pass to
+          // yourself; the whole move happens below the waist.
+          const dip = Math.sin(k * Math.PI);
+          flY -= dip * 0.06; frY -= dip * 0.06;
+          shoulderY += dip * 0.03;
         }
       }
 
@@ -1582,45 +3048,314 @@
       if (this.action === A.GATHER) {
         const k = U.clamp01(this.actionT / 0.10);
         // A real gather sinks the hips and pulls the ball in tight to the
-        // chest, with a slight backward counter-lean before the drive up.
+        // chest, with a slight backward counter-lean before the drive up. Both
+        // hands are on it from here until the release.
         flY = U.lerp(flY, -0.05, k); frY = U.lerp(frY, -0.05, k);
         flX = U.lerp(flX, -BONE.hipW * 0.7, k); frX = U.lerp(frX, BONE.hipW * 0.7, k);
-        hlX = U.lerp(hlX, -0.14, k); hlY = U.lerp(hlY, reachY(shoulderY, 0.62), k);
-        hrX = U.lerp(hrX, 0.14, k); hrY = U.lerp(hrY, reachY(shoulderY, 0.62), k);
+        hlX = U.lerp(hlX, shL + 0.13, k); hlY = U.lerp(hlY, reachY(shoulderY, 0.60), k);
+        hrX = U.lerp(hrX, shR + 0.15, k); hrY = U.lerp(hrY, reachY(shoulderY, 0.60), k);
+        armTuck = 0.55 * k;
+        armRoll = 0.10 * k;
+        hipY += 0.07 * k;
         shoulderY += 0.07 * k;
-        torsoLean = -0.03 * k;
+        torsoLean = 0.04 * k;
+
+      } else if (this.action === A.METER && this.shotType === 'layup') {
+        /* The rise on a layup, held on the meter.
+         *
+         * This used to be the jump-shot pose: a driving finish squared up in
+         * mid-air, both hands over the head, feet together — the one shot in
+         * basketball that is never taken that way. A layup is asymmetric all
+         * the way through, and the shape reads before you have named it: the
+         * inside knee drives up hard, the trailing leg extends behind, the
+         * ball goes up on one side of the body away from the defender, the
+         * off hand comes off the ball, and the whole thing leans in toward
+         * the rim rather than sitting back off it. */
+        const v = U.clamp01(this.meter.value);
+        const rise = U.ease.outCubic(v);
+        const drive = this.driving ? 1 : 0.72;
+
+        // Knee drive and trailing leg — the engine of the finish.
+        flX = -BONE.hipW + 0.10 * rise;
+        flY = -0.46 * drive * rise;
+        frX = BONE.hipW - 0.16 * rise;
+        frY = 0.05 + 0.16 * rise;
+
+        // Ball up on the shooting side, off hand peeling away as it goes.
+        hrX = shR + U.lerp(0.10, 0.20, rise);
+        hrY = U.lerp(reachY(shoulderY, 0.88), upY(shoulderY, 0.93), rise);
+        hlX = shL + U.lerp(0.12, 0.00, rise);
+        hlY = U.lerp(reachY(shoulderY, 0.92), reachY(shoulderY, 0.17), rise);
+        armRoll = 0.24 * (1 - rise);      // two hands on it early, one late
+
+        torsoLean = U.lerp(0.16, 0.03, rise);
+        hipLean = torsoLean * 0.4;
+        // Extend through the finish. The hip comes with it: moving the
+        // shoulder alone does not raise the body, it lengthens the spine, and
+        // draw() places all three spine bones along the hip-to-shoulder line so
+        // the trunk mesh stretches by exactly the difference.
+        hipY -= 0.05 * rise; shoulderY -= 0.05 * rise;
+
+      } else if (this.action === A.METER && this.shotType === 'dunk') {
+        /* The gather on a dunk, held on the meter.
+         *
+         * Without this branch a held dunk fell through to the jump shot below
+         * and animated as one: squared up, both hands cupping a ball in front
+         * of the forehead, feet together — a free throw taken while flying at
+         * the rim. Nobody has ever dunked that way.
+         *
+         * A dunk gathers like a layup and finishes like nothing else. The
+         * shape here is the layup's engine — inside knee driven up hard, the
+         * trailing leg stretched out behind — with the ball going somewhere
+         * completely different: not up in front of the face to be released,
+         * but swinging back and out on the strong side, away from the body, on
+         * its way behind the head. The off hand lets go early and opens out
+         * for balance, which is the first half of the splay the flush finishes.
+         */
+        const v = U.clamp01(this.meter.value);
+        const rise = U.ease.outCubic(v);
+        const drive = this.driving ? 1 : 0.78;
+
+        flX = -BONE.hipW + 0.12 * rise;
+        flY = -0.50 * drive * rise;
+        frX = BONE.hipW - 0.18 * rise;
+        frY = 0.05 + 0.20 * rise;
+
+        // The ball swings back and up, not forward and up. hrX going NEGATIVE
+        // past the shoulder is the wind-up starting: the hand is travelling
+        // behind the body while it climbs.
+        /* Both low targets are expressed as a fraction of ARM REACH rather
+         * than as an offset from the hip. The shoulder sits two thirds of a
+         * unit above the hip and the arm only reaches six tenths, so "hand at
+         * hip height" is a target the arm cannot get to — it comes back
+         * clamped and draws straight. reachY says the same thing in the one
+         * unit the limb actually has. */
+        /* The hand stays out in front of the shoulder the whole way up. Let
+         * the fore/aft offset fall to nothing while the hand is climbing past
+         * shoulder height and the wrist passes straight THROUGH the shoulder
+         * joint, which the solver reports as a fold tighter than the arm can
+         * make — the ball has to swing around the joint, not through it. The
+         * wind-up behind the head is the flush's job, and it picks up from
+         * exactly where this leaves off. */
+        hrX = shR + U.lerp(0.14, 0.10, rise);
+        hrY = U.lerp(reachY(shoulderY, 0.86), upY(shoulderY, 0.57), rise);
+        hrSide = -0.02 - 0.05 * rise;
+        // Off hand comes off the ball and opens away from the body.
+        hlX = shL + U.lerp(0.12, 0.08, rise);
+        hlY = U.lerp(reachY(shoulderY, 0.90), reachY(shoulderY, 0.37), rise);
+        hlSide = U.lerp(0.02, 0.14, rise);
+        armRoll = 0.26 * (1 - rise);      // two hands on it early, one late
+        armTuck = 0;
+
+        torsoLean = U.lerp(0.18, 0.02, rise);
+        hipLean = torsoLean * 0.4;
+        // Extend through the takeoff — hip and shoulder together, so the body
+        // rises instead of the spine growing. See the layup branch above.
+        hipY -= 0.05 * rise; shoulderY -= 0.05 * rise;
 
       } else if (this.action === A.METER) {
+        /* The jump shot, in the two beats a jump shot actually has.
+         *
+         * It used to be one straight sweep from the waist to full extension
+         * with the guide hand trailing a third of an arm's length below the
+         * shooting hand the entire way. Two hands on one ball cannot be a foot
+         * and a half apart, and a figure holding them that way reads as
+         * somebody whose shoulder has come out of its socket.
+         *
+         * SET: both hands carry the ball up together to a real set point —
+         * wrist just above the shoulder, ball out in front of the forehead,
+         * shooting elbow bent under it and the guide hand on its side.
+         * EXTEND: only then does the shooting arm drive up, and the guide hand
+         * comes off the ball and stays where it was rather than following.
+         *
+         * The offsets are the two arm bones, not taste: with a 1.45HU upper arm
+         * and a 1.30HU forearm, a wrist 0.24 in front of the shoulder and 0.16
+         * above it puts the elbow 0.31 forward and 0.14 down — under the ball,
+         * forearm all but vertical, which is the whole shape. Nothing here
+         * passes the arm's reach; a target the IK has to clamp comes out as a
+         * locked, poker-straight arm. */
         const v = U.clamp01(this.meter.value);
-        // Higher release point, arm driven closer to full lockout, a
-        // visible forward head/shoulder reach at the top of the motion.
-        hrX = U.lerp(0.14, 0.24, v);
-        hrY = U.lerp(reachY(shoulderY, 0.64), shoulderY - 0.72, v);
-        hlX = U.lerp(-0.14, 0.10, v);
-        hlY = U.lerp(reachY(shoulderY, 0.64), shoulderY - 0.36, v);
+        const set = U.ease.outCubic(U.clamp01(v / 0.55));
+        const ext = U.ease.inOutSine(U.clamp01((v - 0.55) / 0.45));
+
+        /* The ball rides ABOVE the brow, not across the eyes.
+         *
+         * The set used to finish with the hands 0.16 above the shoulder, which
+         * on this figure is mouth height — so the gather played with two hands
+         * over the face and the head vanished behind them. In the reference
+         * the ball is at the forehead by the top of the set and clears the
+         * head on the way up, which is what leaves a shooter able to see the
+         * rim they are shooting at.
+         *
+         * Both hands rise by the same 0.14, so the gap between them — which
+         * has to stay inside one ball, and the suite checks it — is a pure
+         * translation and cannot change. */
+        const setRY = U.lerp(reachY(shoulderY, 0.60), upY(shoulderY, 0.50), set);
+        const setLY = U.lerp(reachY(shoulderY, 0.60), upY(shoulderY, 0.45), set);
+        /* The ball ARCS up to the set point; it does not travel there in a
+         * straight line.
+         *
+         * Both hands start well below the shoulder and finish well above it, so
+         * halfway up they are level with it — and a wrist that passes its own
+         * shoulder at the shoulder's own fore/aft is a wrist passing THROUGH
+         * the joint. Measured, both elbows folded to 142 degrees a tenth of the
+         * way into the meter and unfolded again over the next three tenths,
+         * which draws as the arms collapsing into the chest and springing back
+         * out — a shrug in the middle of a jump shot. The dunk's wind-up
+         * already carries a note about this exact failure; the jumper had it
+         * too and nothing was measuring the fold.
+         *
+         * The bulge is a half-sine, so it is largest at the halfway point where
+         * the hands have the least room and exactly zero at both ends, which
+         * leaves the carry position and the set point untouched. */
+        const swing = Math.sin(set * Math.PI) * 0.11;
+        const setRX = U.lerp(0.13, 0.24, set) + swing;
+        const setLX = U.lerp(0.13, 0.21, set) + swing;
+
+        hrX = shR + U.lerp(setRX, 0.15, ext);
+        hrY = U.lerp(setRY, upY(shoulderY, 0.87), ext);
+        /* The guide hand comes off the ball; it does not collapse onto the
+         * shoulder. These used to finish 0.17 in front and a third of a reach
+         * up, which puts the wrist 43% of an arm from its own shoulder — 141
+         * degrees of elbow flexion, inside the anatomical limit only because
+         * the limit is 150. At that fold the upper arm and forearm meshes sit
+         * inside each other and the whole arm draws as a smooth blue lobe with
+         * the hand appearing at the chin. Held out at about three fifths of a
+         * reach instead, which is an arm with an elbow in it. */
+        hlX = shL + U.lerp(setLX, 0.22, ext);
+        hlY = U.lerp(setLY, upY(shoulderY, 0.50), ext);
+
+        /* Two hands on one ball — and a ball is a measured object, not a matter
+         * of taste.
+         *
+         * This pose used to close the hands with `armTuck`, borrowed from the
+         * dribble carry. draw() applies the tuck HARDER to the wrists than to
+         * the elbows, which is right for a carry (wrists together on the ball
+         * at the waist, elbows still out either side) and exactly backwards for
+         * a shot, where the hands have to stay a ball apart while the shooting
+         * elbow comes in underneath. Measured on the shipped build, the two
+         * wrists closed to 0.19 of a ball's width at the top of the set: the
+         * hands were inside each other and inside the ball, the guide hand had
+         * crossed the nose, and the guide forearm was drawn 12% over length
+         * getting there. That is the crumpled mass by the face.
+         *
+         * `armRoll` was making it worse from the other side. It is a rotation
+         * about SHOULDER height, so it swings a hanging arm out but a raised
+         * one IN — and a jump shot is the pose where both hands are highest.
+         *
+         * So the shot names where its hands go instead of nudging them, and it
+         * names it in ball radii. The two hands are not symmetric about the
+         * ball: the shooting hand slides UNDER it (near its centre-line) while
+         * the guide hand stays on the SIDE of it, a radius away. Before the set
+         * they are both on the sides, carrying it up, so they start a full ball
+         * apart and close to about half of one. */
+        const ballR = C.BALL_RADIUS / this.bodyScale;
+        const ballC = BONE.shoulderW * U.lerp(0.06, 0.30, set);
+        const shootOff = ballR * U.lerp(0.92, 0.10, set);
+        const guideOff = ballR * U.lerp(0.92, 0.98, set);
+        // Through the extension the ball leaves: the shooting hand finishes up
+        // over its own shoulder, the guide hand falls back under its own.
+        hlLat = U.lerp(ballC - guideOff, -BONE.shoulderW * 0.62, ext);
+        hrLat = U.lerp(ballC + shootOff, BONE.shoulderW * 0.86, ext);
+        /* The shooting elbow travels under the ball while the guide elbow stays
+         * out on its own side. That is the one shape a tuck cannot make, since
+         * a tuck moves both arms by the same fraction. */
+        elLatL = -BONE.shoulderW * U.lerp(0.88, 1.02, ext);
+        elLatR = BONE.shoulderW * U.lerp(U.lerp(0.95, 0.52, set), 0.86, ext);
+        armTuck = 0;
+        armRoll = 0;
+
         if (this.jumping) {
-          flX = -0.04; frX = 0.04;
+          flX = -BONE.hipW + 0.02; frX = BONE.hipW + 0.02;
           flY = frY = U.lerp(-0.12, 0.06, v);
         }
-        torsoLean = U.lerp(0.02, -0.07, v);
+        // Close to upright. The old backward lean at the top of every shot was
+        // a fadeaway, and a fadeaway is not the default jump shot.
+        torsoLean = U.lerp(0.04, -0.02, v);
 
       } else if (this.action === A.RELEASE) {
+        /* The follow-through, and it HOLDS.
+         *
+         * The old one curled the whole hand back down a third of the way to
+         * the shoulder as it finished, which is an arm collapsing, not a
+         * follow-through. A shooter's arm stays where the ball left it and
+         * reaches out after it; what comes down is the wrist alone.
+         *
+         * There is no wrist joint in this skeleton — the hand carries on in
+         * whatever direction the forearm was already pointing — so the snap is
+         * drawn by pushing the wrist forward at height, which tips the whole
+         * forearm out over the shot. That is as close to fingers-in-the-cookie
+         * -jar as a two-bone arm gets, and it is the right shape from every
+         * angle the camera ever sees it from. */
         const k = U.clamp01(this.actionT / 0.30);
-        // Bigger wrist-snap: the hand keeps climbing past the peak, then
-        // curls forward/down through the follow-through instead of just
-        // holding still — the signature "cookie jar" finish.
-        const snap = k < 0.35 ? U.ease.outCubic(k / 0.35) : 1;
-        const curl = k > 0.35 ? U.ease.inOutSine((k - 0.35) / 0.65) : 0;
-        hrX = U.lerp(0.24, 0.14, curl); hrY = shoulderY - 0.68 - snap * 0.10 + curl * 0.12;
-        hlX = -0.04; hlY = shoulderY - 0.44;
+        const snap = U.ease.outCubic(U.clamp01(k / 0.30));
+        const relax = k > 0.45 ? U.ease.inOutSine((k - 0.45) / 0.55) : 0;
+
+        /* Every one of these is inside the arm's reach on purpose. The rig
+         * clamps a target it cannot get to, and a clamped arm comes out
+         * locked poker-straight with the elbow gone — which is exactly the
+         * thing this whole change is about. Full extension here is nine
+         * tenths of the way out, not ten. */
+        hrX = shR + U.lerp(0.15, 0.24, snap) - relax * 0.03;
+        hrY = upY(shoulderY, U.lerp(0.87, 0.82, snap) + relax * 0.03);
+        /* The guide hand comes OFF the ball, outboard and down a little.
+         *
+         * It used to be driven the other way. `side` is measured along the
+         * player's right, so a POSITIVE value on the LEFT hand pulls it inboard
+         * — and this ran it from 0.08 to 0.15 through the follow-through, which
+         * is the guide hand travelling further across the body at exactly the
+         * moment it should be leaving. Worked through, it finished at a lateral
+         * of -0.010 on a shoulder sitting at -0.207: dead on the centreline,
+         * folded flat across the face. Every other shooting check passed,
+         * because they are all about the shooting hand.
+         *
+         * A real guide hand stays on its own side of the body. It comes off as
+         * the ball goes, falls back under its own shoulder, and drops toward
+         * the chest — it never crosses the nose.
+         *
+         * Driven by `snap` and not by `relax`: relax is the settle at the END
+         * of the follow-through and does not begin until nearly halfway, so on
+         * the old timing the guide hand stayed parked on a ball that had
+         * already gone for the first half of the release. It comes off with
+         * the shot. */
+        /* Picks up exactly where the extension left off and then falls, out in
+         * front, to about chest height — an arm at rather more than half its
+         * reach the whole way. It used to end at 0.12 of a reach above the
+         * shoulder and 0.21 in front, which is the wrist almost on the
+         * shoulder: the guide arm finished the shot folded flat with the hand
+         * back up beside the chin. */
+        hlX = shL + U.lerp(0.22, 0.30, snap);
+        hlY = U.lerp(upY(shoulderY, 0.50), reachY(shoulderY, 0.26), snap);
+        /* Laterally this starts EXACTLY where the extension left off — the same
+         * two numbers the jumper branch finishes on at ext = 1 — and then opens
+         * from there. The seam used to jump: the shot ended with the pair 1.19
+         * ball-widths apart and the follow-through opened at 1.65 on its first
+         * frame, which is both hands snapping sideways in a single tick. */
+        hlLat = -BONE.shoulderW * U.lerp(0.62, 0.88, snap);
+        hrLat = BONE.shoulderW * U.lerp(0.86, 0.92, snap);
+        elLatL = -BONE.shoulderW * U.lerp(1.02, 1.08, snap);
+        elLatR = BONE.shoulderW * U.lerp(0.86, 0.94, snap);
+        armTuck = 0;
+        armRoll = 0;
         // Toe point — the plant foot stretches down through extension.
-        flX = -0.06; frX = 0.06;
+        flX = -BONE.hipW; frX = BONE.hipW;
         flY = frY = this.jumping ? -0.09 - snap * 0.03 : U.lerp(-0.05, 0.01, k);
-        torsoLean = -0.07 - snap * 0.03;
+        torsoLean = -0.02 - snap * 0.02;
 
       } else if (this.action === A.LAYUP) {
+        /* The finish, from the instant the meter is let go.
+         *
+         * The rise above already carried the body up; this picks the figure up
+         * exactly where that left it rather than starting a new pose from
+         * nothing, which is what made the old layup snap. Three beats: the
+         * ball leaves the hand off the fingertips (the wrist flips at 0.22s,
+         * which is when _fireBall runs), the arm hangs at full extension for a
+         * moment, and then the knee comes down and the body squares up to
+         * land. */
         const k = U.clamp01(this.actionT / 0.5);
         const kneeUp = this.driving ? 1 : 0.6;
+        const flip = U.clamp01(this.actionT / 0.22);      // fingertips let go
+        const down = U.clamp01((this.actionT - 0.26) / 0.34);  // gather to land
 
         if (this.layupStyle === 'euro') {
           // Two lateral steps crossing the body before the gather — bigger
@@ -1630,8 +3365,12 @@
           flY = -0.13 * (1 - k);
           frX = U.lerp(0.28, -0.14, step1) + step2 * 0.38;
           frY = 0.07 + step2 * 0.15;
-          hrX = U.lerp(0.10, 0.34, k); hrY = U.lerp(hipY + 0.24, shoulderY - 0.66, k);
-          hlX = -0.24; hlY = shoulderY - 0.08;
+          // 0.56, not 0.66: the arm reaches 0.60 and the IK clamps anything
+          // past it, which draws the finish with a locked, elbowless arm — the
+          // same fault the jump shot's own comments warn about. Unchanged in
+          // shape, just brought inside what the limb can actually do.
+          hrX = shR + U.lerp(-0.02, 0.16, k); hrY = U.lerp(reachY(shoulderY, 0.80), upY(shoulderY, 0.93), k);
+          hlX = shL + 0.02; hlY = upY(shoulderY, 0.13);
           torsoLean = 0.08 - k * 0.13 + Math.sin(k * Math.PI) * 0.08;
           hipLean = torsoLean * 0.5;
 
@@ -1642,36 +3381,169 @@
           const rise = U.clamp01((k - 0.4) / 0.6);
           flX = U.lerp(-0.18, -0.09, gather); flY = -0.06 * gather - rise * 0.26;
           frX = U.lerp(0.22, 0.09, gather); frY = -0.06 * gather - rise * 0.26;
-          hrX = U.lerp(0.14, 0.32, k); hrY = U.lerp(hipY + 0.20, shoulderY - 0.68, k);
-          hlX = -0.18; hlY = shoulderY - 0.10;
+          hrX = shR + U.lerp(0.02, 0.14, k); hrY = U.lerp(reachY(shoulderY, 0.85), upY(shoulderY, 0.93), k);
+          hlX = shL + 0.06; hlY = upY(shoulderY, 0.17);
           torsoLean = 0.05 - k * 0.12;
 
         } else {
-          // Standard: a much bigger knee drive (the classic finishing
-          // silhouette) and a transition from two-hand protection to a
-          // one-hand extension right at the rim.
-          const oneHand = U.clamp01((k - 0.7) / 0.3);
-          flX = -0.03; flY = -0.42 * kneeUp * (1 - k * 0.25);
-          frX = 0.24; frY = 0.11 + k * 0.11;
-          hrX = U.lerp(0.16, 0.34, k); hrY = U.lerp(hipY + 0.22, shoulderY - 0.68, k);
-          hlX = U.lerp(-0.20, -0.30, oneHand); hlY = U.lerp(shoulderY - 0.12, shoulderY - 0.30, oneHand);
-          torsoLean = 0.12 - k * 0.17;
+          /* The driving finish. Continues the rise: knee still up, trailing
+           * leg still extended, ball laid up off the fingers — then the legs
+           * come back under the body to land. */
+          flX = -BONE.hipW + 0.10 - 0.10 * down;
+          flY = -0.46 * kneeUp * (1 - down * 0.92);
+          frX = BONE.hipW - 0.16 + 0.16 * down;
+          frY = (0.21 - 0.21 * down) * (1 - down * 0.5);
+
+          // Full extension, then the wrist rolls over the ball and the arm
+          // rides back down as the body comes out of the air.
+          const reach = upY(shoulderY, 0.93 + 0.03 * flip);
+          hrX = shR + U.lerp(0.20, 0.26, flip) - 0.20 * down;
+          hrY = U.lerp(reach, reachY(shoulderY, 0.70), down);
+          hlX = shL + 0.00 + 0.10 * down;
+          hlY = U.lerp(reachY(shoulderY, 0.17), reachY(shoulderY, 0.80), down);
+          armRoll = 0;
+
+          torsoLean = 0.03 + 0.06 * down;
+          hipLean = torsoLean * 0.4;
         }
 
       } else if (this.action === A.DUNK) {
-        const k = U.clamp01(this.actionT / 0.45);
-        const cock = k < 0.55 ? U.ease.outCubic(k / 0.55) : 1;
-        const thrust = k > 0.55 ? U.ease.inCubic((k - 0.55) / 0.45) : 0;
-        // A much bigger wind-up (the ball goes way back and high) and a full
-        // overhead extension on the thrust, off-arm driving up too for a
-        // real two-arm power slam silhouette instead of one hand poking up.
-        flX = -0.13; flY = -0.40 * (1 - thrust * 0.5);
-        frX = 0.13; frY = -0.40 * (1 - thrust * 0.5);
-        hrX = U.lerp(0.16, 0.04, thrust);
-        hrY = U.lerp(shoulderY - 0.22 - cock * 0.46, shoulderY - 0.95 + thrust * 0.62, thrust);
-        hlX = U.lerp(0.06, -0.10, thrust);
-        hlY = shoulderY - 0.58 - cock * 0.26 - thrust * 0.30;
-        torsoLean = -0.14 - cock * 0.06 - thrust * 0.16;
+        /* The flush, built to the reference: ONE hand, cocked back high behind
+         * the head, the off arm thrown wide for balance, legs trailing.
+         *
+         * The old shape was a symmetric two-arm power slam, and it was broken
+         * two different ways. It asked for hands 0.68 and 1.14 above the
+         * shoulder against an arm that reaches 0.60 — so the IK clamped both,
+         * and what actually drew was a figure with two rigid straight arms and
+         * no elbows. And a two-handed overhead slam fights the centreline
+         * clamp in draw(), because both hands want the middle of the rim.
+         *
+         * One hand fixes both. Nothing here passes DUNK_REACH, so the arm keeps
+         * a real elbow all the way through; and the two hands are on opposite
+         * sides of the body by design, which is what the lateral axis is for
+         * and what gives the pose its silhouette. The off arm is not decoration
+         * — a dunker's free arm swings out precisely because the other one is
+         * behind their head, and it is most of what reads as effort.
+         *
+         * Three beats: COCK the ball back and up, FLUSH it down through the
+         * ring, then let the arm come off the rim and the legs down to LAND. */
+        const k = U.clamp01(this.actionT / 0.55);
+        const cock = U.ease.outCubic(U.clamp01(k / 0.42));
+        const flush = U.ease.inCubic(U.clamp01((k - 0.42) / 0.28));
+        const land = U.ease.inOutSine(U.clamp01((k - 0.70) / 0.30));
+
+        /* Legs. Tucked and split under the body on the way up — a dunker's
+         * knees come up and apart, they do not hang straight down — then
+         * dropping back underneath to take the landing. */
+        flX = -BONE.hipW + 0.10 - 0.10 * land;
+        flY = (-0.44 - cock * 0.10) * (1 - land * 0.94);
+        frX = BONE.hipW - 0.14 + 0.14 * land;
+        frY = (-0.16 + flush * 0.10) * (1 - land * 0.9) + land * 0.04;
+
+        /* The dunking hand. Back BEHIND the shoulder through the cock (hrX
+         * negative of shR), climbing to just under full reach, then driving
+         * forward and down through the ring on the flush. */
+        const cockY = upY(shoulderY, U.lerp(0.50, DUNK_REACH, cock));
+        const flushY = upY(shoulderY, DUNK_REACH - 0.07);
+        // Starts where the rise left the hand (+0.10, out in front), swings
+        // back behind the shoulder through the cock, then drives forward over
+        // the ring. Continuous with the rise, so letting go of the meter does
+        // not teleport the ball across the body.
+        const cockX = U.lerp(0.10, -0.12, cock);
+        hrX = shR + U.lerp(cockX, 0.16, flush) - land * 0.14;
+        hrY = U.lerp(cockY, flushY, flush) + land * 0.30;
+        hrSide = U.lerp(-0.07, -0.02, flush);
+        // Palm rolls over the top of the ball as it goes through the rim.
+        hrTwist = U.lerp(0.85, 1.55, cock) - flush * 0.45;
+
+        /* ---- the cradle: the same one-hander, taken the long way round ----
+         *
+         * Instead of cocking straight back behind the head, the ball swings OUT
+         * and away from the body on a wide arc and comes over the top from
+         * outside the shoulder. It needs room and a run at it, which is exactly
+         * when it gets picked, and it is the one that reads from the cheap
+         * seats because the ball travels furthest.
+         *
+         * Placed laterally rather than pushed out through hrX — the same
+         * distinction the off arm's comment below makes, and the same reason:
+         * hrX is FORWARD, and forward is not where this goes. */
+        if (this.dunkStyle === 'cradle') {
+          const swing = Math.sin(cock * Math.PI);
+          hrX = shR + U.lerp(0.16, 0.18, flush) - land * 0.14;
+          hrY = U.lerp(upY(shoulderY, U.lerp(0.42, DUNK_REACH, cock)), flushY, flush) + land * 0.30;
+          hrLat = BONE.shoulderW * (1.0 + swing * 0.62) * (1 - flush * 0.42);
+          elLatR = BONE.shoulderW * (0.92 + swing * 0.40) * (1 - flush * 0.30);
+          hrTwist = U.lerp(0.85, 1.35, cock) - flush * 0.35;
+        }
+
+        /* The off arm, thrown wide. `side` is the only axis that can do this —
+         * pushing it out through hlX would come out as forward reach instead. */
+        hlX = shL + U.lerp(0.08, 0.12, cock) + land * 0.06;
+        /* Out to the side and a little below the shoulder, not raised
+         * overhead. In the reference the free arm is a counterweight to the
+         * one behind the head, and held roughly level is what puts the two
+         * hands most of a unit apart — the silhouette the eye actually reads.
+         *
+         * It also has to stay clear of the shoulder in the SOLVER's plane. A
+         * two-bone arm cannot fold its wrist closer to the shoulder than the
+         * difference between its bones, so an off hand tucked into the armpit
+         * comes back clamped just as surely as one reaching too far — the
+         * same fault at the other end of the range. The lateral splay is what
+         * carries this arm out; the plane only has to keep it reachable. */
+        hlY = U.lerp(reachY(shoulderY, 0.43), reachY(shoulderY, 0.23), cock) + land * 0.24;
+        /* `side` is measured along the player's RIGHT, so a positive value on
+         * the LEFT hand pulls it ACROSS the body. This ran to +0.30 — half a
+         * shoulder width past the centreline — and keepInboard() then pinned
+         * the hand on the midline for the whole flush. The free arm was folded
+         * across the chest rather than held out as the counterweight described
+         * above, and the forearm was drawn up to 14% over its own length
+         * getting there. Placed outright now, out on its own side. */
+        hlLat = -BONE.shoulderW * U.lerp(1.06, 1.34, cock) * (1 - land * 0.42);
+        elLatL = -BONE.shoulderW * U.lerp(1.02, 1.16, cock) * (1 - land * 0.30);
+        armRoll = 0;
+        armTuck = 0;
+
+        /* ---- the power dunk: both hands, straight up the middle ----------
+         *
+         * The note at the top of this branch says a two-handed slam "fights the
+         * centreline clamp in draw(), because both hands want the middle of the
+         * rim", and that was true when it was written: the only lateral axis
+         * was a nudge, and keepInboard() pinned anything aimed at the middle.
+         * Absolute placement is what makes it possible now — two hands sitting
+         * a ball's width apart over the ring is the same problem as two hands
+         * on a ball at the set point of a jump shot, and the same machinery
+         * answers it.
+         *
+         * Gets picked when somebody is at the rim or there is only just enough
+         * height, which is when you take it up where nobody can reach it. It is
+         * also the shape that does not need full extension to work, so it stays
+         * comfortably inside the arm at a headroom the other two would clamp. */
+        if (this.dunkStyle === 'power') {
+          const ball = (C.BALL_RADIUS * 2) / this.bodyScale;
+          const up2 = upY(shoulderY, U.lerp(0.46, DUNK_REACH - 0.05, cock));
+          const down = upY(shoulderY, DUNK_REACH - 0.14);
+          // Both hands take the same path — the ball is between them and stays
+          // between them, so the pair moves as one and cannot come apart.
+          const fwd = U.lerp(U.lerp(0.02, 0.06, cock), 0.19, flush) - land * 0.12;
+          const ht = U.lerp(up2, down, flush) + land * 0.34;
+          hrX = shR + fwd; hrY = ht;
+          hlX = shL + fwd; hlY = ht;
+          hrLat = ball * 0.5;
+          hlLat = -ball * 0.5;
+          elLatR = BONE.shoulderW * 0.86;
+          elLatL = -BONE.shoulderW * 0.86;
+          hrTwist = U.lerp(0.85, 1.20, cock) - flush * 0.30;
+          hlTwist = hrTwist;
+          // Knees together under the body — a power dunk is squared up, not
+          // the splayed, trailing-leg shape a one-hander throws.
+          flX = -BONE.hipW + 0.04 - 0.04 * land;
+          frX = BONE.hipW + 0.04 - 0.04 * land;
+          flY = frY = (-0.34 - cock * 0.08) * (1 - land * 0.92);
+        }
+
+        // Chest opens up and back through the cock, then pitches over the rim.
+        torsoLean = U.lerp(-0.12, 0.10, flush) - land * 0.06;
+        hipLean = torsoLean * 0.35;
 
       } else if (this.action === A.BLOCK) {
         // A real contest has phases, not one held shape: a quick athletic
@@ -1699,13 +3571,15 @@
         const legTuck = landed
           ? 0.05 + absorb * 0.16
           : U.lerp(0.24, 0.15, rise) + load * 0.05;
-        flX = -0.09 - load * 0.03; flY = -legTuck;
-        frX = 0.09 + load * 0.03; frY = -legTuck;
+        flX = -BONE.hipW + 0.01 - load * 0.03; flY = -legTuck;
+        frX = BONE.hipW + 0.01 + load * 0.03; frY = -legTuck;
 
-        const reachY = shoulderY - 0.10 - rise * 0.90 - load * 0.08 + absorb * 0.55;
-        const reachX = 0.13 - rise * 0.06;
-        hrX = reachX + swat * 0.24; hrY = reachY + swat * 0.34;
-        hlX = -reachX - swat * 0.05; hlY = reachY + swat * 0.10;
+        const reachTop = upY(shoulderY, 0.17 + rise * 0.76 + load * 0.13) + absorb * 0.55;
+        // Straight overhead as the arms extend, so a contest is a wall rather
+        // than one hand in front of the face and one behind the head.
+        const reachX = 0.04 - rise * 0.03;
+        hrX = shR + reachX + swat * 0.26; hrY = reachTop + swat * 0.34;
+        hlX = shL + reachX - swat * 0.05; hlY = reachTop + swat * 0.10;
 
         torsoLean = 0.05 + load * 0.09 + rise * 0.08 - swat * 0.08 - absorb * 0.10;
 
@@ -1719,10 +3593,10 @@
         const lunge = U.ease.outCubic(Math.min(1, k * 1.9));
         const recover = k > 0.75 ? (k - 0.75) / 0.25 : 0;
         const amt = lunge * (1 - recover * 0.4);
-        hrX = 0.14 + amt * 0.40; hrY = hipY + 0.34 - amt * 0.18;
-        hlX = -0.24 - amt * 0.06; hlY = hipY + 0.18 + amt * 0.05;
-        flX = -0.07 - amt * 0.02; flY = -amt * 0.03;
-        frX = 0.14 + amt * 0.16; frY = 0.02;
+        hrX = shR + 0.02 + amt * 0.42; hrY = hipY + 0.34 - amt * 0.18;
+        hlX = shL - 0.04 - amt * 0.06; hlY = hipY + 0.18 + amt * 0.05;
+        flX = -BONE.hipW + 0.03 - amt * 0.02; flY = -amt * 0.03;
+        frX = BONE.hipW + 0.04 + amt * 0.16; frY = 0.02;
         torsoLean = 0.20 * amt;
 
       }
@@ -1745,23 +3619,186 @@
       p.hipY = hipY;
       p.shoulderY = shoulderY;
       p.armRoll = armRoll;
-      p.headY = shoulderY - BONE.neck - this.armRaise * 0.05;
+      p.armTuck = armTuck;
+      /* A neck is a bone, not a spring. This used to subtract armRaise * 0.05
+       * as well, to lift the head a little when the arms went up — but headY is
+       * the only thing that says where the head IS, so the whole of that fudge
+       * came out of the neck: measured, it ran 0.223 to 0.273 pose units, a 22%
+       * stretch, on every shot, dunk and contest. It also fed the model scale
+       * (see draw()), so the figure grew as well. If the head should rise on a
+       * shot, the spine should extend and carry it. */
+      p.headY = shoulderY - BONE.neck;
       p.torsoLean = torsoLean;
       p.hipLean = hipLean == null ? torsoLean : hipLean;
+      p.footL.pitch = pitchL; p.footL.side = sideL;
+      p.footR.pitch = pitchR; p.footR.side = sideR;
+      p.handL.side = hlSide; p.handR.side = hrSide;
+      p.handL.lat = hlLat; p.handR.lat = hrLat;
+      p.handL.elbowLat = elLatL; p.handR.elbowLat = elLatR;
+      p.handL.twist = hlTwist; p.handR.twist = hrTwist;
+
+      /* Nothing may ask an arm for more than the arm has.
+       *
+       * A target past full reach comes back from solveIK2 CLAMPED: the hand
+       * stops short, the elbow vanishes, and the limb draws as a rigid pole
+       * pointing at somewhere it never got to. Every branch above was supposed
+       * to stay inside reach by hand-tuning, and most do — but the ones written
+       * as "hand at hip height" cannot, by construction, because this figure's
+       * torso (0.626) is LONGER than its arm (0.611), so the hip is already out
+       * of reach of the shoulder before any offset is added. Measured, the
+       * hesitation move asked for 185% of the arm, the dribble moves and the
+       * steal for 111-145%, on this model and on the one the game shipped with.
+       *
+       * Capping centrally rather than per branch is deliberate, and is the same
+       * argument as the keep() clamp in draw(): a limit every pose has to
+       * remember is a limit the next pose forgets. Direction is preserved, so a
+       * capped pose still reaches the way it meant to, just not through its own
+       * elbow.
+       *
+       * The cap is on the THREE-dimensional target. The solver only ever sees a
+       * flat plane, but draw() adds a lateral offset afterwards, so a hand can
+       * be inside reach in-plane and outside it in the round — which is exactly
+       * how a pose passes an in-plane clamp check and still draws straight. */
+      const armReach = (BONE.upperArm + BONE.forearm) * ARM_CAP;
+      /* An arm has a shortest length as well as a longest one, and it is set by
+       * the elbow rather than by the two bones: at full flexion the forearm
+       * stops against the biceps, not against the upper arm's far end. A target
+       * inside that is a pose asking for an arm folded flat — the euro-step
+       * layup asked for 0.062 against a bone-difference minimum of 0.073 and
+       * an anatomical one of 0.173 — and what it draws is the two limb meshes
+       * inside each other, one smooth lobe with no elbow anywhere in it. */
+      const armFold = fold(BONE.upperArm, BONE.forearm, ELBOW_FLEX_MAX);
+      const capHand = (hx, hy, shx, lateral) => {
+        const dx = hx - shx, dy = hy - shoulderY;
+        const d = Math.hypot(dx, dy, lateral);
+        if (d < 1e-6) return [shx, shoulderY + armFold];
+        if (d > armReach) {
+          // Pull straight back along the line to the shoulder. The lateral part
+          // is fixed by draw(), so the plane components absorb the whole excess.
+          const flat = Math.hypot(dx, dy);
+          const room = Math.sqrt(Math.max(0, armReach * armReach - lateral * lateral));
+          const s = flat > 1e-6 ? Math.min(1, room / flat) : 0;
+          return [shx + dx * s, shoulderY + dy * s];
+        }
+        if (d < armFold) {
+          /* Same shape as the branch above, and for the same reason: the
+           * lateral part is fixed by draw() and cannot be scaled, so the plane
+           * components have to make up the whole of the difference. Scaling all
+           * three (which is what this used to do) leaves the result short of
+           * the fold by exactly the lateral it ignored — measured on the dunk's
+           * rise, a request 4% inside the limit came out of the cap still 4%
+           * inside it. If the lateral alone already clears the fold there is
+           * nothing left for the plane to do. */
+          const flat = Math.hypot(dx, dy);
+          const room = Math.sqrt(Math.max(0, armFold * armFold - lateral * lateral));
+          if (flat < 1e-6) return [shx + room, shoulderY];
+          const s = room / flat;
+          return [shx + dx * s, shoulderY + dy * s];
+        }
+        return null;
+      };
+      // The wrist's lateral offset from its own shoulder. Through the same
+      // function draw() places it with, so the two cannot drift apart.
+      const latL = wristWidth(p, -1) + BONE.shoulderW;
+      const latR = wristWidth(p, 1) - BONE.shoulderW;
+      const cl = capHand(hlX, hlY, shL, latL);
+      if (cl) { hlX = cl[0]; hlY = cl[1]; }
+      const cr = capHand(hrX, hrY, shR, latR);
+      if (cr) { hrX = cr[0]; hrY = cr[1]; }
+
+      /* And the same for the legs, for the same reason.
+       *
+       * A leg runs out of length exactly as an arm does, and when it does the
+       * shin and thigh MESH is stretched to span the gap — setBone scales each
+       * bone along its own length to reach whatever the solver was asked for.
+       * Measured on the dunk's gather, the trailing leg was asked to reach 1.183
+       * against a leg of 0.915: 129%, drawn as a rigid stretched stilt with no
+       * knee in it, on every dunk in the game.
+       *
+       * The allowance is tighter than the arms' because a push-off genuinely
+       * does straighten the leg most of the way, and a knee that never quite
+       * extends reads as a crouch that will not finish. */
+      const legReach = (BONE.thigh + BONE.shin) * LEG_CAP;
+      const capFoot = (fx, fy, hx, lateral) => {
+        const dx = fx - hx, dy = fy - hipY;
+        const d = Math.hypot(dx, dy, lateral);
+        if (d <= legReach || d < 1e-6) return null;
+        const flat = Math.hypot(dx, dy);
+        const room = Math.sqrt(Math.max(0, legReach * legReach - lateral * lateral));
+        const s = flat > 1e-6 ? Math.min(1, room / flat) : 0;
+        return [hx + dx * s, hipY + dy * s];
+      };
+      // The ankle's lateral offset from its own hip, mirroring draw().
+      const legLat = BONE.stance - BONE.hipW;
+      const fl = capFoot(flX, flY, -BONE.hipW, -legLat + sideL);
+      if (fl) { flX = fl[0]; flY = fl[1]; }
+      const fr = capFoot(frX, frY, BONE.hipW, legLat + sideR);
+      if (fr) { frX = fr[0]; frY = fr[1]; }
+
+      /* Recorded AFTER the caps, so pose.footL/handL is the target the solver
+       * was actually given. Recording it before meant every check that compared
+       * the two was measuring the shortfall against a target that had already
+       * been withdrawn — it would have reported a clamp that no longer existed. */
       p.footL.x = flX; p.footL.y = flY;
       p.footR.x = frX; p.footR.y = frY;
+
       p.handL.x = hlX; p.handL.y = hlY;
       p.handR.x = hrX; p.handR.y = hrY;
 
-      solveIK2(-BONE.hipW, hipY, flX, flY, BONE.thigh, BONE.shin, 1, p.kneeL);
+      /* The bend flag picks which of the two mirror-image IK solutions to
+       * take, and BOTH legs take the same one, as do both arms.
+       *
+       * Mirroring it left-to-right is only correct in a flat front-on view,
+       * where left and right limbs really are mirrored across the screen. In
+       * this solver's plane the axis is the player's FORWARD, not their left,
+       * so a mirrored flag does not mirror anything — it points one knee where
+       * it belongs and puts the other one in backwards, which is the reversed,
+       * bird-legged knee and the elbow folded the wrong way across the chest.
+       *
+       * -1 for legs puts the knee ahead of the hip-to-ankle line and +1 for
+       * arms puts the elbow behind the shoulder-to-wrist line, which is the
+       * only way either joint goes. Being fore/aft, both are direction-aware
+       * for free: the same +1 that keeps a hanging elbow behind the arm also
+       * carries it out in front once the hand goes up over the head, exactly
+       * as a real elbow travels through a jump shot. */
+      solveIK2(-BONE.hipW, hipY, flX, flY, BONE.thigh, BONE.shin, -1, p.kneeL);
       solveIK2(BONE.hipW, hipY, frX, frY, BONE.thigh, BONE.shin, -1, p.kneeR);
-      solveIK2(-BONE.shoulderW, shoulderY, hlX, hlY, BONE.upperArm, BONE.forearm, -1, p.elbowL);
-      solveIK2(BONE.shoulderW, shoulderY, hrX, hrY, BONE.upperArm, BONE.forearm, 1, p.elbowR);
+      /* An arm solves in a plane and then draw() moves its joints sideways, so
+       * the lateral travel is length the DRAWN bone has to find from somewhere
+       * — and setBone finds it by stretching the mesh along the bone. Hand the
+       * solver the projected lengths instead: what is left of each bone once
+       * its own lateral travel is taken out. Then the drawn limb comes out at
+       * exactly the length the model was built with.
+       *
+       * Only for the poses that place their joints outright, because only they
+       * know the lateral before the solve runs. Everywhere else the offsets are
+       * a couple of hundredths and the roll — which is applied after, inside
+       * posePoint — would make the projection a guess rather than a fact.
+       *
+       * The three-dimensional reach cap above already guarantees these are
+       * reachable: if hypot(fwd, up, lat) fits inside upperArm + forearm, then
+       * the flat part fits inside the two projected lengths. */
+      const inPlane = (bone, dLat) => Math.sqrt(Math.max(bone * bone * 0.09, bone * bone - dLat * dLat));
+      let upL = BONE.upperArm, foreL = BONE.forearm;
+      let upR = BONE.upperArm, foreR = BONE.forearm;
+      if (hlLat != null && elLatL != null) {
+        upL = inPlane(BONE.upperArm, elLatL + BONE.shoulderW);
+        foreL = inPlane(BONE.forearm, hlLat - elLatL);
+      }
+      if (hrLat != null && elLatR != null) {
+        upR = inPlane(BONE.upperArm, elLatR - BONE.shoulderW);
+        foreR = inPlane(BONE.forearm, hrLat - elLatR);
+      }
+      solveIK2(-BONE.shoulderW, shoulderY, hlX, hlY, upL, foreL, 1, p.elbowL);
+      solveIK2(BONE.shoulderW, shoulderY, hrX, hrY, upR, foreR, 1, p.elbowR);
     }
   }
 
   const TMP_V = { x: 0, y: 0, z: 0 };
   const TMP_MOVE = { x: 0, y: 0, mag: 0 };
+  /* The handle's dimensions, refilled per call. Shared for the same reason
+   * everything else here is: a figure is always posed synchronously. */
+  const PATH_CTX = { lo: 0, hi: 0, lat: 0, dir: 1 };
 
   /* Scratch world points for draw(). Shared across every player because the
    * whole figure is submitted synchronously inside one draw() call. */
@@ -1812,6 +3849,56 @@
   }
 
   /**
+   * How far past the body's centreline a hand may come.
+   *
+   * Tuck and `side` both pull inward and nothing stopped them summing past
+   * zero, so with both spent on the same shot the left hand came out right of
+   * centre and the right hand left of it — forearms folded into an X across the
+   * face for the whole motion. It reads as broken because it IS anatomically
+   * impossible, not because the numbers were merely large. A small allowance
+   * past centre stays, since a real guide hand does cross slightly onto the
+   * ball.
+   */
+  function keepInboard(side, lat) {
+    const cross = BONE.shoulderW * 0.14;
+    return side < 0 ? Math.min(lat, cross) : Math.max(lat, -cross);
+  }
+
+  /**
+   * Where an arm's wrist sits across the body — the lateral width draw() hands
+   * to posePoint, in skeleton units, positive toward the player's right.
+   *
+   * This lived in three places (draw(), handAt() and the reach cap) and two of
+   * the three disagreed with the one that draws: handAt() dropped the per-hand
+   * lateral offset entirely, so the carried ball was placed beside the hand
+   * holding it, and the cap dropped it as well, so a hand could be capped
+   * against a lateral it was never going to be drawn at. A number that decides
+   * where a limb goes can only have one definition, or the checks measure a
+   * body the renderer never draws.
+   *
+   * @param {object} p a pose
+   * @param {number} side -1 for the left arm, +1 for the right
+   */
+  function wristWidth(p, side) {
+    const hand = side < 0 ? p.handL : p.handR;
+    if (hand.lat != null) return hand.lat;
+    return keepInboard(side,
+      side * BONE.shoulderW * SPLAY.wrist * (1 - p.armTuck) + (hand.side || 0));
+  }
+
+  /**
+   * The same for the elbow, which comes in about half as far as the hand does —
+   * what a real player does carrying a ball in two hands: wrists together,
+   * elbows still out either side of it.
+   */
+  function elbowWidth(p, side) {
+    const hand = side < 0 ? p.handL : p.handR;
+    if (hand.elbowLat != null) return hand.elbowLat;
+    return keepInboard(side,
+      side * BONE.shoulderW * SPLAY.elbow * (1 - p.armTuck * 0.45) + (hand.side || 0) * 0.42);
+  }
+
+  /**
    * Pose-space y for a hand hanging `frac` of the arm's full reach below the
    * shoulder. Pose space has -y as up, so a larger fraction hangs lower.
    *
@@ -1825,29 +3912,136 @@
   }
 
   /**
+   * A hand target ABOVE the shoulder, as a fraction of the arm's real reach.
+   *
+   * The mirror of reachY, and it exists for the same reason: an arm's length
+   * is a property of the MODEL, not a constant. Every overhead target used to
+   * be an absolute number in skeleton units — 0.56 above the shoulder for a
+   * dunk, 0.52 for a jump shot — tuned against the one figure the game
+   * shipped with, whose arm happened to reach 0.600. Swap in a model whose
+   * arm reaches 0.558 and every one of those numbers is asking for something
+   * past the end of the limb, so the IK clamps and the arm draws locked
+   * straight with no elbow: the shot, the dunk and the block all quietly stop
+   * being poses and become semaphore.
+   *
+   * Expressed as a fraction, the same pose means the same thing on any build.
+   * 1.0 is a fully locked-out arm, so real poses stay below it — a shooter's
+   * follow-through is not a hyperextension.
+   */
+  function upY(shoulderY, frac) {
+    return shoulderY - (BONE.upperArm + BONE.forearm) * frac;
+  }
+
+  /**
+   * The whole gait as one function of how fast the player is moving.
+   *
+   * update() needs it to advance the stride by ground covered and _updatePose
+   * needs it to place the feet. They have to agree exactly — a stride phase
+   * advanced against one stride length and spent against another is precisely
+   * the skate this is all built to avoid — so both read it from here.
+   *
+   * `stride` is the foot's travel each way from under the hip, and it is the
+   * number the leg's reach caps. A leg of length L with the hip carried at
+   * height h can only put a foot sqrt(L^2 - h^2) from directly below it;
+   * anything past that is a target the IK has to clamp, which stops the foot
+   * where it can reach instead of where it was asked for and puts the skate
+   * straight back. This build's leg is 0.90 with the hips at 0.86, which
+   * allows 0.28 — so the hips also sink as the stride opens up, exactly as a
+   * sprinter's do, and that is what buys the longer step.
+   */
+  /* The gait is a function of how fast the body is ACTUALLY travelling, in
+   * feet per second — not of how close the player is to their own top speed.
+   * Read as a fraction, a slow player at full tilt got the same stride as a
+   * fast one, and holding sprint just spun the legs faster over the same
+   * ground: at 18 ft/s the figure was taking seven and a half steps a second
+   * at two and a half feet a step. A basketball player at a full-court sprint
+   * takes about three and a half, at nearer five.
+   *
+   * GAIT_TOP is the speed the top of the curve is anchored to, and the
+   * exponent puts most of the lengthening early, because that is where it
+   * happens: the difference between a walk and a jog is nearly all stride,
+   * and the difference between a jog and a sprint is mostly cadence. */
+  const GAIT_TOP = 18;
+  function gaitOf(speed, out) {
+    const g = out || GAIT;
+    const e = Math.pow(U.clamp01(speed / GAIT_TOP), 0.6);
+    g.stride = U.lerp(0.16, 0.48, e);
+    // Fraction of the cycle each foot spends on the floor. Over a half the
+    // feet overlap (a walk's double support); under it they leave a float
+    // phase with neither foot down, which is what makes a run a run.
+    g.stance = U.lerp(0.60, 0.28, e);
+    g.lift = U.lerp(0.05, 0.26, e);
+    // A runner sinks. It is also what buys the room for the longer stride:
+    // the foot can only reach so far forward and still be on the floor, and
+    // that limit is set by how high the hip is carried.
+    g.crouch = U.lerp(0.005, 0.130, e);
+    return g;
+  }
+  const GAIT = { stride: 0, stance: 0, lift: 0, crouch: 0 };
+
+  /* How far the foot rolls over the toe at push-off, and how far the toe comes
+   * up to clear the floor on the way through and land heel-first. A foot held
+   * rigidly flat through all of this is the single clearest tell of an
+   * animation rig that stops at the ankle. */
+  const TOE_OFF = 0.60;
+  const HEEL_UP = 0.22;
+
+  /**
    * One foot's offset for a point in the stride cycle.
    *
-   * The first half is stance: the foot is on the floor and travels straight
-   * back, covering exactly the ground the body covers forward. The second half
-   * is swing: it lifts in an arc and returns to the front. Writing it this way
-   * rather than as a sine is the difference between running and skating.
+   * Stance is on the floor, travelling straight back, covering exactly the
+   * ground the body covers forward. Swing lifts in an arc and returns to the
+   * front. Writing it this way rather than as a sine is the difference between
+   * running and skating.
    *
-   * @param {object} out {x, y} in pose units; y is negative for lift
+   * The ankle also rises through the back of stance. That is not a lift off
+   * the floor: the foot is pivoting over a toe that stays planted, so the
+   * ankle has to climb by the toe's length times the sine of the roll for the
+   * contact point to stay exactly where it was put.
+   *
+   * @param {object} out {x, y, pitch}; y is negative for lift, pitch is
+   *        radians with the toe going down
    * @param {number} phase radians, advanced by distance travelled
+   * @param {object} g a gait from gaitOf
    */
-  function stepFoot(out, phase, stride, lift) {
+  function stepFoot(out, phase, g) {
     const u = ((phase / (Math.PI * 2)) % 1 + 1) % 1;
-    if (u < 0.5) {
-      out.x = stride * (1 - 4 * u);
-      out.y = 0;
+    if (u < g.stance) {
+      const k = u / g.stance;                    // 0 at touchdown, 1 at toe-off
+      out.x = g.stride * (1 - 2 * k);
+      const roll = k > 0.62 ? (k - 0.62) / 0.38 : 0;
+      const heelOff = TOE_OFF * roll * roll;
+      // Heel strike: the toe is still up for the first moments of contact.
+      out.pitch = heelOff - HEEL_UP * Math.max(0, 1 - k / 0.12);
+      out.y = -BONE.toe * Math.sin(heelOff);
     } else {
-      const k = (u - 0.5) * 2;
-      out.x = stride * (2 * k - 1);
-      out.y = -Math.sin(k * Math.PI) * lift;
+      const k = (u - g.stance) / (1 - g.stance); // 0 at toe-off, 1 at touchdown
+      out.x = g.stride * (2 * k - 1);
+      out.y = -Math.sin(k * Math.PI) * g.lift;
+      // The foot leaves the floor still pointed, then dorsiflexes to land.
+      out.pitch = U.lerp(TOE_OFF, -HEEL_UP, U.ease.inOutSine(Math.min(1, k * 1.35)));
     }
     return out;
   }
-  const STEP_L = { x: 0, y: 0 }, STEP_R = { x: 0, y: 0 };
+  const STEP_L = { x: 0, y: 0, pitch: 0 }, STEP_R = { x: 0, y: 0, pitch: 0 };
+
+  /**
+   * Rotates a bone's tail back toward vertical about its own head, keeping its
+   * length. HEAD_UPRIGHT is how much of the spine's tilt is taken out: 1 would
+   * be a head bolted permanently level, 0 the head riding the lean in full.
+   */
+  const HEAD_UPRIGHT = 0.78;
+  function uprightHead(a, b) {
+    const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
+    const len = Math.hypot(dx, dy, dz);
+    if (len < 1e-6) return;
+    const t = HEAD_UPRIGHT;
+    const ux = dx * (1 - t), uy = dy * (1 - t), uz = dz * (1 - t) + len * t;
+    const ul = Math.hypot(ux, uy, uz) || 1;
+    b[0] = a[0] + (ux / ul) * len;
+    b[1] = a[1] + (uy / ul) * len;
+    b[2] = a[2] + (uz / ul) * len;
+  }
 
   /** Point `t` of the way from world point a to world point b. */
   function mixPt(out, a, b, t) {
@@ -1860,8 +4054,27 @@
   /* Bones baked at fixed fractions of the model's height, placed by measuring
    * the same fractions along the posed body. */
   const SPINE_BONES = ['pelvis', 'torso', 'head'];
+
+  /* The mesh's own hip and shoulder, as fractions of its stature — the two ends
+   * of the line every spine bone is placed along. Constants, because they are
+   * facts about the model rather than about the pose. */
+  const SPINE_HIP = (BB.PLAYER_MESH && BB.PLAYER_MESH.landmarks
+    ? BB.PLAYER_MESH.landmarks.hip : 0.480);
+  const SPINE_SPAN = (BB.PLAYER_MESH && BB.PLAYER_MESH.landmarks
+    ? BB.PLAYER_MESH.landmarks.shoulder - BB.PLAYER_MESH.landmarks.hip : 0.352);
   const HIP = [0, 0, 0], SHO = [0, 0, 0];
   const REF_DIR = [1, 0, 0];
+  const HREF = [1, 0, 0];
+
+  /** Rotates `v` about unit axis (ax, ay, az) by `a` radians, into `out`.
+   *  Rodrigues — used to twist a bone's reference direction about the bone. */
+  function spin(v, ax, ay, az, a, out) {
+    const c = Math.cos(a), s = Math.sin(a), d = ax * v[0] + ay * v[1] + az * v[2];
+    out[0] = v[0] * c + (ay * v[2] - az * v[1]) * s + ax * d * (1 - c);
+    out[1] = v[1] * c + (az * v[0] - ax * v[2]) * s + ay * d * (1 - c);
+    out[2] = v[2] * c + (ax * v[1] - ay * v[0]) * s + az * d * (1 - c);
+    return out;
+  }
 
   function dist3(a, b) {
     return Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
@@ -1875,12 +4088,39 @@
   const LEGS = [{ side: -1 }, { side: 1 }];
   const ARMS = [{ side: -1 }, { side: 1 }];
   const MINT = [0.133, 0.894, 0.627, 0.85];
+  /* The defensive readout. Cool blue while the position is merely good, gold
+   * once it has been held long enough to be worth calling out — the same two
+   * colours the shot meter already uses for "fine" and "that was the one", so
+   * the language is consistent without a legend. */
+  const GUARD_COL = [0.298, 0.643, 0.980, 1];
+  const LOCK_COL = [1.000, 0.788, 0.239, 1];
+  const COL_TMP = [0, 0, 0, 1];
+
+  /** Blends two colours into scratch storage. Not re-entrant; draw only. */
+  function lerpCol(a, b, t) {
+    COL_TMP[0] = U.lerp(a[0], b[0], t);
+    COL_TMP[1] = U.lerp(a[1], b[1], t);
+    COL_TMP[2] = U.lerp(a[2], b[2], t);
+    COL_TMP[3] = U.lerp(a[3] == null ? 1 : a[3], b[3] == null ? 1 : b[3], t);
+    return COL_TMP;
+  }
 
   Player.ACTION = ACTION;
   /* Exposed so tools/preview_player.js can measure the built figure against
    * real anatomical proportions rather than trusting the constants by eye. */
   Player.BONE = BONE;
   Player.GIRTH = GIRTH;
+  /* Exposed for the same reason: where a wrist and elbow sit across the body is
+   * the one part of the arm the pose solver never sees, so a check that
+   * re-derives it is checking its own arithmetic. These are the functions
+   * draw() places the joints with. */
+  Player.wristWidth = wristWidth;
+  Player.elbowWidth = elbowWidth;
+  /* The dribble move table and the ball paths, so a check can drive a move for
+   * exactly as long as it lasts and measure where the ball went — rather than
+   * re-deriving either, which is how a check ends up agreeing with itself. */
+  Player.MOVES = MOVES;
+  Player.BALL_PATH = BALL_PATH;
   Player.RATING_KEYS = RATING_KEYS;
   Player.TENDENCY_KEYS = TENDENCY_KEYS;
   Player.computeOverall = computeOverall;

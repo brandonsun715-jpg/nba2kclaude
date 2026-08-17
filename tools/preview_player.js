@@ -37,13 +37,44 @@ const POSES = {
   shoot: 'pl.action = "meter"; pl.actionT = 0.2; pl.meter.value = 0.85; pl.armRaise = 1;'
 };
 
-/* gait0..gait7 walk one full stride cycle. Rendered side by side they show
- * whether the feet plant or skate, which a single frame cannot. */
+/* A full stride cycle, eight figures deep, in one frame.
+ *
+ * A gait is the one thing a single pose cannot show: whether the feet plant or
+ * skate, whether both knees fold the same way, whether the arms swing against
+ * the legs or drift along a quarter-cycle behind them. Eight separate renders
+ * show it too, but only if you can hold all eight in your head at once — laid
+ * out side by side under one camera and one light, the cycle reads at a
+ * glance, and a frame that breaks the pattern jumps out of the row.
+ *
+ * Built by cloning the subject rather than by re-rendering: same body, same
+ * build, eight points around its own stride. */
 const GAIT_STEPS = 8;
-for (let i = 0; i < GAIT_STEPS; i++) {
-  POSES['gait' + i] = 'pl.vx = 13; pl.vy = 0; pl.facing = 0; pl.sprinting = true;' +
-    ' pl.stridePhase = ' + (i * Math.PI * 2 / GAIT_STEPS).toFixed(6) + ';';
+function stripPose(speed, sprinting) {
+  return `
+    var strip = [];
+    for (var gi = 0; gi < ${GAIT_STEPS}; gi++) {
+      var c = new BB.Player({ height: 79, jersey: pl.jerseyMain, trim: pl.jerseyTrim });
+      c.placeAt(pl.x + (gi - ${(GAIT_STEPS - 1) / 2}) * 4.6, pl.y, 0);
+      c.vx = ${speed}; c.vy = 0; c.facing = c.moveFacing = 0;
+      c.sprinting = ${sprinting}; c.lean = ${sprinting ? 1 : 0.4};
+      c.stridePhase = gi * Math.PI * 2 / ${GAIT_STEPS};
+      c._updatePose(1 / 60);
+      strip.push(c);
+    }
+    scene.render = function () {
+      BB.Renderer.render({
+        camera: BB.Camera, court: BB.World.court, arena: BB.World.arena,
+        hoops: BB.World.hoops, ball: null, entities: strip, fx: BB.FX, dimmed: 0
+      });
+    };
+    window.__HW_STRIP = true;
+  `;
 }
+POSES.gait_walk = stripPose(5, false);
+POSES.gait_sprint = stripPose(15, true);
+
+/* Wide and shallow for the strips, tall and tight for a single figure. */
+const WINDOW = { gait_walk: [1440, 380], gait_sprint: [1440, 380] };
 
 /* The broadcast rig is bolted to the sideline — its closest approach to a
  * player at centre court is about 25 feet, which is a whole basketball court
@@ -52,12 +83,15 @@ for (let i = 0; i < GAIT_STEPS; i++) {
  * lookAt from eleven feet away at chest height, three-quarter view. */
 const CAM = `
   var cam = BB.Camera, M4 = BB.M4;
+  var isStrip = !!window.__HW_STRIP;
   cam._rebuild = function () {
-    var eye = [pl.x + 3.2, 3.6, pl.y + 11.0];
-    var at = [pl.x, 2.7, pl.y];
+    // Square on from the sideline for a gait strip — a stride reads as a
+    // stride only in profile — and a three-quarter view for everything else.
+    var eye = isStrip ? [pl.x, 3.0, pl.y + 18.0] : [pl.x + 3.2, 3.6, pl.y + 11.0];
+    var at = isStrip ? [pl.x, 2.5, pl.y] : [pl.x, 2.7, pl.y];
     this.eye[0] = eye[0]; this.eye[1] = eye[1]; this.eye[2] = eye[2];
     this.target[0] = at[0]; this.target[1] = at[1]; this.target[2] = at[2];
-    M4.perspective(this.proj, 40 * Math.PI / 180,
+    M4.perspective(this.proj, (isStrip ? 32 : 40) * Math.PI / 180,
                    this.vw / Math.max(1, this.vh), 0.6, 420);
     M4.lookAt(this.view, this.eye, this.target, [0, 1, 0]);
     M4.multiply(this.viewProj, this.proj, this.view);
@@ -93,6 +127,11 @@ function shot(name, poseSrc) {
         if (i % 2 === 0) scene.update(1 / 60, 1 / 60);
       }
 
+      // Settling the scene can raise a whistle or a banner; clear the overlay
+      // again now that it has, so nothing is painted over the subject.
+      if (hud) hud.innerHTML = '';
+      if (ph) ph.innerHTML = '';
+
       var pl = (scene.entities || [])[0] || scene.player;
       // Square the figure up to the camera side so the build reads, then hold
       // it still: this is a model sheet, not an action shot.
@@ -122,14 +161,15 @@ function shot(name, poseSrc) {
 </body>`));
 
   const png = path.join(OUT, 'player_' + name + '.png');
+  const win = WINDOW[name] || [560, 760];
   try {
     execFileSync(CHROME, [
       '--headless=new', '--no-sandbox', '--disable-dev-shm-usage',
       '--use-gl=swiftshader', '--enable-unsafe-swiftshader',
       '--allow-file-access-from-files', '--hide-scrollbars',
-      '--window-size=560,760',
+      '--window-size=' + win[0] + ',' + win[1],
       '--screenshot=' + png, 'file://' + file
-    ], { stdio: ['ignore', 'ignore', 'ignore'], timeout: 120000 });
+    ], { stdio: ['ignore', 'ignore', 'ignore'], timeout: 180000 });
   } finally {
     if (fs.existsSync(file)) fs.unlinkSync(file);
   }
@@ -206,7 +246,7 @@ function measure() {
 const want = process.argv.slice(2).filter((a) => POSES[a] != null);
 const list = want.length ? want : Object.keys(POSES);
 
-console.log('\nHARDWOOD — player model preview\n');
+console.log('\nNBA 1K26 — player model preview\n');
 
 const r = measure();
 if (r.err) {

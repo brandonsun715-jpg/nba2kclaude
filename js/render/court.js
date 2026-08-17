@@ -1,6 +1,12 @@
 /* =============================================================================
  * court.js  —  The playing surface.
  * -----------------------------------------------------------------------------
+ * An outdoor park court: acrylic paint rolled straight onto asphalt, teal
+ * inside the lines and terracotta outside them, with the blacktop showing
+ * through wherever the coating has worn away. Nothing here is polished — a
+ * park surface is matt, patched and sun-bleached, and the wear is what stops
+ * it reading as a flat green rectangle.
+ *
  * The floor never changes during a game, so it is baked once into an offscreen
  * canvas at high resolution and blitted each frame under the camera transform.
  * That turns several hundred vector operations per frame into a single
@@ -32,8 +38,8 @@
     oh: C.COURT_W + PAD * 2,
 
     team: {
-      name: 'HARDWOOD',
-      abbr: 'HWD',
+      name: 'NBA 1K26',
+      abbr: 'N1K',
       primary: PAL.paint,
       secondary: PAL.orange,
       accent: PAL.chalk
@@ -79,111 +85,164 @@
       // Work in world feet from here on.
       ctx.setTransform(RES, 0, 0, RES, PAD * RES, PAD * RES);
 
-      drawApron(ctx, this.team);
-      drawHardwood(ctx);
-      drawGrain(ctx);
+      drawSurround(ctx, this.team);
+      drawAcrylic(ctx);
+      drawWear(ctx);
       drawKeyPaint(ctx, this.team);
       drawLines(ctx);
       drawCenterLogo(ctx, this.team);
       drawSidelineType(ctx, this.team);
-      drawGloss(ctx);
+      drawSun(ctx);
 
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       this._texDirty = true;
     }
   };
 
-  /* --------------------------------------------------------------- apron ---- */
-  function drawApron(ctx, team) {
-    const g = ctx.createLinearGradient(0, -PAD, 0, C.COURT_W + PAD);
-    g.addColorStop(0, U.shade(PAL.ink, 0.10));
-    g.addColorStop(0.5, PAL.ink);
-    g.addColorStop(1, U.shade(PAL.ink, 0.04));
+  /* ------------------------------------------------------------ surround ---- */
+  /**
+   * Everything outside the lines: raw blacktop at the edges of the pad, the
+   * painted terracotta surround inside that. Two colours meeting at the court
+   * boundary is the whole reason a park court reads as a park court from
+   * across the street.
+   */
+  function drawSurround(ctx, team) {
+    // Asphalt first, over the entire baked pad.
+    const g = ctx.createLinearGradient(0, -PAD, C.COURT_L * 0.4, C.COURT_W + PAD);
+    g.addColorStop(0, PAL.asphaltLight);
+    g.addColorStop(0.5, PAL.asphalt);
+    g.addColorStop(1, PAL.asphaltDark);
     ctx.fillStyle = g;
     ctx.fillRect(-PAD, -PAD, C.COURT_L + PAD * 2, C.COURT_W + PAD * 2);
 
-    // Courtside LED ribbon in the home team's colour along both sidelines.
-    const band = 1.6;
-    for (const yTop of [-PAD + 1.4, C.COURT_W + PAD - band - 1.4]) {
-      const lg = ctx.createLinearGradient(0, yTop, 0, yTop + band);
-      lg.addColorStop(0, U.rgba(team.primary, 0.05));
-      lg.addColorStop(0.5, U.rgba(team.primary, 0.55));
-      lg.addColorStop(1, U.rgba(team.primary, 0.05));
-      ctx.fillStyle = lg;
-      ctx.fillRect(-PAD + 2, yTop, C.COURT_L + PAD * 2 - 4, band);
+    /* Aggregate: the asphalt is a stone mix, and without the speckle it is a
+     * flat grey card that the eye reads as fog. */
+    const rng = U.makeRng(0xA5FA17);
+    for (let i = 0; i < 4200; i++) {
+      const x = rng.f(-PAD, C.COURT_L + PAD);
+      const y = rng.f(-PAD, C.COURT_W + PAD);
+      ctx.fillStyle = U.rgba(rng.chance(0.5) ? '#8E99A4' : '#2E353D', rng.f(0.05, 0.22));
+      ctx.fillRect(x, y, rng.f(0.06, 0.20), rng.f(0.06, 0.16));
     }
 
-    // The baselines got nothing before — same idea, rotated 90°, sitting
-    // right behind each basket where the camera spends most of its time in
-    // a half-court game. A grounding shadow first so the accent band reads
-    // as sitting against a real back wall, not just painted on the floor.
-    const bBand = 1.3;
-    for (const xLeft of [-PAD + 1.1, C.COURT_L + PAD - bBand - 1.1]) {
-      ctx.fillStyle = U.rgba('#000000', 0.30);
-      ctx.fillRect(xLeft - 0.5, -PAD, bBand + 1.0, C.COURT_W + PAD * 2);
-      const bg = ctx.createLinearGradient(xLeft, 0, xLeft + bBand, 0);
-      bg.addColorStop(0, U.rgba(team.secondary, 0.05));
-      bg.addColorStop(0.5, U.rgba(team.secondary, 0.50));
-      bg.addColorStop(1, U.rgba(team.secondary, 0.05));
-      ctx.fillStyle = bg;
-      ctx.fillRect(xLeft, -PAD + 2, bBand, C.COURT_W + PAD * 2 - 4);
+    // The painted surround, stopping short of the pad edge so the blacktop
+    // frames it. Rolled paint is never perfectly even, hence the gradient.
+    const m = 1.9;                                   // unpainted blacktop margin
+    const cg = ctx.createLinearGradient(0, -PAD, C.COURT_L * 0.5, C.COURT_W + PAD);
+    cg.addColorStop(0, PAL.clayLight);
+    cg.addColorStop(0.55, PAL.clay);
+    cg.addColorStop(1, U.shade(PAL.clay, -0.12));
+    ctx.fillStyle = cg;
+    ctx.fillRect(-PAD + m, -PAD + m,
+                 C.COURT_L + PAD * 2 - m * 2, C.COURT_W + PAD * 2 - m * 2);
+
+    /* A band of the home colour along each baseline end of the surround: the
+     * one piece of "this court belongs to someone" the park version keeps
+     * from the arena's ribbon boards. */
+    const band = 2.4;
+    for (const xLeft of [-PAD + m + 0.6, C.COURT_L + PAD - m - band - 0.6]) {
+      ctx.fillStyle = U.rgba(team.primary, 0.72);
+      ctx.fillRect(xLeft, -PAD + m + 0.6, band, C.COURT_W + PAD * 2 - m * 2 - 1.2);
+    }
+    for (const yTop of [-PAD + m + 0.6, C.COURT_W + PAD - m - 1.4 - 0.6]) {
+      ctx.fillStyle = U.rgba(team.secondary, 0.55);
+      ctx.fillRect(-PAD + m + 0.6, yTop, C.COURT_L + PAD * 2 - m * 2 - 1.2, 1.4);
     }
   }
 
-  /* ------------------------------------------------------------ hardwood ---- */
-  function drawHardwood(ctx) {
+  /* ------------------------------------------------------------- acrylic ---- */
+  /** The playing surface itself: teal acrylic, rolled on in passes. */
+  function drawAcrylic(ctx) {
     const g = ctx.createLinearGradient(0, 0, C.COURT_L * 0.35, C.COURT_W);
-    g.addColorStop(0, PAL.mapleLight);
-    g.addColorStop(0.45, PAL.maple);
-    g.addColorStop(1, U.shade(PAL.maple, -0.10));
+    g.addColorStop(0, PAL.acrylicLight);
+    g.addColorStop(0.45, PAL.acrylic);
+    g.addColorStop(1, PAL.acrylicDark);
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, C.COURT_L, C.COURT_W);
 
-    /* Alternating plank blocks, laid lengthways like a real floor. */
-    const plank = 0.55;
     ctx.save();
     ctx.beginPath();
     ctx.rect(0, 0, C.COURT_L, C.COURT_W);
     ctx.clip();
 
-    for (let y = 0, row = 0; y < C.COURT_W; y += plank, row++) {
-      const tone = (row % 2 === 0) ? 0.035 : -0.030;
-      ctx.fillStyle = tone > 0 ? U.rgba('#FFFFFF', tone) : U.rgba('#3B2408', -tone);
-      ctx.fillRect(0, y, C.COURT_L, plank);
+    /* Roller passes. A court is painted in overlapping strips down its length,
+     * and the seams between them stay faintly visible for years. */
+    const strip = 3.6;
+    for (let y = 0, row = 0; y < C.COURT_W; y += strip, row++) {
+      const tone = (row % 2 === 0) ? 0.030 : -0.026;
+      ctx.fillStyle = tone > 0 ? U.rgba('#FFFFFF', tone) : U.rgba('#04322A', -tone);
+      ctx.fillRect(0, y, C.COURT_L, strip);
+      ctx.fillStyle = U.rgba('#04322A', 0.05);
+      ctx.fillRect(0, y, C.COURT_L, 0.10);
     }
-
-    /* Board seams: staggered vertical joints every few feet. */
-    ctx.strokeStyle = PAL.mapleGrain;
-    ctx.lineWidth = 0.035;
-    ctx.beginPath();
-    for (let y = 0, row = 0; y < C.COURT_W; y += plank, row++) {
-      const offset = (row % 3) * 2.7;
-      for (let x = offset; x < C.COURT_L; x += 8.1) {
-        ctx.moveTo(x, y);
-        ctx.lineTo(x, y + plank);
-      }
-    }
-    ctx.stroke();
     ctx.restore();
   }
 
-  /** Long, low-contrast grain streaks that break up the flat fill. */
-  function drawGrain(ctx) {
+  /**
+   * Wear: the coating is thin over the high-traffic lane, cracked where the
+   * asphalt underneath has moved, and patched where somebody rolled fresh
+   * paint over a repair. This is the difference between a park court and a
+   * green rectangle.
+   */
+  function drawWear(ctx) {
     const rng = U.makeRng(0x5EED);
     ctx.save();
     ctx.beginPath();
     ctx.rect(0, 0, C.COURT_L, C.COURT_W);
     ctx.clip();
-    ctx.lineWidth = 0.05;
-    for (let i = 0; i < 520; i++) {
-      const x = rng.f(0, C.COURT_L);
-      const y = rng.f(0, C.COURT_W);
-      const len = rng.f(1.5, 7);
-      ctx.strokeStyle = U.rgba(rng.chance(0.5) ? '#5A3410' : '#E8C089', rng.f(0.03, 0.11));
+
+    /* Scuff patches — worn paint showing the blacktop through. Heaviest in
+     * the two lanes, which is where the game is actually played. */
+    for (let i = 0; i < 240; i++) {
+      const heavy = rng.chance(0.55);
+      const hoop = C.HOOPS[rng.i(0, 1)];
+      const x = heavy ? hoop.x + rng.f(-2, 16) * hoop.dir : rng.f(0, C.COURT_L);
+      const y = heavy ? C.HALF_W + rng.f(-9, 9) : rng.f(0, C.COURT_W);
+      const r = rng.f(0.5, 3.2);
+      const p = ctx.createRadialGradient(x, y, 0, x, y, r);
+      p.addColorStop(0, U.rgba(PAL.asphaltDark, rng.f(0.05, 0.16)));
+      p.addColorStop(1, U.rgba(PAL.asphaltDark, 0));
+      ctx.fillStyle = p;
+      ctx.fillRect(x - r, y - r, r * 2, r * 2);
+    }
+
+    /* Cracks. Each one wanders, forks once or twice, and is drawn dark with a
+     * pale shoulder — a hairline of pure black reads as a scratch on the
+     * screen rather than a split in the surface. */
+    ctx.lineCap = 'round';
+    for (let i = 0; i < 26; i++) {
+      let x = rng.f(0, C.COURT_L), y = rng.f(0, C.COURT_W);
+      let a = rng.f(0, Math.PI * 2);
+      const segs = rng.i(4, 11);
+      const pts = [[x, y]];
+      for (let s = 0; s < segs; s++) {
+        a += rng.f(-0.7, 0.7);
+        x += Math.cos(a) * rng.f(0.8, 3.0);
+        y += Math.sin(a) * rng.f(0.8, 3.0);
+        pts.push([x, y]);
+      }
+      const trace = () => {
+        ctx.beginPath();
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let p = 1; p < pts.length; p++) ctx.lineTo(pts[p][0], pts[p][1]);
+        ctx.stroke();
+      };
+      ctx.strokeStyle = U.rgba('#DCE8E2', 0.10);
+      ctx.lineWidth = 0.13;
+      ctx.save(); ctx.translate(0.05, 0.05); trace(); ctx.restore();
+      ctx.strokeStyle = U.rgba('#08201C', rng.f(0.28, 0.55));
+      ctx.lineWidth = 0.06;
+      trace();
+    }
+
+    /* Repainted patches: a slightly-off batch of teal over an old repair. */
+    for (let i = 0; i < 14; i++) {
+      const x = rng.f(2, C.COURT_L - 2), y = rng.f(2, C.COURT_W - 2);
+      ctx.fillStyle = U.rgba(rng.chance(0.5) ? PAL.acrylicLight : PAL.acrylicDark,
+                             rng.f(0.10, 0.22));
       ctx.beginPath();
-      ctx.moveTo(x, y);
-      ctx.lineTo(x + len, y + rng.f(-0.06, 0.06));
-      ctx.stroke();
+      ctx.ellipse(x, y, rng.f(1.4, 4.5), rng.f(1.0, 3.0), rng.f(0, 3.14), 0, Math.PI * 2);
+      ctx.fill();
     }
     ctx.restore();
   }
@@ -207,11 +266,12 @@
       void near;
     }
 
-    /* Faint stained-wood halo beyond each arc so the paint doesn't float. */
+    /* Sun-bleach around each arc: the paint fades fastest where nothing ever
+     * shades it, so the top of the key is always lighter than the corners. */
     for (const hoop of C.HOOPS) {
       const g = ctx.createRadialGradient(hoop.x, hoop.y, 4, hoop.x, hoop.y, C.THREE_R);
-      g.addColorStop(0, U.rgba('#3B2408', 0.14));
-      g.addColorStop(1, U.rgba('#3B2408', 0));
+      g.addColorStop(0, U.rgba('#EAF6EF', 0.10));
+      g.addColorStop(1, U.rgba('#EAF6EF', 0));
       ctx.save();
       ctx.beginPath();
       ctx.rect(0, 0, C.COURT_L, C.COURT_W);
@@ -228,10 +288,10 @@
     ctx.lineCap = 'butt';
     ctx.lineJoin = 'miter';
 
-    /* Soft drop under every line makes the paint sit "on" the wood. */
+    /* Soft drop under every line makes the paint sit "on" the surface. */
     const stroke = (path, color, width) => {
       ctx.save();
-      ctx.strokeStyle = U.rgba('#3B2408', 0.35);
+      ctx.strokeStyle = U.rgba('#08201C', 0.30);
       ctx.lineWidth = (width || LW) * 1.5;
       ctx.translate(0.05, 0.06);
       path();
@@ -434,40 +494,34 @@
     void team;
   }
 
-  /* ----------------------------------------------------------------- gloss -- */
-  /** Specular sheen + arena light pools. Sells the polish on the boards. */
-  function drawGloss(ctx) {
+  /* ------------------------------------------------------------------- sun -- */
+  /**
+   * Open sunlight across the whole pad, and the shadow the fence throws over
+   * one corner of it. There is deliberately no vignette here any more: the
+   * arena had light pools because it was a dark room with lamps in it, and
+   * darkening the far end of a court that is standing in full afternoon sun
+   * is exactly what made the old floor read as indoors.
+   */
+  function drawSun(ctx) {
     ctx.save();
-    ctx.beginPath();
-    ctx.rect(0, 0, C.COURT_L, C.COURT_W);
-    ctx.clip();
-
     ctx.globalCompositeOperation = 'lighter';
-    for (const cx of [20, 47, 74]) {
-      const g = ctx.createRadialGradient(cx, C.HALF_W - 6, 2, cx, C.HALF_W - 6, 30);
-      g.addColorStop(0, 'rgba(255,240,214,0.085)');
-      g.addColorStop(1, 'rgba(255,240,214,0)');
-      ctx.fillStyle = g;
-      ctx.fillRect(0, 0, C.COURT_L, C.COURT_W);
-    }
+    const g = ctx.createLinearGradient(-PAD, -PAD, C.COURT_L * 0.7, C.COURT_W + PAD);
+    g.addColorStop(0, 'rgba(255,246,220,0.10)');
+    g.addColorStop(0.6, 'rgba(255,246,220,0.03)');
+    g.addColorStop(1, 'rgba(255,246,220,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(-PAD, -PAD, C.COURT_L + PAD * 2, C.COURT_W + PAD * 2);
 
+    /* The chain link overhead throws a soft diagonal shade onto the near
+     * corner. Sharp enough to be read as a shadow, soft enough that nobody
+     * mistakes it for paint. */
     ctx.globalCompositeOperation = 'source-over';
-    // Vignette toward the baselines keeps the eye at mid-court.
-    const v = ctx.createLinearGradient(0, 0, C.COURT_L, 0);
-    v.addColorStop(0, 'rgba(0,0,0,0.22)');
-    v.addColorStop(0.18, 'rgba(0,0,0,0)');
-    v.addColorStop(0.82, 'rgba(0,0,0,0)');
-    v.addColorStop(1, 'rgba(0,0,0,0.22)');
-    ctx.fillStyle = v;
-    ctx.fillRect(0, 0, C.COURT_L, C.COURT_W);
-
-    const v2 = ctx.createLinearGradient(0, 0, 0, C.COURT_W);
-    v2.addColorStop(0, 'rgba(0,0,0,0.18)');
-    v2.addColorStop(0.35, 'rgba(0,0,0,0)');
-    v2.addColorStop(1, 'rgba(0,0,0,0.10)');
-    ctx.fillStyle = v2;
-    ctx.fillRect(0, 0, C.COURT_L, C.COURT_W);
-
+    const s = ctx.createLinearGradient(C.COURT_L * 0.62, C.COURT_W + PAD,
+                                       C.COURT_L + PAD, C.COURT_W * 0.35);
+    s.addColorStop(0, 'rgba(16,32,48,0.20)');
+    s.addColorStop(1, 'rgba(16,32,48,0)');
+    ctx.fillStyle = s;
+    ctx.fillRect(-PAD, -PAD, C.COURT_L + PAD * 2, C.COURT_W + PAD * 2);
     ctx.restore();
   }
 

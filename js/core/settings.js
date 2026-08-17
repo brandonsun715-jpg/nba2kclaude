@@ -22,8 +22,9 @@
 
     /* Presentation */
     quality: 'high',          // high | balanced | performance
-    cameraMode: 'broadcast',  // broadcast | wide | tight
+    cameraMode: 'forward',    // forward | broadcast | wide | tight
     screenShake: 1.0,
+    instantReplay: true,
     showTrails: true,
     showDebug: false,
 
