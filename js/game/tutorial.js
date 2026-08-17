@@ -83,6 +83,24 @@
       }
     },
     {
+      id: 'dunk',
+      title: 'Throw one down',
+      task: 'Dunk it once.',
+      why: 'The shoot key is a layup — the dunk is its own key, so a finish at the rim is a choice rather than something the game picks for you. Whether it is ON is still down to the body: sprint at the rim so the drive lends you its lift, and if the build cannot get a hand over the ring it lays it in instead.',
+      keys: ['dunk', 'sprint'],
+      enter(t) { t.giveBall(); },
+      test(t, dt) {
+        const p = t.pl;
+        t.ensureBall(p, dt);
+        /* Count the moment the dunk goes up, not the make: a dunk you had to
+         * time can still rim out, and it was thrown down either way. */
+        const up = p.action === BB.Player.ACTION.DUNK;
+        if (up && !t.k.up) t.k.n = (t.k.n || 0) + 1;
+        t.k.up = up;
+        return U.clamp01((t.k.n || 0) / 1);
+      }
+    },
+    {
       id: 'three',
       title: 'Step out',
       task: 'Score once from behind the three-point line.',

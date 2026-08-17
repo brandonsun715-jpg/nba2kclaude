@@ -522,7 +522,9 @@
       build() {
         const rows = [
           ['up', 'Move up'], ['down', 'Move down'], ['left', 'Move left'], ['right', 'Move right'],
-          ['sprint', 'Sprint'], ['shoot', 'Shoot / gather'], ['pass', 'Pass / steal'],
+          ['sprint', 'Sprint'], ['shoot', 'Shoot / gather / layup'],
+          ['dunk', 'Dunk — driving at the rim'],
+          ['pass', 'Pass / steal'],
           ['lob', 'Lob / block'],
           ['dribbleCross', 'Crossover'], ['dribbleTween', 'Between the legs'],
           ['dribbleBehind', 'Behind the back'], ['dribbleHesi', 'Hesitation'],

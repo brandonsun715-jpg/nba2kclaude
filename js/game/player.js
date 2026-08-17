@@ -1010,8 +1010,17 @@
       this.intentY = ry * v.x - fy * v.y;
       this.intentMag = v.mag;
 
+      /* Space is a layup and Tab is a dunk. On a pad both live on A — there is
+       * no Tab and no spare face button — so when the two actions come off the
+       * SAME press, the held sprint trigger is what tells them apart. Testing
+       * dunk first and falling through means one press can never start two
+       * shots, and a pad press without sprint lands on the layup below. */
       if (this.hasBall && !this.isBusyShooting) {
-        if (input.pressed('shoot')) this._beginShot();
+        if (input.pressed('dunk') && (!input.pressed('shoot') || input.down('sprint'))) {
+          this._beginShot(true);
+        } else if (input.pressed('shoot')) {
+          this._beginShot(false);
+        }
       }
 
       /* Same physical keys as pass/lob double as steal/block on defense —
@@ -1714,7 +1723,12 @@
     }
 
     /* ---------------------------------------------------------- shot flow */
-    _beginShot() {
+    /**
+     * @param {boolean} [wantDunk]  the player asked for a dunk specifically.
+     *   Human only — the CPU has no keyboard and keeps its own willingness
+     *   roll. Ignored entirely if the body cannot reach the rim from here.
+     */
+    _beginShot(wantDunk) {
       const hoop = this.fixedHoop || U.nearestHoop(this.x);
       const dHoop = U.dist(this.x, this.y, hoop.x, hoop.y);
       const close = dHoop <= C.RESTRICTED_R + 1.2;
@@ -1765,12 +1779,22 @@
           : dHoop <= C.RESTRICTED_R * 0.9;
         const headroom = this.dunkHeadroom(this.driving);
 
-        /* The gate is physical for a human: they drove and asked for it, so if
-         * the body can do it they get it. A CPU still gets a say — a
-         * seven-footer with a 40 dunk rating should mostly lay it in rather
-         * than throw down every trip — which is the one job dunkChance has
-         * left. */
-        const willing = this.human || U.rng.chance(0.35 + this.phys.dunkChance * 0.65);
+        /* A human has to ASK for it now.
+         *
+         * Space near the rim used to start a finish and let this function pick
+         * the animation, so the same key in the same spot came out a layup or a
+         * dunk depending on the build — the two finishes shared a keybind and
+         * there was no way to call for one. Space is the layup; Tab is the
+         * dunk. The body still gets the last word either way: ask for one you
+         * cannot reach and the headroom test below turns it into a layup, the
+         * same as it always did.
+         *
+         * A CPU has no keyboard, so its own willingness roll is what it keeps —
+         * a seven-footer with a 40 dunk rating should mostly lay it in rather
+         * than throw down every trip, which is the one job dunkChance has left. */
+        const willing = this.human
+          ? wantDunk === true
+          : U.rng.chance(0.35 + this.phys.dunkChance * 0.65);
         const wantsDunk = inDunkRange && headroom >= 0 && willing;
 
         this.shotType = wantsDunk ? 'dunk' : 'layup';

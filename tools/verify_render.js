@@ -3843,8 +3843,16 @@ console.log('\n[35] the walkthrough is practice, not a game');
     for (var i = 0; i < 40; i++) { s.fixedUpdate(1 / 120); }
     var muted = { hud: !!BB.HUD.muted, comm: !!BB.Commentary.muted, bug: BB.HUD.visible };
 
-    // Jump to the stance drill and hold a real stance in front of the CPU.
-    s.step = 5; s._enterDrill();
+    /* Jump to the stance drill and hold a real stance in front of the CPU.
+     * Found by id, not by counting: the drill list is meant to grow, and a
+     * hardcoded index silently starts testing a different drill when it does. */
+    function drillAt(id) {
+      var d = BB.Tutorial.DRILLS;
+      for (var n = 0; n < d.length; n++) if (d[n].id === id) return n;
+      throw new Error('no drill with id ' + id);
+    }
+    var STANCE = drillAt('stance'), CONTEST = drillAt('stop');
+    s.step = STANCE; s._enterDrill();
     var partnerHeld = !!s.foe.noShoot;
     var hoop = s.hoop, shotFrames = 0, t = 0, done = false, qs = [];
     for (var k = 0; k < 60 * 12 && !done; k++) {
@@ -3856,13 +3864,13 @@ console.log('\n[35] the walkthrough is practice, not a game');
       if (a === A.GATHER || a === A.METER || a === A.RELEASE) shotFrames++;
       qs.push(s.pl.defenseQuality || 0);
       t += 1 / 60;
-      if (s.step > 5) done = true;
+      if (s.step > STANCE) done = true;
     }
     BB.Input.keys['KeyE'] = false;
     qs.sort(function (a, b) { return a - b; });
 
     // The last drill wants a shot to contest, so the leash comes off.
-    s.step = 6; s._enterDrill();
+    s.step = CONTEST; s._enterDrill();
     var lastDrillShoots = !s.foe.noShoot;
 
     // Leaving hands the broadcast back.
@@ -3970,14 +3978,17 @@ console.log('\n[37] a dunk is decided by the body, not a dice roll');
 
     var HOOP = { x: 88.75, y: 25 };
 
-    /** Drive at the rim from dist feet and ask what comes out. */
+    /** Drive at the rim from dist feet and ask what comes out.
+     *
+     * The dunk is REQUESTED every time — this section is about what the body
+     * says, so the intent is held constant and only the build varies. */
     function attempt(p, dist, sprint, speedFrac) {
       p.placeAt(HOOP.x - dist, HOOP.y, 0);
       p.sprinting = sprint;
       p.vx = (sprint ? p.phys.maxSprint : p.phys.maxSpeed) * speedFrac;
       p.vy = 0; p.z = 0; p.jumping = false;
       p.action = null; p.armRaise = 0; p.hasBall = true;
-      p._beginShot();
+      p._beginShot(true);
       return { type: p.shotType, auto: p.dunkAuto,
                head: +p.dunkHeadroom(p.driving).toFixed(3) };
     }
@@ -4119,7 +4130,7 @@ console.log('\n[37] a dunk is decided by the body, not a dice roll');
       pl.z = 0; pl.jumping = false; pl.action = null; pl.armRaise = 0;
       pl.visualLift = 0;
       pl.giveBall(ball);
-      pl._beginShot();
+      pl._beginShot(true);
       if (pl.shotType === 'dunk') sawDunk++;
       var scored = false;
       var off = ball.events.on('score', function () { scored = true; });
@@ -4300,7 +4311,7 @@ console.log('\n[38] the replay shows the play that actually happened');
     pl.sprinting = true; pl.vx = pl.phys.maxSprint * 0.9; pl.vy = 0;
     pl.z = 0; pl.jumping = false; pl.action = null; pl.armRaise = 0;
     pl.giveBall(scene.ball);
-    pl._beginShot();
+    pl._beginShot(true);
     /* The DRAWN lateral of the off hand, through wristWidth — the same value
      * the renderer places it at. Reading the raw nudge field instead would
      * miss the whole class of bug this check exists for: a pose can switch
@@ -4386,7 +4397,7 @@ function dunkSetup(phase) {
     pl.sprinting = true; pl.vx = pl.phys.maxSprint * 0.92; pl.vy = 0;
     pl.z = 0; pl.jumping = false; pl.action = null; pl.armRaise = 0;
     pl.giveBall(s.ball);
-    pl._beginShot();
+    pl._beginShot(true);
     for (var d = 0; d < 400; d++) {
       s.fixedUpdate(1 / 120);
       if (d % 2 === 0) s.update(1 / 60, 1 / 60);
@@ -5353,8 +5364,163 @@ console.log('\n[45] a dunk is a dunk, and a good one is worth slowing down for')
   check('dunk-style probe raised no errors', !o.pageErr, o.pageErr);
 }
 
+console.log('\n[46] the layup and the dunk are different presses');
+{
+  const r = runInPage(`
+    var BB = window.BB, U = BB.U, C = BB.C;
+    var P = BB.Player, A = P.ACTION;
+
+    /* One build, one spot, one speed. The ONLY thing that varies across this
+     * whole section is what the player asked for — which is the point: the
+     * shape of the finish used to be picked for them. */
+    function dunker(heightIn, vertical, dunkRating, human) {
+      var rt = P.defaultRatings(70);
+      for (var k in rt) rt[k] = 70;
+      rt.vertical = vertical;
+      rt.drivingDunk = dunkRating;
+      rt.standingDunk = dunkRating;
+      var p = new P({ height: heightIn, ratings: rt, human: human !== false });
+      p.phys = P.derivePhysical(rt);
+      p.stamina = 1;
+      return p;
+    }
+    var HOOP = { x: 88.75, y: 25 };
+    function drive(p, dist, want) {
+      p.placeAt(HOOP.x - dist, HOOP.y, 0);
+      p.sprinting = true;
+      p.vx = p.phys.maxSprint * 0.9; p.vy = 0;
+      p.z = 0; p.jumping = false;
+      p.action = null; p.armRaise = 0; p.hasBall = true;
+      p._beginShot(want);
+      return p.shotType;
+    }
+
+    var tall = dunker(84, 92, 85);      // every bit of body a dunk needs
+    var small = dunker(70, 45, 50);     // and none of it
+
+    /* The CPU never touches a key. Run it enough times that a roll of 0.35 +
+     * dunkChance * 0.65 could not plausibly come up empty by chance. */
+    var bot = dunker(84, 92, 85, false);
+    var botDunks = 0;
+    for (var i = 0; i < 60; i++) if (drive(bot, 5, undefined) === 'dunk') botDunks++;
+
+    var gate = {
+      shootKey:   drive(tall, 5, false),
+      dunkKey:    drive(tall, 5, true),
+      noArgs:     drive(tall, 5, undefined),
+      tooShort:   drive(small, 5, true),
+      tooFar:     drive(tall, 12, true)
+    };
+
+    /* And the drill that teaches it has to be completable. A drill judged on
+     * state that never arrives is worse than no drill: it strands a learner on
+     * a step with nothing to do but skip. */
+    BB.Engine.setState('tutorialDrills'); BB.Engine._applyPending(); BB.Engine.stop();
+    var s = BB.Engine.scene;
+    for (var w = 0; w < 40; w++) s.fixedUpdate(1 / 120);
+    var DUNK_DRILL = -1, dr = BB.Tutorial.DRILLS;
+    for (var n = 0; n < dr.length; n++) if (dr[n].id === 'dunk') DUNK_DRILL = n;
+    s.step = DUNK_DRILL; s._enterDrill();
+    // Give the learner a body that can actually throw one down.
+    s.pl.heightIn = 84;
+    s.pl.ratings.vertical = 95;
+    s.pl.ratings.drivingDunk = 92; s.pl.ratings.standingDunk = 92;
+    s.pl.phys = BB.Player.derivePhysical(s.pl.ratings);
+    var advanced = false;
+    for (var f = 0; f < 60 * 8 && !advanced; f++) {
+      var idle = !s.pl.action || s.pl.action === BB.Player.ACTION.IDLE ||
+                 s.pl.action === BB.Player.ACTION.MOVE;
+      if (s.pl.hasBall && !s.pl.isBusyShooting && idle) {
+        s.pl.placeAt(s.hoop.x - 6, s.hoop.y, 0);
+        s.pl.sprinting = true;
+        s.pl.vx = (s.hoop.x > s.pl.x ? 1 : -1) * s.pl.phys.maxSprint * 0.9;
+        s.pl.vy = 0;
+        s.pl._beginShot(true);
+      }
+      s.fixedUpdate(1 / 120); s.fixedUpdate(1 / 120); s.update(1 / 60, 1 / 60);
+      if (s.step > DUNK_DRILL) advanced = true;
+    }
+    BB.Engine.setState('menu'); BB.Engine._applyPending();
+
+    /* Tab is the browser's own focus key. If the game does not swallow it, the
+     * first press hands the keyboard to the browser chrome and the player is
+     * driving nothing — and if it swallows it ALWAYS, a keyboard user can no
+     * longer walk the menus. Both halves have to hold. */
+    function tabPrevented() {
+      var e = new KeyboardEvent('keydown', { code: 'Tab', bubbles: true, cancelable: true });
+      window.dispatchEvent(e);
+      return e.defaultPrevented;
+    }
+    BB.Menus.closeAll();
+    var tabInPlay = tabPrevented();
+    BB.Menus.replace('controls');
+    var tabInMenus = tabPrevented();
+    BB.Menus.closeAll();
+
+    return {
+      tabInPlay: tabInPlay, tabInMenus: tabInMenus,
+      shootKey: gate.shootKey, dunkKey: gate.dunkKey, noArgs: gate.noArgs,
+      tooShort: gate.tooShort, tooFar: gate.tooFar,
+      botDunks:   botDunks,
+      drillFound: DUNK_DRILL >= 0,
+      drillKeys:  DUNK_DRILL >= 0 ? dr[DUNK_DRILL].keys.slice() : [],
+      drillDone:  advanced,
+      bound:      (BB.Input.bindings.dunk || []).slice(),
+      label:      BB.Input.label('dunk'),
+      pageErr:    window.__pageErr || null
+    };
+  `, 'dunkkey');
+  if (r.err) check('dunk-key probe ran', false, r.err);
+  const o = r.out || {};
+
+  /* The complaint this section exists for: the same key in the same spot gave
+   * you a layup or a dunk depending on the build, and nothing could ask. */
+  check('the shoot key lays it in, even for a player who could dunk it',
+        o.shootKey === 'layup', 'a 6\'11" 92-vertical build got a ' + o.shootKey);
+  check('and the dunk key throws it down',
+        o.dunkKey === 'dunk', 'the same build on the dunk key got a ' + o.dunkKey);
+  /* Anything that is not an explicit ask is a layup — which is what keeps a
+   * missed call site from quietly restoring the old behaviour. */
+  check('asking for nothing in particular is a layup',
+        o.noArgs === 'layup', 'got a ' + o.noArgs);
+
+  /* Asking is necessary, not sufficient. The body still holds the veto, which
+   * is the whole of section [37] and must survive having intent added. */
+  check('but asking cannot make a body do what it cannot',
+        o.tooShort === 'layup',
+        'a 5\'10" 45-vertical build asked for a dunk and got a ' + o.tooShort);
+  /* Out past the takeoff window it is not even a finish at the rim — it is a
+   * jump shot, and pressing the dunk key from there must not drag one closer. */
+  check('and it cannot dunk from out past the takeoff window either',
+        o.tooFar === 'jumper',
+        'a dunk key press from 12 feet out produced a ' + o.tooFar);
+
+  /* The CPU has no keyboard. If intent were required of everyone, every AI
+   * dunk in the game would have silently disappeared. */
+  check('a CPU still dunks without pressing anything',
+        o.botDunks > 0, o.botDunks + ' dunks in 60 drives');
+
+  check('the dunk is on its own key, and the controls screen can name it',
+        Array.isArray(o.bound) && o.bound.indexOf('Tab') >= 0 &&
+        !!o.label && o.label !== '—',
+        'bound to ' + JSON.stringify(o.bound) + ', labelled ' + JSON.stringify(o.label));
+
+  check('and pressing it in play does not hand the keyboard to the browser',
+        o.tabInPlay === true, 'Tab was left to move focus off the canvas');
+  check('but the menus can still be walked with it',
+        o.tabInMenus === false, 'Tab was swallowed while a screen was up');
+
+  /* A control nobody is told about may as well not be bound. */
+  check('the walkthrough teaches the key it is actually bound to',
+        o.drillFound === true && (o.drillKeys || []).indexOf('dunk') >= 0,
+        'drill keys ' + JSON.stringify(o.drillKeys));
+  check('and throwing one down completes that drill',
+        o.drillDone === true, 'the drill never advanced');
+  check('dunk-key probe raised no errors', !o.pageErr, o.pageErr);
+}
+
 if (process.argv.includes('--shots')) {
-  console.log('\n[46] screenshots');
+  console.log('\n[47] screenshots');
   const shots = [
     ['menu', "BB.Engine.setState('menu'); BB.Engine._applyPending();", 120],
     ['play_1v1', "BB.Engine.setState('oneVone'); BB.Engine._applyPending();", 420],
